@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+step() {
+    local label="$1"
+    shift
+    local start=$SECONDS
+    printf '\n==> %s\n' "$label"
+    "$@"
+    printf '==> %s completed in %ss\n' "$label" "$((SECONDS - start))"
+}
+
+# Match Linux CI and scripts/screenshots.sh. SQLite itself is bundled by rusqlite.
+packages=(build-essential pkg-config curl ca-certificates libxkbcommon-dev
+    libgl1-mesa-dev libwayland-dev libx11-dev libgl1-mesa-dri
+    xvfb xauth mesa-utils x11-utils xdotool imagemagick sqlite3)
+missing=()
+for package in "${packages[@]}"; do
+    if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+        missing+=("$package")
+    fi
+done
+if ((${#missing[@]})); then
+    step 'Refresh system package index' sudo apt-get update
+    step 'Install missing system packages' sudo env DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y --no-install-recommends "${missing[@]}"
+else
+    echo '==> System packages already installed'
+fi
+
+if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    installer="$(mktemp)"
+    trap 'rm -f "$installer"' EXIT
+    step 'Download rustup' curl --proto '=https' --tlsv1.2 -fsSL \
+        https://sh.rustup.rs -o "$installer"
+    step 'Install rustup' sh "$installer" -y --profile minimal --default-toolchain none --no-modify-path
+fi
+source "$HOME/.cargo/env"
+
+# .bash_profile takes precedence over .profile in non-interactive login shells.
+profile_line='[ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"'
+if ! grep -Fqx "$profile_line" "$HOME/.bash_profile" 2>/dev/null; then
+    printf '\n%s\n' "$profile_line" >> "$HOME/.bash_profile"
+fi
+
+# Use the workspace minimum instead of updating stable on each stale snapshot.
+rust_version="$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' Cargo.toml)"
+step 'Prepare Rust toolchain' rustup toolchain install "$rust_version" --profile minimal --component rustfmt,clippy
+step 'Select repository toolchain' rustup override set "$rust_version"
+host="$(rustc -vV | sed -n 's/^host: //p')"
+step 'Cache locked Cargo dependencies' cargo fetch --locked --target "$host"

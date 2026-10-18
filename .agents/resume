@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# No services or authentication need restoring. Fail clearly if setup was incomplete.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+source "$HOME/.cargo/env"
+rustc --version
+cargo --version

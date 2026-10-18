@@ -3,3 +3,4 @@
 /.sources
 *.dmg
 .DS_Store
+/.amp/portals/*
