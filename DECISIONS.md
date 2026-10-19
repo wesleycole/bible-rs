@@ -138,6 +138,33 @@ single dictionary definition can't show.
 - **Licences decided what was left out**, not size: the Hebrew definitions STEPBible ships need
   Online Bible's permission, and the full LSJ and Middle Liddell are share-alike.
 
+## Cross-references, people and places for Ask
+
+Two more bundled sources give Ask context it would otherwise take from memory (sources and licences
+in `LICENSES/README.md`):
+
+- `cross_references` reads OpenBible.info's cross-references: about 340,000 links that began with the
+  Treasury of Scripture Knowledge and are ranked by readers' votes, quoted in the Ask translation.
+  For a passage, links between its own verses are dropped and a target reached from several verses
+  is listed once. Votes rank the links; they aren't a measure of truth, so the prompt asks the model
+  to say how a passage connects rather than list them.
+- `people_and_places` reads STEPBible's TIPNR, which tells individuals apart (29 Zechariahs,
+  two Bethlehems) and numbers each form of a name with the same extended Strong's numbers as the
+  Hebrew and Greek text, so a name in `original_words` leads straight to the person. Places carry
+  OpenBible.info's identifications with modern sites and a confidence score, because many biblical
+  places (Emmaus, Golgotha) have no agreed location, and the prompt asks the model to say so.
+
+- **Structured data only.** TIPNR also has prose descriptions of every person and place, which
+  STEPBible adapted from an AI model's output; they are left out. Relations, references and the
+  short "Prophet living at the time of Divided Monarchy" descriptions are kept.
+- **Lazy, small files.** `data/crossrefs/crossrefs.zst` (1.2 MB) and `data/names/names.zst`
+  (0.2 MB) are decoded on the first tool call that needs them (about 60 ms and 20 ms in a release
+  build); nothing is read at launch.
+- **A volatile source, pinned anyway.** OpenBible.info regenerates its cross-reference file daily, so
+  its SHA-256 pin is renewed with `XTASK_ACCEPT_UPDATED_SOURCES=1` on rebuild, as for eBible.org.
+- **Ids a model can pass back.** A person or place's id is its name and first reference in
+  STEPBible's form (`Zechariah@2Ch.24.20`); relations are ids, so the model can walk a family tree.
+
 ## Search
 
 No inverted index: each translation lazily builds a normalized corpus (lower-case, diacritics
@@ -305,7 +332,8 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
 
 - No per-word highlighting (verse-level only) and no free text selection inside verses — verse
   selection with "copy with reference" covers the common case.
-- No footnotes or cross-references from the source texts (dropped at import).
+- No footnotes or cross-references from the source texts (dropped at import). Ask reads
+  OpenBible.info's cross-references, but the reader doesn't show them.
 - SWORD modules in versifications other than KJV(A)/NRSV(A) (e.g. Vulgate, Synodal) aren't supported yet;
   deuterocanonical books are skipped everywhere to keep the 66-book grid.
 - Search covers locally available text; online translations are searched via their own sites.

@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::books::{BookId, ChapterIdx, VerseRef};
+use crate::crossrefs::CrossRefs;
 use crate::model::Translation;
+use crate::names::{Category, Entity, Names};
 use crate::original::{self, Original};
 use crate::reference::{self, Reference};
 use crate::search::{self, Scope};
@@ -209,6 +211,14 @@ const ORIGINAL_VERSES: usize = 5;
 const LEXICON_ENTRIES: usize = 6;
 /// Characters of one definition: Abbott-Smith's longest entries run to tens of thousands.
 const DEFINITION_CHARS: usize = 5000;
+/// Verses of a cross-referenced passage quoted in full; a longer one is cut short.
+const CROSS_REFERENCE_VERSES: usize = 3;
+/// People or places one `people_and_places` call describes in full; more are listed by id.
+const NAMES_IN_FULL: usize = 3;
+/// People or places one `people_and_places` call lists.
+const NAMES_LISTED: usize = 30;
+/// Verses an entity is named in that `people_and_places` lists.
+const NAMED_VERSES: usize = 12;
 
 impl Tools {
     /// Tool definitions in the Anthropic Messages API's `tools` format.
@@ -310,6 +320,44 @@ impl Tools {
                 }
             },
             {
+                "name": "cross_references",
+                "description": "Other passages that speak to a verse or passage (up to a chapter), strongest \
+                    first, with their text in the translation named with the question: OpenBible.info's \
+                    cross-references, which grew from the Treasury of Scripture Knowledge, with votes for \
+                    how many readers found each link helpful. Use it to let Scripture interpret Scripture \
+                    and to find where a passage is quoted or echoed.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "reference": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 30 }
+                    },
+                    "required": ["reference"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "people_and_places",
+                "description": "The Bible's people, places and other proper names (deities, months, titles), \
+                    each individual told apart: the many Zechariahs are separate entries. Give a name in any \
+                    translation's spelling (\"Elijah\", \"Elias\"), a Strong's number from original_words or an \
+                    id from an earlier result (\"Zechariah@2Ch.24.20\": the name and the first verse it is \
+                    found in); add a reference to keep only who or what is named there, or give only a \
+                    reference to list everyone and every place named in it. Up to 3 matches come in full: \
+                    the forms of the name in English and Hebrew or Greek, family and tribe, where it is \
+                    named, and for a place the modern locations scholars identify it with, each with their \
+                    confidence (0-100) and coordinates. With more, the most often named (or, for a passage, \
+                    the first named) comes in full and the others as a list to choose from by id.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "reference": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "get_passage",
                 "description": "The text of a passage, in the translation named with the question: a verse \
                     (\"John 3:16\"), a range (\"John 3:16-21\") or a chapter (\"Psalm 23\"). Quote \
@@ -394,6 +442,23 @@ impl Tools {
                 let limit = input["limit"].as_u64().unwrap_or(15).clamp(1, 50) as usize;
                 self.word_occurrences(word, scope, limit)
             }
+            "cross_references" => {
+                let text = input["reference"].as_str().context("reference is required")?;
+                let r = parse_citation(text).with_context(|| format!("not a reference: {text:?}"))?;
+                let limit = input["limit"].as_u64().unwrap_or(10).clamp(1, 30) as usize;
+                self.cross_references(&r, limit)
+            }
+            "people_and_places" => {
+                let name = input["name"].as_str().map(str::trim).filter(|n| !n.is_empty());
+                let passage = match input["reference"].as_str() {
+                    Some(text) => {
+                        let r = parse_citation(text).with_context(|| format!("not a reference: {text:?}"))?;
+                        Some(verse_range(&r).with_context(|| format!("no such passage: {}", r.display()))?)
+                    }
+                    None => None,
+                };
+                people_and_places(names()?, name, passage)
+            }
             other => bail!("unknown tool {other}"),
         }
     }
@@ -460,6 +525,59 @@ impl Tools {
             "renderings": study.renderings.iter().take(12).map(|(e, n)| json!({ "english": e, "count": n })).collect::<Vec<_>>(),
             "verses": listed,
             "truncated": verses.len() > limit,
+        }))
+    }
+
+    /// The passages `r` links to, strongest first. A passage's verses can point to the same place:
+    /// it is listed once, with its strongest link.
+    fn cross_references(&self, r: &Reference, limit: usize) -> Result<Value> {
+        let x = crossrefs()?;
+        let (a, b) = verse_range(r).with_context(|| format!("no such passage: {}", r.display()))?;
+        let mut links: Vec<crate::crossrefs::Link> = Vec::new();
+        for l in x.from_range(a, b) {
+            // A link back into the passage itself says nothing new.
+            if l.to <= b && l.to_end >= a {
+                continue;
+            }
+            match links.iter_mut().find(|m| m.to == l.to && m.to_end == l.to_end) {
+                Some(m) if m.votes >= l.votes => {}
+                Some(m) => *m = *l,
+                None => links.push(*l),
+            }
+        }
+        links.sort_by(|p, q| q.votes.cmp(&p.votes).then(p.to.cmp(&q.to)));
+        let listed: Vec<Value> = links
+            .iter()
+            .take(limit)
+            .map(|l| {
+                let last = if l.to_end.chapter == l.to.chapter { l.to_end.verse } else { u8::MAX };
+                let verses: Vec<String> = self
+                    .translation
+                    .verses_in(l.to.chapter_idx())
+                    .filter(|v| v.number_end >= l.to.verse && v.number <= last)
+                    .map(|v| v.plain_text())
+                    .collect();
+                // A passage across chapters is quoted from its first chapter.
+                let cut = verses.len() > CROSS_REFERENCE_VERSES || l.to_end.chapter != l.to.chapter;
+                let mut v = json!({
+                    "reference": crate::reference::format_range(l.to, l.to_end),
+                    "votes": l.votes,
+                    "text": verses.iter().take(CROSS_REFERENCE_VERSES).cloned().collect::<Vec<_>>().join(" "),
+                });
+                if a != b {
+                    v["from"] = json!(l.from.display());
+                }
+                if cut {
+                    v["text_truncated"] = json!(true);
+                }
+                v
+            })
+            .collect();
+        Ok(json!({
+            "reference": r.display(),
+            "total": links.len(),
+            "cross_references": listed,
+            "truncated": links.len() > limit,
         }))
     }
 
@@ -546,6 +664,152 @@ fn original() -> Result<&'static Original> {
     return Original::bundled();
     #[cfg(not(feature = "bundled"))]
     bail!("this build has no Hebrew or Greek text")
+}
+
+/// The cross-references, decoded the first time a tool needs them.
+fn crossrefs() -> Result<&'static CrossRefs> {
+    #[cfg(feature = "bundled")]
+    return CrossRefs::bundled();
+    #[cfg(not(feature = "bundled"))]
+    bail!("this build has no cross-references")
+}
+
+/// The people and places, decoded the first time a tool needs them.
+fn names() -> Result<&'static Names> {
+    #[cfg(feature = "bundled")]
+    return Names::bundled();
+    #[cfg(not(feature = "bundled"))]
+    bail!("this build has no people and places")
+}
+
+/// Who or what `name` names, within `passage`; everyone and everything named in `passage`
+/// without one.
+fn people_and_places(n: &Names, name: Option<&str>, passage: Option<(VerseRef, VerseRef)>) -> Result<Value> {
+    let in_passage = |e: &Entity| -> Vec<VerseRef> {
+        let Some((a, b)) = passage else { return Vec::new() };
+        e.verses().into_iter().filter(|v| (a..=b).contains(v)).collect()
+    };
+    let found: Vec<&Entity> = match (name, passage) {
+        (Some(name), _) => {
+            let all = n.lookup(name);
+            if all.is_empty() {
+                bail!(
+                    "no person, place or name {name:?}; try another spelling, or a Strong's number from original_words"
+                );
+            }
+            all.into_iter().filter(|e| passage.is_none() || !in_passage(e).is_empty()).collect()
+        }
+        (None, Some((a, b))) => n.named_in(a, b),
+        (None, None) => bail!("give a name, a reference, or both"),
+    };
+    let with_passage = |mut v: Value, e: &Entity| {
+        if passage.is_some() {
+            v["in_passage"] = json!(in_passage(e).iter().map(|r| r.display()).collect::<Vec<_>>());
+        }
+        v
+    };
+    // A few in full; with more, the first in full and the rest to choose from.
+    let full = if found.len() <= NAMES_IN_FULL { found.len() } else { 1 };
+    let matches: Vec<Value> = found[..full].iter().map(|e| with_passage(entity_json(e), e)).collect();
+    let mut out = json!({ "total": found.len(), "matches": matches });
+    if found.len() > full {
+        let others: Vec<Value> =
+            found[full..].iter().take(NAMES_LISTED).map(|e| with_passage(entity_summary(e), e)).collect();
+        out["others"] = json!(others);
+        out["truncated"] = json!(found.len() > full + NAMES_LISTED);
+    }
+    Ok(out)
+}
+
+fn category(e: &Entity) -> &'static str {
+    match e.category {
+        Category::Person => "person",
+        Category::Place => "place",
+        Category::Other => "other",
+    }
+}
+
+/// One line for choosing between people or places of the same name.
+fn entity_summary(e: &Entity) -> Value {
+    let verses = e.verses();
+    let mut v = json!({
+        "id": e.id,
+        "category": category(e),
+        "kind": e.kind,
+        "first_named": verses.first().map(|r| r.display()),
+        "verses_named_in": verses.len(),
+    });
+    let tribe = if e.category == Category::Place { "region" } else { "tribe" };
+    for (k, s) in [("description", &e.description), (tribe, &e.tribe)] {
+        if !s.is_empty() {
+            v[k] = json!(s);
+        }
+    }
+    v
+}
+
+fn entity_json(e: &Entity) -> Value {
+    let mut v = entity_summary(e);
+    if let Some(f) = &e.father {
+        v["father"] = json!(f);
+    }
+    if let Some(m) = &e.mother {
+        v["mother"] = json!(m);
+    }
+    for (k, list) in [
+        ("siblings", &e.siblings),
+        ("partners", &e.partners),
+        ("children", &e.offspring),
+        ("founded_by", &e.founders),
+        ("inhabitants", &e.inhabitants),
+    ] {
+        if !list.is_empty() {
+            v[k] = json!(list);
+        }
+    }
+    v["names"] = json!(
+        e.names
+            .iter()
+            .map(|f| {
+                let mut n =
+                    json!({ "english": f.english.join(" / "), "strong": f.strong, "verses": f.verses.len() });
+                if !f.original.is_empty() {
+                    n["original"] = json!(f.original);
+                }
+                n
+            })
+            .collect::<Vec<_>>()
+    );
+    if !e.locations.is_empty() {
+        v["locations"] = json!(
+            e.locations
+                .iter()
+                .map(|l| {
+                    let mut x = json!({ "identification": l.identification, "confidence": l.confidence });
+                    if !l.kind.is_empty() {
+                        x["kind"] = json!(l.kind);
+                    }
+                    if let Some((lat, lon)) = l.lat_lon {
+                        x["lat"] = json!(lat);
+                        x["lon"] = json!(lon);
+                    }
+                    x
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+    let verses = e.verses();
+    let mut by_book: Vec<(BookId, usize)> = Vec::new();
+    for r in &verses {
+        match by_book.last_mut() {
+            Some((b, n)) if *b == r.book => *n += 1,
+            _ => by_book.push((r.book, 1)),
+        }
+    }
+    v["by_book"] =
+        json!(by_book.iter().map(|(b, n)| json!({ "book": b.name(), "count": n })).collect::<Vec<_>>());
+    v["first_verses"] = json!(verses.iter().take(NAMED_VERSES).map(|r| r.display()).collect::<Vec<_>>());
+    v
 }
 
 fn word_json(o: &Original, w: &original::Word<'_>) -> Value {
@@ -639,6 +903,19 @@ pub fn word_label(query: &str) -> String {
         && let Some(e) = o.lookup(query).first()
     {
         return format!("{} ({})", e.lemma, e.translit);
+    }
+    query.trim().to_string()
+}
+
+/// "Elijah" for a person or place the model looks up by id or Strong's number; the query itself
+/// otherwise.
+pub fn name_label(query: &str) -> String {
+    #[cfg(feature = "bundled")]
+    if (query.contains('@') || original::normalize_strong(query).is_some())
+        && let Ok(n) = Names::bundled()
+        && let Some(e) = n.lookup(query).first()
+    {
+        return e.name().replace('_', " ");
     }
     query.trim().to_string()
 }
@@ -993,6 +1270,102 @@ mod tests {
             tools().run("word_occurrences", &json!({ "word": "H0776G", "scope": "nt" })).unwrap()["total"],
             0
         );
+    }
+
+    #[test]
+    fn cross_references_rank_quote_and_skip_the_passage_itself() {
+        let v = tools().run("cross_references", &json!({ "reference": "John 3:16", "limit": 5 })).unwrap();
+        let refs = v["cross_references"].as_array().unwrap();
+        assert_eq!(refs.len(), 5);
+        assert_eq!(v["truncated"], true);
+        assert_eq!(refs[0]["reference"], "Romans 5:8");
+        assert!(refs[0]["text"].as_str().unwrap().contains("commendeth his love"), "{}", refs[0]);
+        let votes: Vec<i64> = refs.iter().map(|r| r["votes"].as_i64().unwrap()).collect();
+        assert!(votes.windows(2).all(|w| w[0] >= w[1]), "strongest first: {votes:?}");
+        assert!(refs[0].get("from").is_none(), "one verse asked about: no need to say which");
+
+        // A whole psalm: links between its own verses are left out, and each says where it's from.
+        let v = tools().run("cross_references", &json!({ "reference": "Psalm 23", "limit": 30 })).unwrap();
+        let refs = v["cross_references"].as_array().unwrap();
+        assert!(refs.iter().all(|r| !r["reference"].as_str().unwrap().starts_with("Psalm 23:")), "{v}");
+        assert!(refs.iter().all(|r| r["from"].as_str().unwrap().starts_with("Psalm 23:")));
+
+        // A passage across chapters is quoted from where it starts.
+        let v =
+            tools().run("cross_references", &json!({ "reference": "Genesis 14:18", "limit": 30 })).unwrap();
+        let hebrews = v["cross_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["reference"].as_str().unwrap().starts_with("Hebrews 6:20"))
+            .unwrap();
+        assert_eq!(hebrews["reference"], "Hebrews 6:20–7:3");
+        assert!(hebrews["text"].as_str().unwrap().contains("order of Melchisedec"), "{hebrews}");
+        assert_eq!(hebrews["text_truncated"], true);
+        assert!(tools().run("cross_references", &json!({ "reference": "John 22:1" })).is_err());
+    }
+
+    #[test]
+    fn people_and_places_tell_individuals_apart() {
+        let t = tools();
+        let v = t.run("people_and_places", &json!({ "name": "Zechariah" })).unwrap();
+        assert!(v["total"].as_u64().unwrap() > 25, "{v}");
+        assert_eq!(v["matches"].as_array().unwrap().len(), 1, "the most often named in full");
+        assert!(v["matches"][0]["names"].is_array());
+        let others = v["others"].as_array().unwrap();
+        assert_eq!(others.len() + 1, v["total"].as_u64().unwrap() as usize);
+        // John the Baptist's father is named in 9 verses, more than any other Zechariah.
+        assert_eq!(v["matches"][0]["id"], "Zechariah@Luk.1.5");
+        assert!(others.iter().any(|e| e["id"] == "Zechariah@2Ch.24.20"));
+        assert!(others.iter().all(|e| e.get("names").is_none()), "the rest are summaries");
+        let named = |e: &Value| e["verses_named_in"].as_u64().unwrap();
+        assert!(others.iter().all(|e| named(e) <= named(&v["matches"][0])));
+
+        // A reference picks out John the Baptist's father, in full.
+        let v = t.run("people_and_places", &json!({ "name": "Zacharias", "reference": "Luke 1:5" })).unwrap();
+        assert_eq!(v["total"], 1, "{v}");
+        let z = &v["matches"][0];
+        assert_eq!(z["id"], "Zechariah@Luk.1.5");
+        assert_eq!(z["partners"], json!(["Elizabeth@Luk.1.5"]));
+        assert_eq!(z["in_passage"], json!(["Luke 1:5"]));
+        assert_eq!(z["names"][0]["original"], "Ζαχαρίας");
+
+        // An id from a relation reads back, and the family links both ways.
+        let aaron = &t.run("people_and_places", &json!({ "name": "Aaron" })).unwrap()["matches"][0];
+        let father = aaron["father"].as_str().unwrap();
+        let amram = &t.run("people_and_places", &json!({ "name": father })).unwrap()["matches"][0];
+        assert!(amram["children"].as_array().unwrap().iter().any(|c| c == "Aaron@Exo.4.14"), "{amram}");
+
+        // Strong's numbers as original_words gives them: the KJV's Elias is the prophet Elijah, and
+        // the text's G5547 (Christ) finds the name STEPBible numbers G5547G.
+        let elias = &t.run("people_and_places", &json!({ "name": "G2243" })).unwrap()["matches"][0];
+        assert_eq!(elias["id"], "Elijah@1Ki.17.1");
+        let christ = t.run("people_and_places", &json!({ "name": "G5547" })).unwrap();
+        assert_eq!(christ["matches"][0]["id"], "Jesus@Isa.7.14");
+        assert!(t.run("people_and_places", &json!({ "name": "Gandalf" })).is_err());
+        assert!(t.run("people_and_places", &json!({})).is_err());
+    }
+
+    #[test]
+    fn places_say_where_they_were_and_how_sure_scholars_are() {
+        let v = tools().run("people_and_places", &json!({ "name": "Emmaus" })).unwrap();
+        let locations = v["matches"][0]["locations"].as_array().unwrap();
+        assert!(locations.len() > 1, "the candidates disagree: {v}");
+        let confidence: Vec<u64> = locations.iter().map(|l| l["confidence"].as_u64().unwrap()).collect();
+        assert!(confidence.windows(2).all(|w| w[0] >= w[1]), "most likely first: {confidence:?}");
+        assert!(confidence[0] < 50, "no candidate is certain: {confidence:?}");
+        let lat = locations[0]["lat"].as_f64().unwrap();
+        let lon = locations[0]["lon"].as_f64().unwrap();
+        // Near Jerusalem (31.78 N, 35.23 E), and not with latitude and longitude swapped.
+        assert!((31.0..32.5).contains(&lat) && (34.5..35.5).contains(&lon), "{lat}, {lon}");
+
+        // Who and what John 11:1 names, in order.
+        let v = tools().run("people_and_places", &json!({ "reference": "John 11:1" })).unwrap();
+        let all = v["matches"].as_array().unwrap().iter().chain(v["others"].as_array().into_iter().flatten());
+        let ids: Vec<&str> = all.map(|e| e["id"].as_str().unwrap()).collect();
+        for name in ["Lazarus@", "Bethany@", "Mary@", "Martha@"] {
+            assert!(ids.iter().any(|id| id.starts_with(name)), "{name} in {ids:?}");
+        }
     }
 
     #[test]

@@ -3,6 +3,10 @@
 //! `cargo xtask build-original` writes `data/original/original.zst`, the Hebrew and Greek text
 //! and lexicon for Ask's word-study tools (see `original.rs`).
 //!
+//! `cargo xtask build-crossrefs` writes `data/crossrefs/crossrefs.zst` and `cargo xtask build-names`
+//! writes `data/names/names.zst`, the cross-references and the people and places for Ask (see
+//! `crossrefs.rs` and `names.rs`).
+//!
 //! `cargo xtask contract` writes `server/src/contract/ask-v<N>.json` from linger-core (see
 //! `linger_core::contract`).
 //!
@@ -20,6 +24,8 @@ use linger_core::model::{Origin, TranslationBuilder, TranslationMeta};
 use linger_core::usfm;
 use sha2::{Digest, Sha256};
 
+mod crossrefs;
+mod names;
 mod original;
 
 struct Source {
@@ -110,6 +116,8 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("build-data") => build_data(&root, &args[1..]),
         Some("build-original") => original::build(&root),
+        Some("build-crossrefs") => crossrefs::build(&root),
+        Some("build-names") => names::build(&root),
         Some("contract") => {
             // The Ask contract the proxy injects, generated from linger-core's prompt and tools.
             let path = root.join("server/src/contract").join(linger_core::contract::file_name());
@@ -238,7 +246,7 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: cargo run -p xtask -- build-data [ids…] | build-original | fetch [ids…] | contract"
+                "usage: cargo run -p xtask -- build-data [ids…] | build-original | build-crossrefs | build-names | fetch [ids…] | contract"
             );
             std::process::exit(2)
         }
@@ -250,27 +258,33 @@ fn selected(ids: &[String]) -> Vec<&'static Source> {
 }
 
 fn fetch(root: &Path, s: &Source) -> Result<PathBuf> {
+    let url = format!("https://ebible.org/Scriptures/{}_usfm.zip", s.ebible_id);
+    fetch_pinned(root, &format!("{}_usfm.zip", s.ebible_id), &url, s.sha256)
+}
+
+/// Downloads `url` into `.sources/<name>` unless it is there, and checks its SHA-256. For a source
+/// that changes upstream without a version (eBible.org's archives, OpenBible.info's data),
+/// `XTASK_ACCEPT_UPDATED_SOURCES=1` accepts a new file and prints its hash for the pin.
+fn fetch_pinned(root: &Path, name: &str, url: &str, sha256: &str) -> Result<PathBuf> {
     let dir = root.join(".sources");
     std::fs::create_dir_all(&dir)?;
-    let file = dir.join(format!("{}_usfm.zip", s.ebible_id));
+    let file = dir.join(name);
     if !file.exists() {
-        let url = format!("https://ebible.org/Scriptures/{}_usfm.zip", s.ebible_id);
         eprintln!("downloading {url}");
-        let status = Command::new("curl").args(["-fsSL", "-o"]).arg(&file).arg(&url).status()?;
+        let status = Command::new("curl").args(["-fsSL", "-o"]).arg(&file).arg(url).status()?;
         if !status.success() {
             bail!("download failed: {url}");
         }
     }
     let digest = hex(&Sha256::digest(std::fs::read(&file)?));
-    if digest != s.sha256 {
+    if digest != sha256 {
         if std::env::var_os("XTASK_ACCEPT_UPDATED_SOURCES").is_some() {
-            eprintln!("warning: {} changed upstream; new sha256 = {digest}", s.ebible_id);
+            eprintln!("warning: {name} changed upstream; new sha256 = {digest}");
         } else {
             bail!(
-                "{} sha256 mismatch: expected {}, got {digest}. The upstream file changed; review it, then \
+                "{} sha256 mismatch: expected {sha256}, got {digest}. The upstream file changed; review it, then \
                  update the pin (or set XTASK_ACCEPT_UPDATED_SOURCES=1).",
                 file.display(),
-                s.sha256
             );
         }
     }

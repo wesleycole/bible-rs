@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 
 use crate::chat::Tools;
 
-/// The contract version requests name (`"contract": "ask/2"`).
-pub const VERSION: &str = "ask/2";
+/// The contract version requests name (`"contract": "ask/3"`).
+pub const VERSION: &str = "ask/3";
 
 /// Rounds of tool calls one question may take before Linger stops it.
 pub const MAX_ROUNDS: usize = 8;
@@ -50,6 +50,12 @@ distinct from your reading of the passage. Write a Hebrew or Greek word translit
 original script after it in brackets when that helps; mention a Strong's number only if the user \
 asks for one.
 
+cross_references lists the passages that speak to a verse, strongest first. Draw on the ones that \
+bear on the question and say how each connects, rather than listing them. people_and_places tells \
+apart people and places that share a name and gives a person's family and a place's likely \
+location; use it before saying who someone was or where a place was. Scholars are not always sure \
+where a place was: say so when its confidence is low or the candidates disagree.
+
 Beyond the text, answer as a thoughtful, well-read guide would. Where Christian traditions differ, \
 say so briefly and fairly rather than taking a side. Keep answers short enough to read in the side \
 panel: a few paragraphs at most, separated by blank lines. Write plain prose; the panel shows no \
@@ -80,7 +86,7 @@ pub fn sha256() -> String {
     Sha256::digest(&canonical).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The checked-in file's name: `ask-v2.json` for `ask/2`.
+/// The checked-in file's name: `ask-v3.json` for `ask/3`.
 pub fn file_name() -> String {
     format!("ask-v{}.json", VERSION.trim_start_matches("ask/"))
 }

@@ -5199,6 +5199,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "linger-core",
+ "serde_json",
  "sha2 0.10.9",
  "unicode-normalization",
  "uniffi",

@@ -83,12 +83,22 @@ describe("Ask request validation", () => {
 
 describe("the Ask contract", () => {
   it("parses into the expected shape and matches the digest the Rust generator wrote", () => {
-    expect(CONTRACTS.map((c) => c.version)).toEqual(["ask/2", "ask/1"])
+    expect(CONTRACTS.map((c) => c.version)).toEqual(["ask/3", "ask/2"])
     const c = CONTRACTS[0]
     expect(c.max_rounds).toBeGreaterThan(0)
     expect(c.system.length).toBeGreaterThan(200)
     expect(c.tools.map((t) => t.name).sort()).toEqual(
-      ["get_passage", "lexicon", "original_words", "read_sermon", "search_bible", "search_sermons", "word_occurrences"]
+      [
+        "cross_references",
+        "get_passage",
+        "lexicon",
+        "original_words",
+        "people_and_places",
+        "read_sermon",
+        "search_bible",
+        "search_sermons",
+        "word_occurrences"
+      ]
     )
     for (const contract of CONTRACTS) {
       for (const tool of contract.tools) expect(tool.input_schema.type).toBe("object")
@@ -96,20 +106,20 @@ describe("the Ask contract", () => {
     }
   })
 
-  it("still serves ask/1, without the tools it doesn't have", async () => {
+  it("still serves ask/2, without the tools it doesn't have", async () => {
     const study = (contract: string) =>
       question({
         contract,
         messages: [
           { role: "user", content: "hi" },
-          { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "lexicon", input: { word: "G3056" } }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "cross_references", input: { reference: "John 3:16" } }] },
           { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }
         ]
       })
-    const old = await Effect.runPromise(validateAsk(JSON.stringify(question({ contract: "ask/1" }))))
-    expect(old.contract.version).toBe("ask/1")
-    expect((await check(study("ask/1")))._tag).toBe("InvalidRequest")
-    await expect(Effect.runPromise(validateAsk(JSON.stringify(study("ask/2"))))).resolves.toBeDefined()
+    const old = await Effect.runPromise(validateAsk(JSON.stringify(question({ contract: "ask/2" }))))
+    expect(old.contract.version).toBe("ask/2")
+    expect((await check(study("ask/2")))._tag).toBe("InvalidRequest")
+    await expect(Effect.runPromise(validateAsk(JSON.stringify(study("ask/3"))))).resolves.toBeDefined()
   })
 
   it("would notice an edit to the contract", () => {

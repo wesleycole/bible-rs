@@ -77,6 +77,64 @@ Left out, and why:
 * **TAGNT's Spanish and sub-meaning columns** (from the Marvel Bible project and OpenGNT) and
   **TTESV** (CC BY-NC tags for the copyrighted ESV).
 
+## Cross-references — CC BY
+
+`data/crossrefs/crossrefs.zst` holds the cross-references Ask's `cross_references` tool reads. It is
+built by `cargo xtask build-crossrefs` from OpenBible.info's cross-reference file
+(https://a.openbible.info/data/cross-references.zip), whose SHA-256 is pinned in
+`xtask/src/crossrefs.rs`. OpenBible.info regenerates the file daily as readers vote, so a rebuild
+takes the current file (`XTASK_ACCEPT_UPDATED_SOURCES=1`) and updates the pin.
+
+| Part | Source | Licence |
+|---|---|---|
+| About 340,000 links between verses, each with readers' net votes | OpenBible.info, starting from the Treasury of Scripture Knowledge (public domain) | CC BY ("www.openbible.info CC-BY" in the file) |
+
+Attribution: "Cross references from OpenBible.info" (https://www.openbible.info/labs/cross-references/).
+Settings shows it.
+
+Changes: links with no net votes in their favour (about 3,500) are left out; references are mapped
+onto the KJV verse grid, leaving out the one link whose source verse isn't on it (3 John 1:15) and
+stopping four passages at the end of a KJV chapter.
+
+## People and places — CC BY 4.0
+
+`data/names/names.zst` holds every person, place and other proper name in the Bible, each
+individual told apart, for Ask's `people_and_places` tool. It is built by `cargo xtask build-names`;
+the commit and SHA-256 of every source file are pinned in `xtask/src/names.rs`.
+
+| Part | Source | Licence |
+|---|---|---|
+| People, places and other names: each individual's forms of the name in English, Hebrew and Greek with Strong's numbers, every reference, family and tribe, a place's founders and inhabitants | STEPBible TIPNR, Tyndale House Cambridge | CC BY 4.0 |
+| The modern locations identified with each place, the confidence of scholarship in each, and their coordinates | OpenBible.info Bible Geocoding Data (`ancient.jsonl`, `modern.jsonl`) | CC BY 4.0 |
+
+Attribution: "Data created by STEPBible.org based on work at Tyndale House, Cambridge"
+(https://www.stepbible.org) and "Bible geocoding data from OpenBible.info"
+(https://www.openbible.info/geo/). Settings shows both.
+
+STEPBible's licence asks that changes be noted. Linger reformats the data and makes these changes:
+
+* Each person or place's id is its name and first reference without the last book TIPNR appends
+  (`Aaron@Exo.4.14`, not `Aaron@Exo.4.14-Heb`); TIPNR's relation marks become words: `(d)` and
+  `(a)` "(ancestor)", `(f)` "(founder)", `(?)` "(uncertain)".
+* Lines that repeat a form of a name for a textual variant join that form. References are mapped
+  onto the KJV verse grid, and a second mention in a verse (`Exo.7.10b`) counts once.
+* Two relations that name no entity in TIPNR (the Maacathites as ancestor of Hodiah and Ishbah)
+  are left out, as are three entries named in no verse once Septuagint-only references are gone.
+* Each place takes OpenBible.info's identifications for the place TIPNR names in its "OpenBible
+  name" column, or failing that the place whose TIPNR link names it. Identifications with no
+  support in current scholarship (a time-weighted score of 0 or less) are left out; a score out of
+  1,000 becomes a confidence out of 100.
+
+Left out, and why:
+
+* **TIPNR's `@Briefest`, `@Brief`, `@Short` and `@Article` descriptions.** STEPBible says they were
+  adapted from an AI model's output (Claude 3 Opus), and one checked against the text was wrong.
+  Ask is meant to answer from sources, not from another model's summary.
+* **Septuagint-only references** (marked `LXX`): the text Linger reads has no Septuagint.
+* **Coordinates OpenBible.info took from OpenStreetMap** (ODbL, a share-alike licence; about 50
+  identifications), and all of OpenBible.info's geometry and images. Those identifications are
+  kept without coordinates.
+
 ## Fonts — SIL Open Font License 1.1
 
 | Font | Use | Source | Licence |

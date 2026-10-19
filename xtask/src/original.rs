@@ -28,14 +28,15 @@ use unicode_normalization::UnicodeNormalization;
 const STEP_COMMIT: &str = "ed476a8ee6e3f7b3a46fc48af6c7dabc02387b1d";
 const OSHB_COMMIT: &str = "21c9add13bc727d3a951361778e97e3ff7afd1ce";
 
-struct File {
-    repo: &'static str,
-    commit: &'static str,
-    path: &'static str,
-    sha256: &'static str,
+/// A file in a GitHub repository, pinned by commit and SHA-256.
+pub(crate) struct File {
+    pub(crate) repo: &'static str,
+    pub(crate) commit: &'static str,
+    pub(crate) path: &'static str,
+    pub(crate) sha256: &'static str,
 }
 
-const fn step(path: &'static str, sha256: &'static str) -> File {
+pub(crate) const fn step(path: &'static str, sha256: &'static str) -> File {
     File { repo: "STEPBible/STEPBible-Data", commit: STEP_COMMIT, path, sha256 }
 }
 
@@ -97,7 +98,7 @@ const AUG_INDEX: File =
     oshb("AugIndex.xml", "e7217ca8ff8ff3f21f9cf1bbe87411adf55f6aa88bcf5ed9ddc886cc6b160c5d");
 
 /// STEPBible's book abbreviations, in canonical order.
-const BOOKS: [&str; 66] = [
+pub(crate) const BOOKS: [&str; 66] = [
     "Gen", "Exo", "Lev", "Num", "Deu", "Jos", "Jdg", "Rut", "1Sa", "2Sa", "1Ki", "2Ki", "1Ch", "2Ch", "Ezr",
     "Neh", "Est", "Job", "Psa", "Pro", "Ecc", "Sng", "Isa", "Jer", "Lam", "Ezk", "Dan", "Hos", "Jol", "Amo",
     "Oba", "Jon", "Mic", "Nam", "Hab", "Zep", "Hag", "Zec", "Mal", "Mat", "Mrk", "Luk", "Jhn", "Act", "Rom",
@@ -657,7 +658,8 @@ fn editions(kind: &str) -> (bool, bool) {
     (kept.contains(['N', 'n']), kept.contains(['K', 'k']))
 }
 
-fn fetch(root: &Path, f: &File) -> Result<PathBuf> {
+/// Downloads `f` into `.sources/` unless it is there, and checks its SHA-256.
+pub(crate) fn fetch(root: &Path, f: &File) -> Result<PathBuf> {
     let dir = root.join(".sources").join(f.repo.replace('/', "_"));
     std::fs::create_dir_all(&dir)?;
     let name = f.path.rsplit('/').next().unwrap();

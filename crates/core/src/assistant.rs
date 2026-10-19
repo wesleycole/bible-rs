@@ -265,6 +265,14 @@ fn tool_label(name: &str, input: &Value) -> String {
         "word_occurrences" => {
             format!("Finding where {} is used", chat::word_label(input["word"].as_str().unwrap_or("")))
         }
+        "cross_references" => {
+            format!("Finding cross-references for {}", input["reference"].as_str().unwrap_or("a passage"))
+        }
+        "people_and_places" => match (input["name"].as_str(), input["reference"].as_str()) {
+            (Some(name), _) => format!("Looking up {}", chat::name_label(name)),
+            (None, Some(r)) => format!("Finding who is named in {r}"),
+            (None, None) => "Looking up a name".into(),
+        },
         _ => "Looking something up".into(),
     }
 }
