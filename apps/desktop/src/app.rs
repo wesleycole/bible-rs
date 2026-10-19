@@ -1508,8 +1508,7 @@ impl BibleApp {
         // Compactness is judged at the width the bar is heading for, so a sliding sidebar or Ask
         // card switches it at once rather than halfway.
         let ask = crate::ask_panel::ASK_WIDTH * (self.ask_shown - self.ask_motion.target());
-        let compact =
-            bar.width() + extent * (open - self.sidebar_motion.target()) + ask < COMPACT_TOOLBAR;
+        let compact = bar.width() + extent * (open - self.sidebar_motion.target()) + ask < COMPACT_TOOLBAR;
         let focus_field = self.sidebar.take_focus();
         let show_field = focus_field || self.sidebar.searching() || self.sidebar.field_focused;
         let trailing_left;
@@ -2838,7 +2837,10 @@ impl eframe::App for BibleApp {
                 let inset = theme::metrics::SIDEBAR_INSET;
                 let r = egui::Rect::from_min_max(
                     egui::pos2(reader_rect.right(), full.top() + inset),
-                    egui::pos2(reader_rect.right() + crate::ask_panel::ASK_WIDTH - inset, full.bottom() - inset),
+                    egui::pos2(
+                        reader_rect.right() + crate::ask_panel::ASK_WIDTH - inset,
+                        full.bottom() - inset,
+                    ),
                 );
                 // Its top is in the title bar, which mustn't drag the window from under it.
                 #[cfg(target_os = "macos")]
