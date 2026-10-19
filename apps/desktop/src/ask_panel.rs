@@ -16,6 +16,7 @@ use eframe::egui::{
 use linger_core::assistant::{self, Conversation, Event};
 use linger_core::chat::{self, Message, Role, Segment};
 use linger_core::reference::{self, Reference};
+use linger_core::transcribe::{self, Transcript};
 use linger_core::{ChapterIdx, VerseRef};
 
 use crate::actions::Action;
@@ -52,6 +53,9 @@ pub struct AskPanel {
     /// What the panel shows; the API's view of the same conversation is `conversation`.
     messages: Vec<Message>,
     conversation: Arc<Mutex<Conversation>>,
+    /// The transcribed sermons, as of the last question: the tools search them, and citations
+    /// of them are labelled from them.
+    sermons: Arc<Vec<Transcript>>,
     config: Option<assistant::Config>,
     input: String,
     pending: Option<Receiver<Update>>,
@@ -70,6 +74,7 @@ pub struct AskEnv<'a> {
     pub translation: &'a str,
     pub chapter: ChapterIdx,
     pub selection: Option<(VerseRef, VerseRef)>,
+    pub data_dir: &'a std::path::Path,
 }
 
 enum Update {
@@ -202,7 +207,7 @@ impl AskPanel {
             for m in &self.messages {
                 match m.role {
                     Role::User => user_bubble(ui, p, &m.text, width),
-                    Role::Assistant => answer(ui, p, env, &m.text, width, actions),
+                    Role::Assistant => answer(ui, p, env, &self.sermons, &m.text, width, actions),
                 }
                 ui.add_space(14.0);
             }
@@ -213,7 +218,7 @@ impl AskPanel {
                     _ => &self.streaming,
                 };
                 if !shown.trim().is_empty() {
-                    answer(ui, p, env, shown, width, actions);
+                    answer(ui, p, env, &self.sermons, shown, width, actions);
                     ui.add_space(8.0);
                 }
                 if self.status.is_some() || shown.trim().is_empty() {
@@ -333,13 +338,15 @@ impl AskPanel {
         let translation = env.library.load(env.translation);
         let chapter = env.chapter;
         let config = self.config.clone();
+        self.sermons = Arc::new(transcribe::all(env.data_dir));
+        let sermons = self.sermons.clone();
         let conversation = self.conversation.clone();
         std::thread::Builder::new()
             .name("ask".into())
             .spawn(move || {
                 let reply = match (translation, config) {
                     (Ok(t), Some(cfg)) => {
-                        let tools = chat::Tools { translation: t };
+                        let tools = chat::Tools { translation: t, sermons: sermons.clone() };
                         let events: Sender<Update> = tx.clone();
                         let mut conversation = conversation.lock().unwrap_or_else(|e| e.into_inner());
                         conversation
@@ -351,7 +358,7 @@ impl AskPanel {
                             })
                     }
                     (Ok(t), None) => {
-                        let tools = chat::Tools { translation: t };
+                        let tools = chat::Tools { translation: t, sermons: sermons.clone() };
                         let context = context.unwrap_or(chat::Context { chapter, selection: None });
                         chat::local_reply(&tools, &context, &question)
                     }
@@ -397,7 +404,15 @@ fn user_bubble(ui: &mut Ui, p: &Palette, text: &str, width: f32) {
 }
 
 /// An answer: paragraphs of reading-face prose; the verses each paragraph cites as chips under it.
-fn answer(ui: &mut Ui, p: &Palette, env: &AskEnv<'_>, text: &str, width: f32, actions: &mut Vec<Action>) {
+fn answer(
+    ui: &mut Ui,
+    p: &Palette,
+    env: &AskEnv<'_>,
+    sermons: &[Transcript],
+    text: &str,
+    width: f32,
+    actions: &mut Vec<Action>,
+) {
     let font = text::SNIPPET.font();
     for (i, para) in text.split("\n\n").filter(|s| !s.trim().is_empty()).enumerate() {
         if i > 0 {
@@ -421,6 +436,15 @@ fn answer(ui: &mut Ui, p: &Palette, env: &AskEnv<'_>, text: &str, width: f32, ac
                     if !refs.contains(r) {
                         refs.push(*r);
                     }
+                }
+                // Named in the sentence; opening the transcript at that moment comes with the
+                // sermon library.
+                Segment::Sermon { id, at_ms } => {
+                    let title = sermons
+                        .iter()
+                        .find(|t| t.recording_id.starts_with(id.as_str()))
+                        .map_or_else(|| "a sermon".to_string(), Transcript::title);
+                    job.append(&format!("{title}, {}", transcribe::clock(*at_ms)), 0.0, format(p.accent));
                 }
             }
         }

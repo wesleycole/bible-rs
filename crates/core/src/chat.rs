@@ -5,6 +5,9 @@
 //! range, `{{John 3:16-18}}`); the app turns each into a chip that opens the verse in the reader,
 //! and any verse text it shows comes from the user's own translation through [`Tools`]. The same
 //! tools serve the model's tool calls and the offline stand-in, [`local_reply`].
+//!
+//! Sermons the user recorded are cited the same way, by recording and moment:
+//! `{{sermon 1a2b3c4d 12:30}}`.
 
 use std::sync::Arc;
 
@@ -16,6 +19,7 @@ use crate::books::{BookId, ChapterIdx, VerseRef};
 use crate::model::Translation;
 use crate::reference::{self, Reference};
 use crate::search::{self, Scope};
+use crate::transcribe::{self, Transcript};
 
 /// What the user is looking at when they ask: sent with every question.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +83,11 @@ impl Message {
 pub enum Segment {
     Text(String),
     Verse(Reference),
+    /// A moment in a recorded sermon: the recording id (or its first characters) and where.
+    Sermon {
+        id: String,
+        at_ms: u64,
+    },
 }
 
 /// Splits text at `{{reference}}` citations. A marker that isn't a reference stays as text.
@@ -90,12 +99,12 @@ pub fn segments(text: &str) -> Vec<Segment> {
         let Some(len) = rest[start + 2..].find("}}") else { break };
         let inner = &rest[start + 2..start + 2 + len];
         pending.push_str(&rest[..start]);
-        match parse_citation(inner) {
-            Some(r) => {
+        match parse_citation(inner).map(Segment::Verse).or_else(|| parse_sermon_citation(inner)) {
+            Some(seg) => {
                 if !pending.is_empty() {
                     out.push(Segment::Text(std::mem::take(&mut pending)));
                 }
-                out.push(Segment::Verse(r));
+                out.push(seg);
             }
             None => pending.push_str(&rest[start..start + 2 + len + 2]),
         }
@@ -113,6 +122,18 @@ pub fn segments(text: &str) -> Vec<Segment> {
 fn parse_citation(inner: &str) -> Option<Reference> {
     let r = reference::parse(inner.trim())?;
     (exact_book(&book_key(inner)) == Some(r.book)).then_some(r)
+}
+
+/// `sermon 1a2b3c4d 12:30`.
+fn parse_sermon_citation(inner: &str) -> Option<Segment> {
+    let mut words = inner.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("sermon") {
+        return None;
+    }
+    let id = words.next()?.to_string();
+    let at_ms = transcribe::parse_clock(words.next()?)?;
+    (words.next().is_none() && id.len() >= 4 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+        .then_some(Segment::Sermon { id, at_ms })
 }
 
 fn exact_book(key: &str) -> Option<BookId> {
@@ -145,14 +166,21 @@ pub fn verse_range(r: &Reference) -> Option<(VerseRef, VerseRef)> {
     })
 }
 
-/// The tools the assistant can call, run against the user's reading translation.
+/// The tools the assistant can call, run against the user's reading translation and the sermons
+/// they've recorded.
 pub struct Tools {
     pub translation: Arc<Translation>,
+    /// Transcribed sermons, newest first.
+    pub sermons: Arc<Vec<Transcript>>,
 }
 
 /// The most verses one `get_passage` call returns, so a chapter of Psalm 119 can't flood the
 /// conversation.
 const PASSAGE_LIMIT: usize = 60;
+/// Words of transcript `read_sermon` returns at most: about 15 minutes of preaching.
+const SERMON_WORDS: usize = 2500;
+/// The first characters of a recording id: enough to tell a person's sermons apart.
+const SHORT_ID: usize = 8;
 
 impl Tools {
     /// Tool definitions in the Anthropic Messages API's `tools` format.
@@ -174,6 +202,36 @@ impl Tools {
                         "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
                     },
                     "required": ["query"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "search_sermons",
+                "description": "Searches the transcripts of sermons the user recorded at their church (newest \
+                    first). Every word must appear in a passage of the sermon. Returns excerpts with the \
+                    sermon's id and the moment they were said. Use it whenever the user asks what their \
+                    church, pastor or a sermon taught.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "read_sermon",
+                "description": "Reads a recorded sermon's transcript from a moment on (\"12:30\"; the start by \
+                    default), up to about 15 minutes. With no sermon id, lists the recorded sermons.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "sermon": { "type": "string", "description": "A sermon id from search_sermons or the list." },
+                        "from": { "type": "string" },
+                        "minutes": { "type": "integer", "minimum": 1, "maximum": 15 }
+                    },
                     "additionalProperties": false
                 }
             },
@@ -225,8 +283,90 @@ impl Tools {
                     "truncated": more,
                 }))
             }
+            "search_sermons" => {
+                let query = input["query"].as_str().context("query is required")?;
+                let limit = input["limit"].as_u64().unwrap_or(8).clamp(1, 20) as usize;
+                let hits = self.search_sermons(query);
+                let shown: Vec<Value> = hits.iter().take(limit).cloned().collect();
+                Ok(json!({ "sermons": self.sermons.len(), "total": hits.len(), "hits": shown }))
+            }
+            "read_sermon" => match input["sermon"].as_str() {
+                None => Ok(json!({ "sermons": self.sermons.iter().map(sermon_summary).collect::<Vec<_>>() })),
+                Some(id) => {
+                    let t = self.sermon(id)?;
+                    let from = match input["from"].as_str() {
+                        Some(f) => {
+                            transcribe::parse_clock(f).with_context(|| format!("not a time: {f:?}"))?
+                        }
+                        None => 0,
+                    };
+                    let minutes = input["minutes"].as_u64().unwrap_or(10).clamp(1, 15);
+                    Ok(read_sermon(t, from, from + minutes * 60_000))
+                }
+            },
             other => bail!("unknown tool {other}"),
         }
+    }
+
+    /// The transcribed sermon whose id starts with `id`.
+    pub fn sermon(&self, id: &str) -> Result<&Transcript> {
+        let id = id.trim();
+        let mut found = self.sermons.iter().filter(|t| !id.is_empty() && t.recording_id.starts_with(id));
+        match (found.next(), found.next()) {
+            (Some(t), None) => Ok(t),
+            (Some(_), Some(_)) => bail!("more than one sermon's id starts with {id:?}"),
+            (None, _) if self.sermons.is_empty() => bail!("the user hasn't recorded any sermons yet"),
+            (None, _) => bail!("no sermon with id {id:?}"),
+        }
+    }
+
+    /// Passages where every word of `query` is said, newest sermon first: each an excerpt of about
+    /// 60 words around the first match, timed by where it falls in its turn of speech.
+    fn search_sermons(&self, query: &str) -> Vec<Value> {
+        let terms: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .map(str::to_lowercase)
+            .filter(|w| !w.is_empty() && !STOP.contains(&w.as_str()))
+            .collect();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for t in self.sermons.iter() {
+            for seg in &t.segments {
+                let words: Vec<&str> = seg.text.split_whitespace().collect();
+                let norm: Vec<String> = words
+                    .iter()
+                    .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+                    .collect();
+                // Match within a window of 80 words rather than anywhere in a long turn.
+                let window = 80.min(norm.len());
+                let Some(at) = (0..=norm.len() - window).step_by(20).find(|&i| {
+                    terms.iter().all(|term| norm[i..i + window].iter().any(|w| w.starts_with(term.as_str())))
+                }) else {
+                    continue;
+                };
+                let first = (at..at + window).find(|&i| norm[i].starts_with(terms[0].as_str())).unwrap_or(at);
+                let (a, b) = (first.saturating_sub(25), (first + 35).min(words.len()));
+                let span = seg.end_ms.saturating_sub(seg.start_ms);
+                let at_ms = seg.start_ms + span * a as u64 / words.len().max(1) as u64;
+                let mut excerpt = words[a..b].join(" ");
+                if a > 0 {
+                    excerpt.insert_str(0, "… ");
+                }
+                if b < words.len() {
+                    excerpt.push_str(" …");
+                }
+                out.push(json!({
+                    "sermon": short_id(t),
+                    "title": t.title(),
+                    "at": transcribe::clock(at_ms),
+                    "speaker": seg.speaker,
+                    "excerpt": excerpt,
+                }));
+            }
+        }
+        out
     }
 
     /// The verses of `r` as (number, text), and whether [`PASSAGE_LIMIT`] cut it short.
@@ -243,6 +383,38 @@ impl Tools {
         out.truncate(PASSAGE_LIMIT);
         (out, more)
     }
+}
+
+fn short_id(t: &Transcript) -> &str {
+    &t.recording_id[..SHORT_ID.min(t.recording_id.len())]
+}
+
+fn sermon_summary(t: &Transcript) -> Value {
+    json!({ "sermon": short_id(t), "title": t.title(), "length": transcribe::clock(t.duration_ms) })
+}
+
+/// The turns of speech that overlap `from..to`, up to [`SERMON_WORDS`] words.
+fn read_sermon(t: &Transcript, from: u64, to: u64) -> Value {
+    let mut words = 0;
+    let mut truncated = false;
+    let mut turns = Vec::new();
+    for seg in t.segments.iter().filter(|s| s.end_ms > from && s.start_ms < to) {
+        let n = seg.text.split_whitespace().count();
+        if words + n > SERMON_WORDS && !turns.is_empty() {
+            truncated = true;
+            break;
+        }
+        words += n;
+        turns
+            .push(json!({ "at": transcribe::clock(seg.start_ms), "speaker": seg.speaker, "text": seg.text }));
+    }
+    json!({
+        "sermon": short_id(t),
+        "title": t.title(),
+        "length": transcribe::clock(t.duration_ms),
+        "turns": turns,
+        "truncated": truncated || t.segments.iter().any(|s| s.start_ms >= to),
+    })
 }
 
 fn scope(s: &str) -> Result<Scope> {
@@ -351,7 +523,68 @@ mod tests {
     use super::*;
 
     fn tools() -> Tools {
-        Tools { translation: Arc::new(crate::bundled::load("kjv").unwrap()) }
+        Tools {
+            translation: Arc::new(crate::bundled::load("kjv").unwrap()),
+            sermons: Arc::new(vec![sermon()]),
+        }
+    }
+
+    fn sermon() -> Transcript {
+        let seg = |start_ms, end_ms, text: &str| transcribe::Segment {
+            start_ms,
+            end_ms,
+            speaker: Some("A".into()),
+            text: text.into(),
+        };
+        // A long turn: the match is about 3/4 of the way through it.
+        let mut long = "word ".repeat(150);
+        long.push_str("Nicodemus came at night but did not stay in the dark. ");
+        long.push_str(&"word ".repeat(42));
+        Transcript {
+            recording_id: "a40671b1-af55-4640-b039-ebbb5b09900e".into(),
+            recorded_at: 1_792_368_000,
+            duration_ms: 1_800_000,
+            language: Some("en".into()),
+            segments: vec![
+                seg(0, 60_000, "Good morning, church. Turn with me to John chapter three."),
+                seg(60_000, 260_000, &long),
+                seg(900_000, 960_000, "The wind blows where it wishes; new birth is God's work."),
+            ],
+        }
+    }
+
+    #[test]
+    fn sermon_search_finds_the_moment_inside_a_long_turn() {
+        let t = tools();
+        let r = t.run("search_sermons", &json!({ "query": "Nicodemus dark" })).unwrap();
+        assert_eq!(r["total"], 1);
+        let hit = &r["hits"][0];
+        assert_eq!(hit["sermon"], "a40671b1");
+        assert!(hit["excerpt"].as_str().unwrap().contains("did not stay in the dark"));
+        // The excerpt starts 25 words before word 150 of 203 (150 + 11 + 42), in a 200 s turn
+        // that starts at 60 s: 60 + 200 × 125 / 203 = 183.1 s.
+        assert_eq!(hit["at"], "3:03");
+        // Words spread across turns don't match as one passage.
+        assert_eq!(t.run("search_sermons", &json!({ "query": "morning wind" })).unwrap()["total"], 0);
+    }
+
+    #[test]
+    fn reading_a_sermon_from_a_moment() {
+        let t = tools();
+        let r = t.run("read_sermon", &json!({ "sermon": "a406", "from": "14:00", "minutes": 5 })).unwrap();
+        let turns = r["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 1, "only the turn inside 14:00–19:00: {r}");
+        assert_eq!(turns[0]["at"], "15:00");
+        let list = t.run("read_sermon", &json!({})).unwrap();
+        assert_eq!(list["sermons"][0]["title"], "Sermon · Oct 19, 2026");
+        assert!(t.run("read_sermon", &json!({ "sermon": "ffff" })).is_err());
+    }
+
+    #[test]
+    fn sermon_citations() {
+        let s = segments("As preached {{sermon a40671b1 12:30}}, not {{sermon nope 1:00}}.");
+        assert_eq!(s[1], Segment::Sermon { id: "a40671b1".into(), at_ms: 750_000 });
+        assert_eq!(s.len(), 3, "an invalid sermon citation stays text: {s:?}");
     }
 
     fn john(chapter: u8, verse: u8) -> VerseRef {

@@ -10,6 +10,8 @@
 //! linger import-notes <export.json>
 //! linger record [--source mic|system] [--seconds N]   (Enter stops)
 //! linger ask "what does born of water mean?" [--at "jn 3:5"] [--translation kjv]
+//! linger transcribe [<recording-id>]   (the latest untranscribed recording by default)
+//! linger sermons
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -57,6 +59,8 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         "import-notes" => import_notes(rest, data_dir),
         "record" => record(rest, data_dir),
         "ask" => ask(rest, data_dir),
+        "transcribe" => transcribe(rest, data_dir),
+        "sermons" => sermons(data_dir),
         "--version" | "-V" => {
             println!("linger {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -67,7 +71,7 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
                 include_str!("cli.rs")
                     .lines()
                     .skip(3)
-                    .take(12)
+                    .take(14)
                     .map(|l| l.trim_start_matches("//! "))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -238,7 +242,10 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
     use linger_core::chat::{Context as Reading, Tools};
     let cfg = Config::from_env().context("set AI_GATEWAY_API_KEY to ask the assistant")?;
     let lib = library(data_dir);
-    let tools = Tools { translation: lib.load(&translation_id(rest, &lib))? };
+    let tools = Tools {
+        translation: lib.load(&translation_id(rest, &lib))?,
+        sermons: Arc::new(linger_core::transcribe::all(data_dir)),
+    };
     let question = positional(rest).into_iter().cloned().collect::<Vec<_>>().join(" ");
     if question.trim().is_empty() {
         bail!("usage: linger ask \"question\" [--at \"jn 3:5\"]");
@@ -263,6 +270,36 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
     })?;
     println!();
     eprintln!("\n{} verses cited", answer.cited().len());
+    Ok(())
+}
+
+fn transcribe(rest: &[String], data_dir: &Path) -> Result<()> {
+    use linger_core::{recording, transcribe};
+    let aai = transcribe::AssemblyAi::from_env().context("set ASSEMBLYAI_API_KEY to transcribe")?;
+    let all = recording::list(data_dir);
+    let m = match positional(rest).first() {
+        Some(id) => {
+            all.iter().find(|m| m.id.starts_with(id.as_str())).context("no recording with that id")?
+        }
+        None => all
+            .iter()
+            .find(|m| m.ended_at.is_some() && transcribe::load(data_dir, &m.id).is_none())
+            .context("every recording is transcribed")?,
+    };
+    let t = aai.transcribe(data_dir, m, |s| eprintln!("{s}…"))?;
+    for s in &t.segments {
+        println!("[{}] {}: {}", transcribe::clock(s.start_ms), s.speaker.as_deref().unwrap_or("?"), s.text);
+    }
+    eprintln!("Saved {}", transcribe::path(data_dir, &m.id).display());
+    Ok(())
+}
+
+fn sermons(data_dir: &Path) -> Result<()> {
+    use linger_core::transcribe;
+    for t in transcribe::all(data_dir) {
+        let words: usize = t.segments.iter().map(|s| s.text.split_whitespace().count()).sum();
+        println!("{}  {}  {}  {words} words", t.recording_id, t.title(), transcribe::clock(t.duration_ms));
+    }
     Ok(())
 }
 

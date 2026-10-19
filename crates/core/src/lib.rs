@@ -18,6 +18,7 @@ pub mod reference;
 pub mod search;
 pub mod secrets;
 pub mod study;
+pub mod transcribe;
 pub mod usfm;
 pub mod xml;
 

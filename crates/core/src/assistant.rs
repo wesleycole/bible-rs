@@ -34,9 +34,13 @@ user's translation, never from memory. Cite each verse you draw on as {{Book Cha
 {{1 Corinthians 13:4-7}}; the app turns each citation into a link that opens the passage. Cite only \
 verses you have read with a tool.
 
-The user can record their church's sermons in Linger, and later you will be able to search them. \
-That isn't connected yet: if the user asks what their church or pastor taught, say you can't see \
-their sermons yet and answer from Scripture.
+The user records their church's sermons in Linger, and you can read the transcripts: \
+search_sermons finds what was said, read_sermon reads on from a moment. When the user asks what \
+their church, pastor or a sermon taught, search the sermons first, and say plainly when nothing was \
+found. Cite a moment in a sermon as {{sermon <id> <time>}}, for example {{sermon a40671b1 12:30}}, \
+using the id and time a tool gave you. Keep what the preacher said distinct from what Scripture \
+says, and quote a preacher only from a transcript. Transcripts are made by machine, so a word that \
+looks wrong may be a mishearing.
 
 Beyond the text, answer as a thoughtful, well-read guide would. Where Christian traditions differ, \
 say so briefly and fairly rather than taking a side. Keep answers short enough to read in the side \
@@ -194,6 +198,8 @@ fn tool_label(name: &str, input: &Value) -> String {
     match name {
         "get_passage" => format!("Reading {}", input["reference"].as_str().unwrap_or("a passage")),
         "search_bible" => format!("Searching for “{}”", input["query"].as_str().unwrap_or("")),
+        "search_sermons" => format!("Searching sermons for “{}”", input["query"].as_str().unwrap_or("")),
+        "read_sermon" => "Reading a sermon".into(),
         _ => "Looking something up".into(),
     }
 }

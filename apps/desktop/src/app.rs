@@ -195,6 +195,8 @@ impl History {
 
 pub enum TaskResult {
     Bibles(Result<Vec<linger_core::online::apibible::RemoteBible>, String>),
+    /// A sermon finished transcribing (or couldn't be).
+    Transcribed(Result<linger_core::transcribe::Transcript, String>),
 }
 
 /// `LINGER_SCROLL_PROBE`: scrolls continuously and records how long each frame's UI takes.
@@ -453,13 +455,20 @@ impl BibleApp {
         self.reader.jump(chapter, verse, flash);
     }
 
-    fn poll_tasks(&mut self, _ctx: &egui::Context) {
+    fn poll_tasks(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.task_rx.try_recv() {
             match r {
                 TaskResult::Bibles(r) => {
                     if let Some(s) = &mut self.settings_ui {
                         s.bibles_loaded(r);
                     }
+                }
+                TaskResult::Transcribed(Ok(t)) => {
+                    let words: usize = t.segments.iter().map(|s| s.text.split_whitespace().count()).sum();
+                    self.toast(ctx, format!("Transcribed the sermon: {words} words. Ask can search it now."));
+                }
+                TaskResult::Transcribed(Err(e)) => {
+                    self.toast(ctx, format!("Couldn't transcribe the sermon: {e}"))
                 }
             }
         }
@@ -932,10 +941,24 @@ impl BibleApp {
             Action::StopRecording => {
                 if let Some(r) = self.recording.take() {
                     let msg = match r.stop() {
-                        Ok(m) => format!(
-                            "Saved a {} recording",
-                            crate::recorder::duration_label(m.duration_ms() / 1000)
-                        ),
+                        Ok(m) => {
+                            let length = crate::recorder::duration_label(m.duration_ms() / 1000);
+                            match linger_core::transcribe::AssemblyAi::from_env() {
+                                Some(aai) if !m.chunks.is_empty() => {
+                                    let (tx, data_dir, ctx2) =
+                                        (self.task_tx.clone(), self.data_dir.clone(), ctx.clone());
+                                    std::thread::spawn(move || {
+                                        let r = aai
+                                            .transcribe(&data_dir, &m, |_| {})
+                                            .map_err(|e| format!("{e:#}"));
+                                        let _ = tx.send(TaskResult::Transcribed(r));
+                                        ctx2.request_repaint();
+                                    });
+                                    format!("Saved a {length} recording. Transcribing it…")
+                                }
+                                _ => format!("Saved a {length} recording"),
+                            }
+                        }
                         Err(e) => format!("Recording stopped: {e:#}"),
                     };
                     self.toast(ctx, msg);
@@ -2641,6 +2664,7 @@ impl eframe::App for BibleApp {
                     translation: &self.settings.translation,
                     chapter: self.reader.location.0,
                     selection: self.reader.selection,
+                    data_dir: &self.data_dir,
                 };
                 if ask.show(&mut child, p, &env, &mut actions) {
                     self.ask = None;
