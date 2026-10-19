@@ -37,9 +37,21 @@ pub fn ask_translation(preference: &str) -> &'static str {
 }
 
 /// For the model, with every question: "Passages you read and search come from the BSB (Berean
-/// Standard Bible)."
-pub fn tools_note(t: &Translation) -> String {
-    format!("Passages you read and search come from the {} ({}).", t.meta.abbrev, t.meta.name)
+/// Standard Bible)." When the user has transcribed sermons, it also says so: otherwise the model
+/// searches them only when asked about a sermon, and a question on a subject their church preached
+/// on would miss what was said.
+pub fn tools_note(tools: &Tools) -> String {
+    let t = &tools.translation;
+    let mut note = format!("Passages you read and search come from the {} ({}).", t.meta.abbrev, t.meta.name);
+    match tools.sermons.len() {
+        0 => {}
+        n => note.push_str(&format!(
+            " The user has recorded {n} sermon{} at their church. Use search_sermons on what the \
+             question is about, and bring in what was preached if it bears on it.",
+            if n == 1 { "" } else { "s" }
+        )),
+    }
+    note
 }
 
 /// What the user is looking at when they ask: sent with every question.
@@ -1413,10 +1425,18 @@ mod tests {
             reading: "NLT".into(),
         };
         assert_eq!(ctx.describe(), "The user is reading John 3 in the NLT. They have selected John 3:14–16.");
-        let bsb = crate::bundled::load("bsb").unwrap();
+        let translation = Arc::new(crate::bundled::load("bsb").unwrap());
+        let tools = Tools { translation, sermons: Arc::new(Vec::new()) };
         assert_eq!(
-            tools_note(&bsb),
+            tools_note(&tools),
             "Passages you read and search come from the BSB (Berean Standard Bible)."
         );
+        // With sermons recorded, it points the model at them for any question, not only ones
+        // that ask about a sermon.
+        let tools = Tools { sermons: Arc::new(vec![sermon(), sermon()]), ..tools };
+        assert!(tools_note(&tools).ends_with(
+            "The user has recorded 2 sermons at their church. Use search_sermons on what the question is \
+             about, and bring in what was preached if it bears on it."
+        ));
     }
 }

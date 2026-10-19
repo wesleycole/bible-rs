@@ -137,9 +137,9 @@ impl Conversation {
         mut on_event: impl FnMut(Event),
     ) -> Result<Message> {
         let mut content = Vec::new();
-        // What the user is reading, and which translation the tools read: per question, so the
-        // system prompt stays the same for everyone.
-        let note = chat::tools_note(&tools.translation);
+        // What the user is reading, which translation the tools read and whether they have
+        // sermons: per question, so the system prompt stays the same for everyone.
+        let note = chat::tools_note(tools);
         let about = match context {
             Some(c) => format!("{} {note}", c.describe()),
             None => note,
