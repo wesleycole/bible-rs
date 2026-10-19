@@ -11,14 +11,15 @@
 | `Linger.app` | The app itself (universal, signed, stapled) |
 
 The app runs on macOS 11 or later, on Apple silicon and Intel. The script signs it with the
-certificate "Developer ID Application: Fabrika LLC (5S3KCRYBD2)" and turns on the hardened runtime.
+certificate "Developer ID Application: WESLEY MYRICK COLE (66W3WWYP3B)" and turns on the hardened
+runtime.
 Its one entitlement, microphone input for recording sermons, is explained in
 `packaging/macos/entitlements.plist`.
 
 ## One-time setup
 
 1. **Signing certificate.** `security find-identity -v -p codesigning` must list
-   `Developer ID Application: Fabrika LLC (5S3KCRYBD2)`. To sign with another identity, set
+   `Developer ID Application: WESLEY MYRICK COLE (66W3WWYP3B)`. To sign with another identity, set
    `SIGN_IDENTITY="…"`.
 2. **Tools.** Xcode or its command line tools, rustup, and [uv](https://docs.astral.sh/uv/) or
    Python 3.10+. The script adds the two Rust targets. It installs dmgbuild, the tool that lays out
@@ -31,7 +32,7 @@ Its one entitlement, microphone input for recording sermons, is explained in
    under Sign-In and Security:
 
    ```sh
-   xcrun notarytool store-credentials bible-notary --apple-id <apple-id-email> --team-id 5S3KCRYBD2
+   xcrun notarytool store-credentials bible-notary --apple-id <apple-id-email> --team-id 66W3WWYP3B
    ```
 
    Or with an App Store Connect API key with the Developer role, made under Users and Access,
@@ -73,12 +74,12 @@ The website's Download button redirects to
 GitHub serves from the newest published release. Every release must therefore include
 `linger-universal.dmg`, and the site switches to a new version the moment you publish it.
 
-v0.1.0 went out signed but not notarized. To replace a published release's files, build the same
-version, upload with `--clobber`, then edit the release notes:
+To replace a published release's files, build the same version, upload with `--clobber`, then
+edit the release notes:
 
 ```sh
-gh release upload v0.1.0 dist/linger-universal.dmg dist/linger-0.1.0-universal.dmg \
-  dist/linger-0.1.0-universal.zip dist/linger-0.1.0-SHA256SUMS.txt --clobber
+gh release upload v<version> dist/linger-universal.dmg dist/linger-<version>-universal.dmg \
+  dist/linger-<version>-universal.zip dist/linger-<version>-SHA256SUMS.txt --clobber
 ```
 
 Other options:
@@ -110,8 +111,8 @@ temporary keychain and deletes that keychain when it finishes.
 ## Notes
 
 - **Keychain.** API keys stay in the login Keychain. Each item trusts the app's designated
-  requirement (bundle ID `com.wesleycole.linger.mac`, team 5S3KCRYBD2), so every release signed this way
-  reads them without a prompt. Changing the bundle ID or the signing team makes every user approve
+  requirement (bundle ID `com.wesleycole.linger.mac`, team 66W3WWYP3B), so every release signed this
+  way reads them without a prompt. Changing the bundle ID or the signing team makes every user approve
   access once. A key saved by an ad-hoc signed development build asks for approval once, the first
   time a release build reads it.
 - **Updates.** Settings › About › Check for Updates… opens the latest release page in the browser.

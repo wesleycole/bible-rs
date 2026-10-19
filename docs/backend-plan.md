@@ -88,7 +88,7 @@ What follows for the product:
 - **ESV, NLT and API.Bible keys.**
   - The one-click integrations, and users' own API.Bible Starter keys, stay out of release builds until Crossway, Tyndale and API.Bible answer in writing.
   - "Import a module you own" stays available.
-  - If the answers come back no, the paths are a commercial ESV license held by Fabrika LLC, and API.Bible Pro at $29/month plus per-translation fees. Both are deferred until revenue justifies them.
+  - If the answers come back no, the paths are a commercial ESV license held by our company, and API.Bible Pro at $29/month plus per-translation fees. Both are deferred until revenue justifies them.
 - **Sermons.**
   - The audio and the preaching belong to the church. Transcripts already reach Claude through `search_sermons` and `read_sermon`.
   - The consent sheet names both vendors, and the user confirms they may record. A church plan (see Later) settles rights properly.
@@ -718,6 +718,6 @@ moves by the audio's real duration, and nothing is left in Blob or AssemblyAI af
 | Do Clerk OAuth applications, passkeys and loopback redirects work on Hobby for a second application? | Clerk dashboard | Phase 2 |
 | Does Clerk revoke Sign in with Apple tokens on user deletion? | Clerk docs or support | Phase 2 |
 | What are the exact Gateway field names for ZDR and provider pinning on `/v1/messages`? | Vercel docs | Phase 1 |
-| Is Stripe Managed Payments available to Fabrika LLC? | Stripe | Phase 3 |
+| Is Stripe Managed Payments available to our company? | Stripe | Phase 3 |
 | How accurate is AssemblyAI on reverberant church audio? Run a bake-off on 3–5 real sermons against ElevenLabs Scribe v2 | Us | Phase 4 (already in use, so this is a quality check) |
 | Will Free's 30 Haiku questions convert, or does Free need a few Sonnet questions to show the difference? | First month's data | Phase 5 retune |

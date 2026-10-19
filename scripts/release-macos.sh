@@ -12,7 +12,7 @@
 #                                             # open it once downloaded
 #   scripts/release-macos.sh --ad-hoc         # no Developer ID (CI without secrets)
 #
-#   SIGN_IDENTITY    default "Developer ID Application: Fabrika LLC (5S3KCRYBD2)"
+#   SIGN_IDENTITY    default "Developer ID Application: WESLEY MYRICK COLE (66W3WWYP3B)"
 #   NOTARY_PROFILE   notarytool keychain profile, default bible-notary
 #   NOTARY_KEYCHAIN  keychain holding that profile, default the login keychain
 #   ALLOW_DIRTY=1    build even though the working tree has uncommitted changes
@@ -60,7 +60,7 @@ DMG="dist/$NAME.dmg"
 LATEST_DMG="dist/linger-universal.dmg"
 ZIP="dist/$NAME.zip"
 SUMS="dist/linger-${VERSION}-SHA256SUMS.txt"
-SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: Fabrika LLC (5S3KCRYBD2)}"
+SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: WESLEY MYRICK COLE (66W3WWYP3B)}"
 TEAM_ID="$(sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p' <<<"$SIGN_IDENTITY")"
 NOTARY_PROFILE="${NOTARY_PROFILE:-bible-notary}"
 TMP="$(cd "$(mktemp -d)" && pwd -P)" # /private/var/…, the path `mount` reports
