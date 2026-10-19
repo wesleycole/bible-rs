@@ -5,6 +5,11 @@ the earlier proxy research, now that the deciding facts are settled: Linger alre
 **Vercel Pro** and **Convex**, wants a gateway for **easy model switching**, and will be sold as
 **Free / Pro**.
 
+> **Superseded in part by [context-plan.md](context-plan.md).** Linger's notes, recordings, photos
+> and Recents now live in Convex and sync across devices. Convex file storage replaces Vercel Blob,
+> sermon transcription moves from the proxy into Convex, and the proxy keeps Ask and billing. Where
+> this plan says data stays on the device, the context plan wins.
+
 ## Summary
 
 Linger stays a local-first app. Reading, notes, highlights, chat history and sermon transcripts live

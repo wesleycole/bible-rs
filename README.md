@@ -3,9 +3,10 @@
 A very fast, native Bible reader for macOS, Linux and iOS, written in Rust — beautifully
 typeset, searchable as you type, with highlights, notes and bookmarks kept on your device.
 
-Linger is growing into a study companion grounded in the sermons you've heard: record a sermon
-in the room, capture one playing on your computer, or import a file, and ask questions answered
-from your own sermon transcripts and the Bible. That part is in progress; everything below
+Linger is growing into a personal Bible context manager. Record the sermons you hear, photograph
+your handwritten notes, the slides and the pages of the books you study (circling what matters),
+and write notes as you read. Ask then answers your questions from that library and the Bible, on
+every device. That part is in progress ([the plan](docs/context-plan.md)); everything below
 describes the reader as it works today.
 
 Linger began as a fork of [bible-rs](https://github.com/michaelshimeles/bible-rs) (MIT).
