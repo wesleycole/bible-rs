@@ -215,7 +215,7 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   raised numbers are.
 - **The reader runs under the toolbar.** The toolbar is a row of glass capsules over the top of
   the reader; at rest it is transparent over the page, and once text scrolls beneath it takes the
-  translucent toolbar material and a hairline. Each chapter ends with 80 pt of space, more than
+  translucent toolbar material, with no hairline. Each chapter ends with 80 pt of space, more than
   the toolbar plus the page's top margin, so a chapter scrolled to its start shows nothing of the
   previous one above it.
 - **Floating source list.** The sidebar is a 256 pt panel inset 8 pt from the window's edges,

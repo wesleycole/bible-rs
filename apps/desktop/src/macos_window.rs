@@ -33,7 +33,7 @@ pub fn install_unified_toolbar(handle: &impl HasWindowHandle) {
     toolbar.setAllowsUserCustomization(false);
     window.setToolbar(Some(&toolbar));
     window.setToolbarStyle(NSWindowToolbarStyle::Unified);
-    // The egui toolbar draws its own hairline.
+    // The toolbar has no hairline under it.
     window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
 }
 

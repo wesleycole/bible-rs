@@ -1295,11 +1295,6 @@ impl BibleApp {
         let bar = egui::Rect::from_min_size(main.min, vec2(main.width(), self.chrome.height));
         if material > 0.0 {
             ui.painter().rect_filled(bar, 0.0, p.toolbar.gamma_multiply(material));
-            ui.painter().hline(
-                bar.x_range(),
-                bar.bottom() - 0.5,
-                Stroke::new(1.0, p.separator.gamma_multiply(material)),
-            );
         }
         let cy = bar.center().y;
         let mut items = Vec::new();
