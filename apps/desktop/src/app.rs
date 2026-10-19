@@ -1470,8 +1470,8 @@ impl BibleApp {
             return;
         }
 
-        // Trailing: one capsule, Search and More (frame 34), which holds the view tools (parallel,
-        // text, Ask); while searching, the field in its place, narrower in a compact window.
+        // Trailing: one capsule, Search, Ask and More (frame 34), which holds the view tools
+        // (parallel, text); while searching, the field in its place, narrower in a compact window.
         // Compactness is judged at the width the bar is heading for, so a sliding sidebar
         // switches it at once rather than halfway.
         let compact = bar.width() + extent * (open - self.sidebar_motion.target()) < COMPACT_TOOLBAR;
@@ -1510,22 +1510,31 @@ impl BibleApp {
                     on: false,
                     icon: crate::icons::search_thin,
                 },
+                CapsuleButton {
+                    tooltip: "Ask (⌘J)",
+                    enabled: true,
+                    on: self.ask.is_some(),
+                    icon: crate::icons::bubble,
+                },
                 CapsuleButton { tooltip: "More", enabled: true, on: false, icon: crate::icons::ellipsis },
             ];
-            let left = bar.right() - TRAILING_INSET - 2.0 * BUTTON_WIDTH;
+            let left = bar.right() - TRAILING_INSET - 3.0 * BUTTON_WIDTH;
             let (r, resp) = widgets::button_capsule(ui, p, left, cy, BUTTON_WIDTH, false, &buttons);
             if resp[0].clicked() {
                 actions.push(Action::OpenSearch(None));
             }
+            if resp[1].clicked() {
+                actions.push(Action::ToggleAsk);
+            }
             if egui::Popup::is_id_open(ui.ctx(), Id::new(MORE_POPUP)) {
                 // Pressed while its menu is open.
-                let b = resp[1].rect;
+                let b = resp[2].rect;
                 ui.painter().rect_filled(b, CAPSULE_HEIGHT / 2.0, p.fill);
                 let icon = egui::Rect::from_center_size(b.center(), vec2(20.0, 20.0));
                 crate::icons::ellipsis(ui.painter(), icon, p.ink);
             }
-            self.more_menu(ui, &resp[1], actions);
-            text_anchor = Some((resp[1].clone(), false));
+            self.more_menu(ui, &resp[2], actions);
+            text_anchor = Some((resp[2].clone(), false));
             trailing_left = r.left();
             items.push(r);
         }
@@ -1952,10 +1961,9 @@ impl BibleApp {
                 .unwrap_or_default()
         };
         let sidebar = if self.settings.sidebar_open { "Hide Sidebar" } else { "Show Sidebar" };
-        let items: [Option<(widgets::IconFn, &str, String, Action)>; 6] = [
+        let items: [Option<(widgets::IconFn, &str, String, Action)>; 5] = [
             Some((crate::icons::columns, "Parallel Translations", chord("parallel"), Action::ToggleParallel)),
             Some((crate::icons::text_size, "Text & Layout", "⌘T".into(), Action::TextFormat)),
-            Some((crate::icons::sparkle, "Ask", chord("ask"), Action::ToggleAsk)),
             None,
             Some((crate::icons::sidebar, sidebar, chord("sidebar"), Action::ToggleSidebar)),
             Some((crate::icons::expand, "Focus Mode", chord("focus"), Action::ToggleFocus)),

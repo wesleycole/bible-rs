@@ -66,7 +66,7 @@ impl VerseMenu {
             Line::Separator,
             item(icons::compare, "Compare Translations", "C", Some(Action::Compare)),
             item(icons::columns, "Open in Parallel", "⇧⌘P", Some(Action::ToggleParallel)),
-            item(icons::sparkle, "Ask About This", "", Some(Action::AskAboutSelection)),
+            item(icons::bubble, "Ask About This", "", Some(Action::AskAboutSelection)),
             Line::Separator,
             item(icons::text_cursor, "Select Verse Range", "⇧-click", None),
         ]

@@ -718,24 +718,16 @@ pub fn speaker(p: &Painter, r: Rect, c: Color32) {
     g.line(&outer);
 }
 
-/// A four-pointed sparkle with a small one beside it: Ask.
-pub fn sparkle(p: &Painter, r: Rect, c: Color32) {
+/// A speech bubble with its tail at the lower left: Ask.
+pub fn bubble(p: &Painter, r: Rect, c: Color32) {
     let g = Grid::new(p, r, c);
-    let star = |cx: f32, cy: f32, s: f32| {
-        let k = s * 0.28;
-        vec![
-            (cx, cy - s),
-            (cx + k, cy - k),
-            (cx + s, cy),
-            (cx + k, cy + k),
-            (cx, cy + s),
-            (cx - k, cy + k),
-            (cx - s, cy),
-            (cx - k, cy - k),
-        ]
-    };
-    g.closed(&star(8.75, 11.0, 6.25));
-    g.closed(&star(15.0, 4.75, 2.5));
+    let mut pts = vec![(9.0, 14.25)];
+    pts.extend(Grid::arc(13.75, 10.75, 3.5, FRAC_PI_2, 0.0));
+    pts.extend(Grid::arc(13.75, 7.25, 3.5, 0.0, -FRAC_PI_2));
+    pts.extend(Grid::arc(6.25, 7.25, 3.5, -FRAC_PI_2, -PI));
+    pts.extend(Grid::arc(6.25, 10.75, 3.5, PI, FRAC_PI_2 + 0.35));
+    pts.push((5.0, 17.0));
+    g.closed(&pts);
 }
 
 /// An arrow pointing up (send), drawn heavier to sit on a filled circle.

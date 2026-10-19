@@ -337,7 +337,7 @@ impl AskPanel {
 
     fn header(&mut self, ui: &mut Ui, p: &Palette, env: &AskEnv<'_>, rect: Rect) -> bool {
         let cy = rect.top() + HEADER / 2.0;
-        icons::sparkle(
+        icons::bubble(
             ui.painter(),
             Rect::from_center_size(pos2(rect.left() + PAD + 10.0, cy), vec2(20.0, 20.0)),
             p.accent,
