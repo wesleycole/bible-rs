@@ -3,8 +3,9 @@
 //! Capture runs on its own thread and hands 100 ms blocks to `linger_core::recording::ChunkWriter`,
 //! which writes 30-second chunks to the data folder. On Linux it reads from PulseAudio (or
 //! PipeWire's PulseAudio server): the default source for the microphone, the default sink's
-//! monitor for system audio. The server resamples to 16 kHz mono for us. macOS (ScreenCaptureKit,
-//! AVFoundation) is not written yet.
+//! monitor for system audio. The server resamples to 16 kHz mono for us. On macOS it reads the
+//! default input device through Core Audio, or a process tap of everything playing (macOS 14.2
+//! and later), and resamples itself; see `recorder/macos.rs`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -27,6 +28,8 @@ pub struct Recording {
 #[derive(Default)]
 struct Shared {
     stop: AtomicBool,
+    /// macOS is asking the user for permission; no audio yet.
+    waiting: AtomicBool,
     /// f32 bits: the level of the latest block, 0–1.
     level: AtomicU32,
     samples: AtomicU64,
@@ -54,7 +57,12 @@ impl Recording {
                 };
                 let mut block = vec![0i16; SAMPLE_RATE as usize / 10];
                 while !shared.stop.load(Ordering::Relaxed) {
-                    capture.read(&mut block)?;
+                    // Nothing yet: macOS is asking the user for permission.
+                    let got = capture.read(&mut block)?;
+                    shared.waiting.store(!got, Ordering::Relaxed);
+                    if !got {
+                        continue;
+                    }
                     writer.push(&block)?;
                     shared.level.store(recording::level(&block).to_bits(), Ordering::Relaxed);
                     shared.samples.store(writer.samples(), Ordering::Relaxed);
@@ -76,6 +84,11 @@ impl Recording {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// macOS is asking the user for permission, and the recording starts at their answer.
+    pub fn waiting(&self) -> bool {
+        self.shared.waiting.load(Ordering::Relaxed)
     }
 
     /// Loudness of the last 100 ms, 0–1.
@@ -109,9 +122,9 @@ impl Drop for Recording {
     }
 }
 
-/// Whether this build can record from `source` at all.
+/// Whether this build, on this machine, can record from `source` at all.
 pub fn supported(source: Source) -> bool {
-    backend::SUPPORTED.contains(&source)
+    backend::supported(source)
 }
 
 #[cfg(target_os = "linux")]
@@ -123,7 +136,9 @@ mod backend {
     use libpulse_simple_binding::Simple;
     use linger_core::recording::{SAMPLE_RATE, Source};
 
-    pub const SUPPORTED: &[Source] = &[Source::Microphone, Source::SystemAudio];
+    pub fn supported(source: Source) -> bool {
+        matches!(source, Source::Microphone | Source::SystemAudio)
+    }
 
     pub struct Capture {
         pulse: Simple,
@@ -159,24 +174,31 @@ mod backend {
     }
 
     impl Capture {
-        pub fn read(&mut self, out: &mut [i16]) -> Result<()> {
+        pub fn read(&mut self, out: &mut [i16]) -> Result<bool> {
             self.bytes.resize(out.len() * 2, 0);
             self.pulse.read(&mut self.bytes).map_err(|e| anyhow::anyhow!("recording failed: {e}"))?;
             let (pairs, _) = self.bytes.as_chunks::<2>();
             for (s, b) in out.iter_mut().zip(pairs) {
                 *s = i16::from_le_bytes(*b);
             }
-            Ok(())
+            Ok(true)
         }
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as backend;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod backend {
     use anyhow::Result;
     use linger_core::recording::Source;
 
-    pub const SUPPORTED: &[Source] = &[];
+    pub fn supported(_: Source) -> bool {
+        false
+    }
 
     pub struct Capture;
 
@@ -185,7 +207,7 @@ mod backend {
     }
 
     impl Capture {
-        pub fn read(&mut self, _: &mut [i16]) -> Result<()> {
+        pub fn read(&mut self, _: &mut [i16]) -> Result<bool> {
             unreachable!("open never succeeds")
         }
     }
@@ -204,5 +226,21 @@ mod tests {
         assert_eq!(super::duration_label(0), "0:00");
         assert_eq!(super::duration_label(245), "4:05");
         assert_eq!(super::duration_label(3729), "1:02:09");
+    }
+
+    /// A second of audio at any device rate is a second at 16 kHz, and a steady signal keeps its
+    /// level.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn downsampling_keeps_time_and_level() {
+        for rate in [8_000, 16_000, 44_100, 48_000, 96_000] {
+            let mut down = super::backend::Downsample::new(rate);
+            let mut out = std::collections::VecDeque::new();
+            for _ in 0..rate * 3 {
+                down.push(0.5, &mut out);
+            }
+            assert!(out.len().abs_diff(48_000) <= 1, "{rate} Hz gave {} samples for 3 s", out.len());
+            assert!(out.iter().all(|&s| s == 16383), "{rate} Hz changed the level");
+        }
     }
 }

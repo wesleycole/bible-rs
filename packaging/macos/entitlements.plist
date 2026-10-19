@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Hardened-runtime entitlements for linger. It needs none:
+  Hardened-runtime entitlements for linger.
+  - device.audio-input: recording a sermon from the microphone (src/recorder.rs). Without it the
+    hardened runtime hands the app silence even after the user allows the microphone. The prompt's
+    wording is NSMicrophoneUsageDescription in the Info.plist that scripts/bundle-macos.sh writes.
+    Recording the computer's audio (a Core Audio process tap) needs no entitlement, only
+    NSAudioCaptureUsageDescription there.
+  It needs nothing else:
   - API keys live in the login Keychain through the legacy SecKeychain API (keyring's
     "keychain" store). That needs no keychain-access-groups entitlement and no provisioning
     profile. Each item's access list names the app's designated requirement (bundle ID and
@@ -12,5 +18,7 @@
   Add an entitlement only with a note saying which feature needs it.
 -->
 <plist version="1.0">
-<dict/>
+<dict>
+  <key>com.apple.security.device.audio-input</key><true/>
+</dict>
 </plist>

@@ -2049,9 +2049,14 @@ impl BibleApp {
                 vec2(RECORDING_PILL_WIDTH, CAPSULE_HEIGHT),
             );
             widgets::capsule(ui.painter(), rect, p);
-            let what = match rec.source {
-                Source::SystemAudio => "Recording this computer's audio. Click to stop.",
-                _ => "Recording from the microphone. Click to stop.",
+            let waiting = rec.waiting();
+            let what = match (waiting, rec.source) {
+                (true, _) => {
+                    "Waiting for permission. Allow Linger in the macOS prompt and recording \
+                              starts. Click to cancel."
+                }
+                (false, Source::SystemAudio) => "Recording this computer's audio. Click to stop.",
+                (false, _) => "Recording from the microphone. Click to stop.",
             };
             let resp = ui.interact(rect, Id::new("recording-pill"), Sense::click()).on_hover_text(what);
             if resp.hovered() {
@@ -2059,27 +2064,28 @@ impl BibleApp {
             }
             let t = ui.input(|i| i.time);
             let pulse = 0.55 + 0.45 * (t * std::f64::consts::PI).cos().abs() as f32;
-            crate::icons::dot(
-                ui.painter(),
-                egui::pos2(rect.left() + 15.0, cy),
-                4.5,
-                p.danger.gamma_multiply(pulse),
-            );
-            ui.painter().text(
-                egui::pos2(rect.left() + 26.0, cy),
-                Align2::LEFT_CENTER,
-                crate::recorder::duration_label(rec.elapsed().as_secs()),
-                theme::text::UI_STRONG.font(),
-                p.ink,
-            );
-            // Three bars that rise with the level, so it's clear sound is coming in.
-            let level = (rec.level() * 4.0).sqrt().min(1.0);
-            for (i, threshold) in [0.05f32, 0.35, 0.65].into_iter().enumerate() {
-                let h = 5.0 + 7.0 * ((level - threshold) / (1.0 - threshold)).clamp(0.0, 1.0);
-                let x = rect.right() - 26.0 + i as f32 * 5.0;
-                let bar = egui::Rect::from_center_size(egui::pos2(x, cy), vec2(2.5, h));
-                let c = if level > threshold { p.ink_2 } else { p.ink_3 };
-                ui.painter().rect_filled(bar, 1.25, c);
+            // Until the user answers macOS's prompt nothing is recorded: a grey dot and no clock.
+            let dot = if waiting { p.ink_3.gamma_multiply(pulse) } else { p.danger.gamma_multiply(pulse) };
+            crate::icons::dot(ui.painter(), egui::pos2(rect.left() + 15.0, cy), 4.5, dot);
+            let label = if waiting {
+                "Waiting…".to_owned()
+            } else {
+                crate::recorder::duration_label(rec.elapsed().as_secs())
+            };
+            let font = if waiting { theme::text::UI.font() } else { theme::text::UI_STRONG.font() };
+            let ink = if waiting { p.ink_2 } else { p.ink };
+            ui.painter().text(egui::pos2(rect.left() + 26.0, cy), Align2::LEFT_CENTER, label, font, ink);
+            // Three bars that rise with the level, lit in the recording red, so it's clear sound is
+            // coming in. Silence leaves them as grey stubs.
+            if !waiting {
+                let level = (rec.level() * 4.0).sqrt().min(1.0);
+                for (i, threshold) in [0.02f32, 0.3, 0.6].into_iter().enumerate() {
+                    let h = 4.0 + 10.0 * ((level - threshold) / (1.0 - threshold)).clamp(0.0, 1.0);
+                    let x = rect.right() - 26.0 + i as f32 * 5.0;
+                    let bar = egui::Rect::from_center_size(egui::pos2(x, cy), vec2(3.0, h));
+                    let c = if level > threshold { p.danger } else { p.ink_3 };
+                    ui.painter().rect_filled(bar, 1.5, c);
+                }
             }
             ui.ctx().request_repaint_after(Duration::from_millis(100));
             if resp.clicked() {

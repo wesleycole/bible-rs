@@ -410,7 +410,9 @@ fn record(rest: &[String], data_dir: &Path) -> Result<()> {
     {
         std::thread::sleep(std::time::Duration::from_millis(250));
         let bars = (rec.level() * 4.0).sqrt().min(1.0) * 30.0;
-        eprint!("\r{:>5.1}s  {:<30}", rec.elapsed().as_secs_f32(), "▮".repeat(bars as usize));
+        let meter =
+            if rec.waiting() { "waiting for permission".to_owned() } else { "▮".repeat(bars as usize) };
+        eprint!("\r{:>5.1}s  {meter:<30}", rec.elapsed().as_secs_f32());
         let _ = std::io::stderr().flush();
     }
     let m = rec.stop()?;

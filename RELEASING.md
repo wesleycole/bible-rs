@@ -12,7 +12,8 @@
 
 The app runs on macOS 11 or later, on Apple silicon and Intel. The script signs it with the
 certificate "Developer ID Application: Fabrika LLC (5S3KCRYBD2)" and turns on the hardened runtime.
-The app needs no entitlements; `packaging/macos/entitlements.plist` says why.
+Its one entitlement, microphone input for recording sermons, is explained in
+`packaging/macos/entitlements.plist`.
 
 ## One-time setup
 

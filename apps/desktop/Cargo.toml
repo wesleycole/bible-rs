@@ -41,8 +41,11 @@ libc = "0.2"
 libpulse-binding = "2.30"
 libpulse-simple-binding = "2.29"
 
-# Native menu bar and window chrome (macOS only).
+# Native menu bar and window chrome, and recording sermons (macOS only): the microphone through
+# cpal, the computer's audio through a Core Audio process tap.
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+cpal = "0.18"
 muda = { version = "0.21", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
@@ -59,12 +62,30 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSWindow",
     "NSWorkspace",
 ] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "AVCaptureDevice",
+    "AVMediaFormat",
+] }
+objc2-core-audio = { version = "0.3", default-features = false, features = [
+    "std",
+    "AudioHardware",
+    "objc2",
+    "objc2-core-audio-types",
+    "objc2-foundation",
+] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary"] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSArray",
+    "NSDictionary",
     "NSGeometry",
     "NSString",
     "NSURL",
+    "NSUUID",
+    "NSValue",
 ] }
 raw-window-handle = "0.6"
 winit = { version = "0.30", default-features = false }

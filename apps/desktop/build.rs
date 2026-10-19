@@ -46,6 +46,12 @@ const SHADOWS: [&str; 5] = ["control", "panel", "popover", "modal", "knob"];
 
 fn main() {
     println!("cargo:rerun-if-changed={TOKENS}");
+    // Core Audio's process-tap functions are new in macOS 14.2, and cpal (and the recorder) refer
+    // to them. Linked normally, the app wouldn't launch on older macOS; weakly, they're null there,
+    // and `recorder::supported` checks before using them.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-weak_framework,CoreAudio");
+    }
     let src = std::fs::read_to_string(TOKENS).unwrap_or_else(|e| panic!("{TOKENS}: {e}"));
     let json: Value = serde_json::from_str(&src).unwrap_or_else(|e| panic!("{TOKENS}: {e}"));
     let mut out = String::from(

@@ -78,6 +78,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSRequiresAquaSystemAppearance</key><false/>
+  <key>NSMicrophoneUsageDescription</key><string>Linger records sermons from the microphone so it can transcribe them.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>Linger records sermons playing on this computer, such as a livestream, so it can transcribe them.</string>
   <key>NSHumanReadableCopyright</key><string>${COPYRIGHT}. MIT License. Bundled translations are public domain.</string>
 </dict>
 </plist>
