@@ -1,4 +1,4 @@
-//! The reading view: continuous scroll through all 1,189 chapters.
+//! The reading view: one chapter at a time, or continuous scroll through all 1,189 chapters.
 //!
 //! The scroll position is an *anchor* — a chapter plus a pixel offset into it — rather than a
 //! position in one giant document, so only the chapters on screen are ever laid out and
@@ -47,6 +47,8 @@ pub struct Env<'a> {
     /// The reader's width is changing frame by frame (the sidebar sliding): typeset only what is
     /// on screen, not the neighbouring chapters, which would be laid out again next frame.
     pub resizing: bool,
+    /// Scroll on into the neighbouring chapters; otherwise only the anchor's chapter scrolls.
+    pub continuous: bool,
 }
 
 struct Cached {
@@ -77,6 +79,8 @@ pub struct Reader {
     /// From the reader's top edge to the top of a chapter scrolled to its start.
     top_pad: f32,
     toolbar: f32,
+    /// `Env::continuous`, as of the last frame.
+    continuous: bool,
     /// Whether text is scrolled beneath the toolbar (it then takes the toolbar material).
     pub under_toolbar: bool,
     /// When the view last scrolled: the scroller shows while scrolling, like macOS overlay scrollers.
@@ -118,6 +122,7 @@ impl Reader {
             viewport_h: 800.0,
             top_pad: 76.0,
             toolbar: 52.0,
+            continuous: true,
             under_toolbar: false,
             scrolled_at: f64::NEG_INFINITY,
             location: (chapter, verse.max(1)),
@@ -211,7 +216,7 @@ impl Reader {
         // Distance from the viewport top to the verse.
         let mut y = a.top - self.anchor.offset;
         if c != self.anchor.chapter {
-            if c > self.anchor.chapter {
+            if c > self.anchor.chapter && self.continuous {
                 match self.cache.get(&self.anchor.chapter) {
                     Some(cur) if c.0 == self.anchor.chapter.0 + 1 => y += cur.layout.height,
                     _ => {
@@ -341,6 +346,7 @@ impl Reader {
         let p = env.theme.palette();
         ui.painter().rect_filled(rect, 0.0, p.paper);
         self.toolbar = env.toolbar;
+        self.continuous = env.continuous;
         self.top_pad = env.toolbar + layout::PAGE_TOP;
         self.marker_rect = None;
         self.selection_rect = None;
@@ -448,10 +454,16 @@ impl Reader {
         if let Some(pos) =
             bar_resp.interact_pointer_pos().filter(|_| bar_resp.dragged() || bar_resp.clicked())
         {
-            let f = ((pos.y - bar.top()) / bar.height()).clamp(0.0, 0.9999) * CHAPTER_COUNT as f32;
-            let c = ChapterIdx(f.floor() as u16);
-            let l = self.chapter_layout(ui, env, &geom, c);
-            self.anchor = Anchor { chapter: c, offset: f.fract() * l.height };
+            let f = ((pos.y - bar.top()) / bar.height()).clamp(0.0, 0.9999);
+            if env.continuous {
+                let f = f * CHAPTER_COUNT as f32;
+                let c = ChapterIdx(f.floor() as u16);
+                let l = self.chapter_layout(ui, env, &geom, c);
+                self.anchor = Anchor { chapter: c, offset: f.fract() * l.height };
+            } else {
+                let h = self.chapter_layout(ui, env, &geom, self.anchor.chapter).height;
+                self.anchor.offset = f * self.max_offset(h);
+            }
             self.scroll_remaining = 0.0;
             self.deferred_jump = None;
             dy = 0.0;
@@ -488,7 +500,7 @@ impl Reader {
         // The furthest verse in view, per chapter painted.
         let mut in_view: Vec<(ChapterIdx, u8)> = Vec::new();
         while let Some(ch) = c {
-            if y > rect.bottom() {
+            if y > rect.bottom() || (!env.continuous && ch != self.anchor.chapter) {
                 break;
             }
             let l = self.chapter_layout(ui, env, &geom, ch);
@@ -719,8 +731,24 @@ impl Reader {
         self.paint_scrollbar(ui, &bar, &bar_resp, p, env);
     }
 
-    /// Keeps the anchor inside its chapter, moving to neighbours as needed.
+    /// The furthest a chapter of height `h` scrolls on its own: until its end reaches the
+    /// bottom of the view.
+    fn max_offset(&self, h: f32) -> f32 {
+        (h + self.top_pad - self.viewport_h).max(0.0)
+    }
+
+    /// Keeps the anchor inside its chapter, moving to neighbours as needed (or, one chapter at a
+    /// time, stopping at its ends).
     fn normalize(&mut self, ui: &Ui, env: &Env<'_>, geom: &Geometry) {
+        if !env.continuous {
+            let h = self.chapter_layout(ui, env, geom, self.anchor.chapter).height;
+            let clamped = self.anchor.offset.clamp(0.0, self.max_offset(h));
+            if clamped != self.anchor.offset {
+                self.anchor.offset = clamped;
+                self.scroll_remaining = 0.0;
+            }
+            return;
+        }
         for _ in 0..64 {
             if self.anchor.offset < 0.0 {
                 match self.anchor.chapter.prev() {
@@ -782,9 +810,19 @@ impl Reader {
             painter.rect_filled(bar.expand(1.0), CornerRadius::same(6), p.fill.gamma_multiply(0.8));
         }
         let h = self.cache.get(&self.anchor.chapter).map_or(1.0, |c| c.layout.height.max(1.0));
-        let frac =
-            (self.anchor.chapter.0 as f32 + (self.anchor.offset / h).clamp(0.0, 1.0)) / CHAPTER_COUNT as f32;
-        let thumb_h = 36.0;
+        let (frac, thumb_h) = if env.continuous {
+            let f = (self.anchor.chapter.0 as f32 + (self.anchor.offset / h).clamp(0.0, 1.0))
+                / CHAPTER_COUNT as f32;
+            (f, 36.0)
+        } else {
+            // The chapter alone: a thumb as long as the part of it in view.
+            let max = self.max_offset(h);
+            if max == 0.0 {
+                return;
+            }
+            let shown = (self.viewport_h / (h + self.top_pad)).clamp(0.0, 1.0);
+            (self.anchor.offset / max, (bar.height() * shown).max(36.0))
+        };
         let ty = bar.top() + frac * (bar.height() - thumb_h);
         let thumb = Rect::from_min_size(pos2(bar.left() + 2.0, ty), vec2(bar.width() - 4.0, thumb_h));
         painter.rect_filled(
@@ -792,6 +830,9 @@ impl Reader {
             CornerRadius::same(4),
             if active { p.ink_2 } else { p.ink_3.gamma_multiply(0.7 * shown) },
         );
+        if !env.continuous {
+            return;
+        }
         // Testament divider tick.
         let nt = linger_core::books::FIRST_NT_BOOK.first_chapter().0 as f32 / CHAPTER_COUNT as f32;
         let yy = bar.top() + nt * bar.height();

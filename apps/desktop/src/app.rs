@@ -48,6 +48,9 @@ pub struct Settings {
     pub highlight_names: Vec<String>,
     pub reduce_motion: bool,
     pub flash_jumps: bool,
+    /// Scroll on from one chapter into the next; off, the reader holds one chapter and the
+    /// chapter arrows (or ← →) turn the page.
+    pub continuous_scroll: bool,
     /// Data: what exports include (highlights, notes, bookmarks, history), and automatic
     /// backups (on, and weekly rather than daily).
     pub export_include: [bool; 4],
@@ -90,6 +93,7 @@ impl Default for Settings {
             highlight_names: Vec::new(),
             reduce_motion: false,
             flash_jumps: true,
+            continuous_scroll: false,
             shortcuts: Default::default(),
             export_include: [true, true, true, false],
             backup_auto: true,
@@ -596,14 +600,7 @@ impl BibleApp {
                 }
             }
             Action::PrevChapter => {
-                let (c, _) = self.here();
-                // Within a chapter, ← first returns to its start.
-                let target = if self.reader.anchor.chapter == c && self.reader.anchor.offset > 40.0 {
-                    Some(c)
-                } else {
-                    c.prev()
-                };
-                if let Some(t) = target {
+                if let Some(t) = self.prev_chapter_target() {
                     self.reader.jump(t, None, false);
                 }
             }
@@ -1284,7 +1281,8 @@ impl BibleApp {
         let cy = bar.center().y;
         let mut items = Vec::new();
 
-        // Leading: the sidebar toggle, then back and forward.
+        // Leading: the sidebar toggle. No back and forward: beside the chapter arrows they read
+        // as chapter navigation (⌘[ ⌘] and the Go menu still walk the history).
         let open = self.sidebar_shown;
         let extent = self.sidebar_extent;
         let window_left = bar.left() - extent * open;
@@ -1292,33 +1290,13 @@ impl BibleApp {
         let lead = Leading::new(open, extent, window_left, docked);
         let target_open = self.sidebar_motion.target() > 0.5;
         items.push(sidebar_toggle(ui, p, lead.toggle_x, cy, lead.capsule, target_open, actions));
-        let x = lead.nav_x;
-        let nav = [
-            CapsuleButton {
-                tooltip: "Back (⌘[)",
-                // From a page, Back returns to the reader.
-                enabled: self.history.can_back() || !self.pages.reader(),
-                on: false,
-                icon: crate::icons::chevron_left,
-            },
-            CapsuleButton {
-                tooltip: "Forward (⌘])",
-                enabled: self.history.can_forward() && self.pages.reader(),
-                on: false,
-                icon: crate::icons::chevron_right,
-            },
-        ];
-        let (nav_rect, resp) = widgets::button_capsule(ui, p, x, cy, BUTTON_WIDTH, true, &nav);
-        if resp[0].clicked() {
-            actions.push(Action::Back);
-        }
-        if resp[1].clicked() {
-            actions.push(Action::Forward);
-        }
-        items.push(nav_rect);
+        let lead_right = lead.nav_x - GROUP_GAP;
 
-        // On a page: a wider field that filters it, and nothing else.
+        // On a page: the way back to the reader, a wider field that filters the page, and
+        // nothing else.
         if !self.pages.reader() {
+            let back = self.back_to_reader(ui, lead.nav_x, cy, actions);
+            items.push(back);
             let w = PAGE_SEARCH_WIDTH;
             let search = egui::Rect::from_min_size(
                 egui::pos2(bar.right() - TRAILING_INSET - w, cy - CAPSULE_HEIGHT / 2.0),
@@ -1480,7 +1458,7 @@ impl BibleApp {
         let width = book.width() + if show_translation { 1.0 + translation.width() } else { 0.0 };
         let pad_left = LEADING_INSET + (GROUP_GAP - LEADING_INSET) * open;
         let centre = (bar.left() + pad_left + bar.right() - TRAILING_INSET) / 2.0;
-        let lo = nav_rect.right() + GROUP_GAP;
+        let lo = lead_right + GROUP_GAP;
         let hi = trailing_left - GROUP_GAP - width;
         if hi < lo {
             // No room between the groups (a narrow window searching).
@@ -1728,6 +1706,94 @@ impl BibleApp {
         ui.painter().galley(egui::pos2(x, cy - hint.size().y / 2.0), hint, p.ink_3);
         #[cfg(target_os = "macos")]
         self.toolbar_items.push(r);
+    }
+
+    /// On a page, a capsule back to the chapter being read ("‹ John 3"), starting at `left`.
+    fn back_to_reader(&self, ui: &mut Ui, left: f32, cy: f32, actions: &mut Vec<Action>) -> egui::Rect {
+        use theme::metrics::{CAPSULE_HEIGHT, ICON};
+        let p = self.settings.theme.palette();
+        let (c, _) = self.reader.location;
+        let book = self
+            .library
+            .get(&self.settings.translation)
+            .map(|e| e.meta.ref_name(c.book()).to_string())
+            .unwrap_or_else(|| c.book().ref_name().into());
+        let label = ui.painter().layout_no_wrap(
+            format!("{book} {}", c.chapter()),
+            theme::text::UI_STRONG.font(),
+            p.ink,
+        );
+        let (pad_left, gap, pad_right) = (8.0, 2.0, 14.0);
+        let width = (pad_left + ICON + gap + label.size().x + pad_right).round();
+        let r = egui::Rect::from_min_size(
+            egui::pos2(left, cy - CAPSULE_HEIGHT / 2.0),
+            vec2(width, CAPSULE_HEIGHT),
+        );
+        widgets::capsule(ui.painter(), r, p);
+        let resp = ui.interact(r, Id::new("back-to-reader"), Sense::click());
+        if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
+            ui.painter().rect_filled(r, CAPSULE_HEIGHT / 2.0, fill);
+        }
+        let icon =
+            egui::Rect::from_min_size(egui::pos2(r.left() + pad_left, cy - ICON / 2.0), vec2(ICON, ICON));
+        crate::icons::chevron_left(ui.painter(), icon, p.ink);
+        let text = egui::pos2(icon.right() + gap, (cy - label.size().y / 2.0).round());
+        ui.painter().galley(text, label, p.ink);
+        if resp.on_hover_text("Back to reading").clicked() {
+            actions.push(Action::OpenPage(crate::pages::Page::Reader));
+        }
+        r
+    }
+
+    /// Where ← goes. Scrolling continuously, it first returns to the start of the chapter.
+    fn prev_chapter_target(&self) -> Option<ChapterIdx> {
+        let (c, _) = self.here();
+        let partway = self.reader.anchor.chapter == c && self.reader.anchor.offset > 40.0;
+        if self.settings.continuous_scroll && partway { Some(c) } else { c.prev() }
+    }
+
+    /// Previous / next chapter, floating over the bottom of the reader: the same as ← and →.
+    fn chapter_arrows(
+        &mut self,
+        ui: &mut Ui,
+        reader_rect: egui::Rect,
+        inset: f32,
+        actions: &mut Vec<Action>,
+    ) {
+        use theme::metrics::{BUTTON_WIDTH, CAPSULE_HEIGHT};
+        let p = self.settings.theme.palette();
+        let (c, _) = self.here();
+        let buttons = [
+            widgets::CapsuleButton {
+                tooltip: "Previous chapter (←)",
+                enabled: self.prev_chapter_target().is_some(),
+                on: false,
+                icon: crate::icons::chevron_left,
+            },
+            widgets::CapsuleButton {
+                tooltip: "Next chapter (→)",
+                enabled: c.next().is_some(),
+                on: false,
+                icon: crate::icons::chevron_right,
+            },
+        ];
+        let width = BUTTON_WIDTH * 2.0 + 1.0;
+        let left = (reader_rect.center().x - width / 2.0).round();
+        let cy = (reader_rect.bottom() - inset - CAPSULE_HEIGHT / 2.0).round();
+        // The text scrolls beneath it, so the glass sits on an opaque card.
+        let card = egui::Rect::from_min_size(
+            egui::pos2(left, cy - CAPSULE_HEIGHT / 2.0),
+            vec2(width, CAPSULE_HEIGHT),
+        );
+        p.shadows.popover.paint(ui.painter(), card, CAPSULE_HEIGHT / 2.0);
+        ui.painter().rect_filled(card, CAPSULE_HEIGHT / 2.0, p.surface);
+        let (_, resp) = widgets::button_capsule(ui, p, left, cy, BUTTON_WIDTH, true, &buttons);
+        if resp[0].clicked() {
+            actions.push(Action::PrevChapter);
+        }
+        if resp[1].clicked() {
+            actions.push(Action::NextChapter);
+        }
     }
 
     /// The compact toolbar's More menu (frame 34): the view tools, the sidebar and focus mode,
@@ -2085,7 +2151,7 @@ struct Leading {
     /// The toggle's centre, and how much of its capsule shows (0–1).
     toggle_x: f32,
     capsule: f32,
-    /// Where back and forward start.
+    /// Where the toolbar continues after the toggle (on a page, the way back to the reader).
     nav_x: f32,
 }
 
@@ -2496,6 +2562,8 @@ impl eframe::App for BibleApp {
                 online_generation: &self.online_gen,
                 toolbar: top,
                 resizing: self.sidebar_motion.moving(),
+                // The scroll probe flings through many chapters.
+                continuous: self.settings.continuous_scroll || self.scroll_probe.is_some(),
             };
             let mut reader_ui = ui.new_child(egui::UiBuilder::new().max_rect(reader_rect));
             if let (Some(state), Some(retrying)) = (&self.offline, offline) {
@@ -2537,6 +2605,11 @@ impl eframe::App for BibleApp {
                 self.column_heads(ui, reader_rect, &cols, &mut actions);
             }
             self.result_navigator(ui, reader_rect.translate(vec2(0.0, heads)), &mut actions);
+            if offline.is_none() {
+                // In focus mode, above its progress line.
+                let inset = if self.focus { 30.0 + 12.0 } else { 20.0 };
+                self.chapter_arrows(ui, reader_rect, inset, &mut actions);
+            }
             if let Some(panel) = &mut self.panel {
                 let r = egui::Rect::from_min_max(
                     egui::pos2(reader_rect.right(), full.top() + self.chrome.height),

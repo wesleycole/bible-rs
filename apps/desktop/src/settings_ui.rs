@@ -1466,7 +1466,8 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
     // Layout.
     group_title(ui, p, "Layout");
     let mut red = typo.red_letters;
-    rows_card(ui, p, &[44.0, 48.0, 44.0, 48.0, 44.0], |ui, i, r| {
+    let mut continuous = settings.continuous_scroll;
+    rows_card(ui, p, &[44.0, 48.0, 44.0, 48.0, 44.0, 48.0], |ui, i, r| {
         let right = pos2(r.right() - 16.0, r.center().y);
         match i {
             0 => {
@@ -1495,13 +1496,18 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
                 row_label(ui, p, r, "Section headings", Some("Where the translation has them (BSB, WEB)"));
                 widgets::toggle(ui, p, right, ui.id().with("headings"), &mut typo.headings);
             }
-            _ => {
+            4 => {
                 row_label(ui, p, r, "Justify text", None);
                 widgets::toggle(ui, p, right, ui.id().with("justify"), &mut typo.justify);
+            }
+            _ => {
+                row_label(ui, p, r, "Continuous scrolling", Some("Scroll on into the next chapter"));
+                widgets::toggle(ui, p, right, ui.id().with("continuous"), &mut continuous);
             }
         }
     });
     typo.red_letters = red;
+    settings.continuous_scroll = continuous;
     ui.add_space(24.0);
 
     // Footer: the fonts' licence, and a reset.
