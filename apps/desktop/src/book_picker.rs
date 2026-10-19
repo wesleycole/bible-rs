@@ -1,13 +1,13 @@
-//! The book picker under the toolbar's location button: the Old and New Testament books side by
-//! side, then a book's chapters. Both are grids of menu cells in the menu frame (the `menu`
-//! tokens): highlights inset from the edges like menu rows, names in the text column under their
-//! section header, and the book and chapter being read selected.
+//! The book picker under the toolbar's location button: all 66 books in one grid, in canonical
+//! order, then a book's chapters. Both are grids of menu cells in the menu frame (the `menu`
+//! tokens): highlights inset from the edges like menu rows, names in the text column, and the book
+//! and chapter being read selected.
 //!
-//! Arrow keys move a highlight through the grid (the books spatially, across both testaments;
-//! the chapters in order), return chooses, backspace goes back to the books and escape closes.
+//! Arrow keys move a highlight through the grid (the books spatially, the chapters in order),
+//! return chooses, backspace goes back to the books and escape closes.
 
 use eframe::egui::{self, Align2, Id, Key, Modifiers, Rect, Response, Sense, Ui, Vec2, pos2, vec2};
-use linger_core::books::{BookId, ChapterIdx, FIRST_NT_BOOK};
+use linger_core::books::{BookId, ChapterIdx};
 use linger_core::model::TranslationMeta;
 
 use crate::actions::Action;
@@ -15,11 +15,9 @@ use crate::menu::{self, Cell, ITEM_HEIGHT, PADDING_X, SEPARATOR_HEIGHT};
 use crate::theme::{Palette, icon, menu as m, text};
 
 const POPUP: &str = "book-picker";
-const BOOK_COLUMNS: usize = 3;
+/// Six columns fill eleven rows exactly.
+const BOOK_COLUMNS: usize = 6;
 const CHAPTER_COLUMNS: usize = 10;
-/// Between the testaments: twice the menu's side padding, so the two grids read as groups while
-/// the cells within each sit edge to edge like menu rows.
-const GROUP_GAP: f32 = 2.0 * PADDING_X;
 /// Longer names show the book's abbreviation.
 const MAX_NAME: usize = 12;
 /// Width the books leave spare each side of a narrow window when their cells narrow to fit.
@@ -95,23 +93,15 @@ fn book_name(meta: Option<&TranslationMeta>, b: BookId) -> String {
     if name.chars().count() > MAX_NAME { b.info().abbrev.to_string() } else { name.to_string() }
 }
 
-/// A book's column across both testaments (0–5) and its row.
+/// A book's column and row.
 fn book_spot(i: usize) -> (usize, usize) {
-    let first_nt = FIRST_NT_BOOK.index();
-    let (group, k) = if i < first_nt { (0, i) } else { (1, i - first_nt) };
-    (group * BOOK_COLUMNS + k % BOOK_COLUMNS, k / BOOK_COLUMNS)
+    (i % BOOK_COLUMNS, i / BOOK_COLUMNS)
 }
 
 /// The book at a column and row, if there is one.
 fn book_at(col: usize, row: usize) -> Option<usize> {
-    let first_nt = FIRST_NT_BOOK.index();
-    let (start, end) = match col / BOOK_COLUMNS {
-        0 => (0, first_nt),
-        1 => (first_nt, BOOKS),
-        _ => return None,
-    };
-    let i = start + row * BOOK_COLUMNS + col % BOOK_COLUMNS;
-    (i < end).then_some(i)
+    let i = row * BOOK_COLUMNS + col;
+    (col < BOOK_COLUMNS && i < BOOKS).then_some(i)
 }
 
 /// Where the arrow keys take the highlight among `n` chapters: along them in order, a row up or
@@ -144,7 +134,7 @@ fn cell_response(ui: &Ui, r: Rect, id: Id, label: &str, selected: bool) -> Respo
     resp
 }
 
-/// The two testaments, three books to a row under their headers.
+/// The books, six to a row in canonical order.
 fn books(
     ui: &mut Ui,
     p: &Palette,
@@ -162,19 +152,13 @@ fn books(
         .fold(0.0, f32::max);
     // As wide as the longest name with the text inset each side. A narrow window (down to 620 pt)
     // narrows them to fit, taking from the inset after the names.
-    let room = ui.ctx().content_rect().width() - 2.0 * (WINDOW_MARGIN + PADDING_X) - GROUP_GAP;
-    let fit = (room / (2 * BOOK_COLUMNS) as f32).floor();
+    let room = ui.ctx().content_rect().width() - 2.0 * (WINDOW_MARGIN + PADDING_X);
+    let fit = (room / BOOK_COLUMNS as f32).floor();
     let width = (widest + 2.0 * m::ITEM_PADDING).ceil().min(fit).max((widest + m::ITEM_PADDING).ceil());
     let cell = vec2(width, ITEM_HEIGHT);
-    let group = BOOK_COLUMNS as f32 * cell.x;
-    let rows = FIRST_NT_BOOK.index().div_ceil(BOOK_COLUMNS);
-    let size = vec2(2.0 * group + GROUP_GAP, m::HEADER_HEIGHT + rows as f32 * cell.y);
+    let rows = BOOKS.div_ceil(BOOK_COLUMNS);
+    let size = vec2(BOOK_COLUMNS as f32 * cell.x, rows as f32 * cell.y);
     let (area, _) = ui.allocate_exact_size(size, Sense::hover());
-    let left = |col: usize| area.left() + (col / BOOK_COLUMNS) as f32 * (group + GROUP_GAP);
-    for (g, title) in ["Old Testament", "New Testament"].into_iter().enumerate() {
-        let r = Rect::from_min_size(pos2(left(g * BOOK_COLUMNS), area.top()), vec2(group, m::HEADER_HEIGHT));
-        menu::paint_header(ui.painter(), p, r, title);
-    }
 
     let current = here.book().index();
     if keys.dx != 0 || keys.dy != 0 {
@@ -195,11 +179,7 @@ fn books(
     let cells: Vec<(Rect, Response)> = (0..BOOKS)
         .map(|i| {
             let (col, row) = book_spot(i);
-            let min = pos2(
-                left(col) + (col % BOOK_COLUMNS) as f32 * cell.x,
-                area.top() + m::HEADER_HEIGHT + row as f32 * cell.y,
-            );
-            let r = Rect::from_min_size(min, cell);
+            let r = Rect::from_min_size(area.min + vec2(col as f32 * cell.x, row as f32 * cell.y), cell);
             (r, cell_response(ui, r, ui.id().with(("book", i)), &names[i], i == current))
         })
         .collect();

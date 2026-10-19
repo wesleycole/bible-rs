@@ -11,7 +11,7 @@ use linger::theme::{self, Theme, menu as tokens};
 use linger_core::books::{BookId, ChapterIdx};
 
 const JOHN: BookId = BookId(42);
-const GALATIANS: BookId = BookId(47);
+const EPHESIANS: BookId = BookId(48);
 
 /// A button standing in for the toolbar's location button, opening the picker on John 1, with the
 /// picker open.
@@ -53,23 +53,23 @@ fn books_sit_in_the_menu_insets_with_the_current_one_selected() {
     let area = harness.ctx.memory(|m| m.area_rect(egui::Id::new("book-picker"))).expect("the picker is open");
     let edge = area.shrink(Theme::Light.palette().shadows.popover.ring_width);
     let rect = |label: &str| harness.get_by_label(label).rect();
-    let (genesis, exodus, leviticus, numbers) =
-        (rect("Genesis"), rect("Exodus"), rect("Leviticus"), rect("Numbers"));
-    let (matthew, luke, haggai) = (rect("Matthew"), rect("Luke"), rect("Haggai"));
+    let (genesis, exodus, joshua, judges) = (rect("Genesis"), rect("Exodus"), rect("Joshua"), rect("Judges"));
+    let (malachi, matthew, revelation) = (rect("Malachi"), rect("Matthew"), rect("Revelation"));
 
-    // The cells' highlights keep the menu's padding, under a section header.
+    // The cells' highlights keep the menu's padding.
     near(genesis.left() - edge.left(), PADDING_X, "left inset");
-    near(genesis.top() - edge.top(), PADDING_Y + tokens::HEADER_HEIGHT, "top inset");
-    near(edge.right() - luke.right(), PADDING_X, "right inset");
-    near(edge.bottom() - haggai.bottom(), PADDING_Y, "bottom inset");
+    near(genesis.top() - edge.top(), PADDING_Y, "top inset");
+    near(edge.right() - joshua.right(), PADDING_X, "right inset");
+    near(edge.bottom() - revelation.bottom(), PADDING_Y, "bottom inset");
     // Rows of the menu's height, edge to edge across and down, as menu rows are.
     near(genesis.height(), ITEM_HEIGHT, "row height");
     near(exodus.left(), genesis.right(), "columns abut");
-    near(numbers.top(), genesis.bottom(), "rows abut");
-    near(numbers.left(), genesis.left(), "column aligned");
-    // The testaments: one gutter between them, their first rows level.
-    near(matthew.left() - leviticus.right(), 2.0 * PADDING_X, "testament gutter");
-    near(matthew.top(), genesis.top(), "testaments level");
+    near(judges.top(), genesis.bottom(), "rows abut");
+    near(judges.left(), genesis.left(), "column aligned");
+    // One grid: the New Testament carries on in Malachi's row, with no gutter or header.
+    near(matthew.left(), malachi.right(), "testaments continue");
+    near(matthew.top(), malachi.top(), "testaments share a row");
+    near(revelation.right(), joshua.right(), "the last row is full");
 
     assert!(selected(&harness, "John"), "the book being read is selected");
     assert!(!selected(&harness, "Genesis"));
@@ -93,14 +93,14 @@ fn the_books_fit_the_narrowest_window() {
 #[test]
 fn the_keyboard_chooses_a_book_and_a_chapter() {
     let mut harness = open();
-    // From John: right to Acts and Romans, down to Galatians, return for its chapters.
-    for key in [Key::ArrowRight, Key::ArrowRight, Key::ArrowDown, Key::Enter] {
+    // From John: right to Acts, down to Philippians, left to Ephesians, return for its chapters.
+    for key in [Key::ArrowRight, Key::ArrowDown, Key::ArrowLeft, Key::Enter] {
         harness.key_press(key);
         harness.run();
     }
     assert!(harness.query_by_label("Genesis").is_none(), "the chapters replace the books");
     assert!(!selected(&harness, "1"), "John is not the book being read here");
-    // Backspace goes back to the books, return on the highlighted book (Galatians) returns.
+    // Backspace goes back to the books, return on the highlighted book (Ephesians) returns.
     harness.key_press(Key::Backspace);
     harness.run();
     assert!(harness.query_by_label("Genesis").is_some(), "back on the books");
@@ -111,7 +111,7 @@ fn the_keyboard_chooses_a_book_and_a_chapter() {
         harness.key_press(key);
         harness.run();
     }
-    let chapter = ChapterIdx::new(GALATIANS, 2).unwrap();
+    let chapter = ChapterIdx::new(EPHESIANS, 2).unwrap();
     assert_eq!(*harness.state(), vec![Action::Jump { chapter, verse: None, flash: false }]);
     assert!(!book_picker::is_open(&harness.ctx), "choosing a chapter closes the picker");
 }
