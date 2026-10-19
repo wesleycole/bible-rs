@@ -83,7 +83,7 @@ describe("Ask request validation", () => {
 
 describe("the Ask contract", () => {
   it("parses into the expected shape and matches the digest the Rust generator wrote", () => {
-    expect(CONTRACTS.map((c) => c.version)).toEqual(["ask/3", "ask/2"])
+    expect(CONTRACTS.map((c) => c.version)).toEqual(["ask/4", "ask/3"])
     const c = CONTRACTS[0]
     expect(c.max_rounds).toBeGreaterThan(0)
     expect(c.system.length).toBeGreaterThan(200)
@@ -106,20 +106,10 @@ describe("the Ask contract", () => {
     }
   })
 
-  it("still serves ask/2, without the tools it doesn't have", async () => {
-    const study = (contract: string) =>
-      question({
-        contract,
-        messages: [
-          { role: "user", content: "hi" },
-          { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "cross_references", input: { reference: "John 3:16" } }] },
-          { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] }
-        ]
-      })
-    const old = await Effect.runPromise(validateAsk(JSON.stringify(question({ contract: "ask/2" }))))
-    expect(old.contract.version).toBe("ask/2")
-    expect((await check(study("ask/2")))._tag).toBe("InvalidRequest")
-    await expect(Effect.runPromise(validateAsk(JSON.stringify(study("ask/3"))))).resolves.toBeDefined()
+  it("still serves ask/3, and tells ask/2 apps to update", async () => {
+    const old = await Effect.runPromise(validateAsk(JSON.stringify(question({ contract: "ask/3" }))))
+    expect(old.contract.version).toBe("ask/3")
+    expect((await check(question({ contract: "ask/2" })))._tag).toBe("ContractUnsupported")
   })
 
   it("would notice an edit to the contract", () => {

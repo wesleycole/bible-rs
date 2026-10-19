@@ -56,6 +56,10 @@ impl Recording {
                     }
                 };
                 let mut block = vec![0i16; SAMPLE_RATE as usize / 10];
+                // The computer's audio: which app is playing, looked at every few seconds, so the
+                // recording can say where it was heard ("in Google Chrome").
+                let mut apps: Vec<(String, u32)> = Vec::new();
+                let mut look_at = 0;
                 while !shared.stop.load(Ordering::Relaxed) {
                     // Nothing yet: macOS is asking the user for permission.
                     let got = capture.read(&mut block)?;
@@ -64,9 +68,20 @@ impl Recording {
                         continue;
                     }
                     writer.push(&block)?;
+                    if source == Source::SystemAudio && writer.samples() >= look_at {
+                        look_at = writer.samples() + u64::from(SAMPLE_RATE) * 5;
+                        for app in backend::playing_apps() {
+                            match apps.iter_mut().find(|(a, _)| *a == app) {
+                                Some((_, n)) => *n += 1,
+                                None => apps.push((app, 1)),
+                            }
+                        }
+                    }
                     shared.level.store(recording::level(&block).to_bits(), Ordering::Relaxed);
                     shared.samples.store(writer.samples(), Ordering::Relaxed);
                 }
+                // The app heard playing most often.
+                writer.set_app(apps.into_iter().max_by_key(|(_, n)| *n).map(|(app, _)| app));
                 writer.finish()
             })?
         };
@@ -140,6 +155,11 @@ mod backend {
         matches!(source, Source::Microphone | Source::SystemAudio)
     }
 
+    /// PulseAudio could say (its sink inputs' application names); not asked yet.
+    pub fn playing_apps() -> Vec<String> {
+        Vec::new()
+    }
+
     pub struct Capture {
         pulse: Simple,
         bytes: Vec<u8>,
@@ -198,6 +218,10 @@ mod backend {
 
     pub fn supported(_: Source) -> bool {
         false
+    }
+
+    pub fn playing_apps() -> Vec<String> {
+        Vec::new()
     }
 
     pub struct Capture;

@@ -112,6 +112,8 @@ pub enum Action {
     /// Start recording a sermon from the microphone or the computer's audio.
     StartRecording(linger_core::recording::Source),
     StopRecording,
+    /// Open About This Recording for a recording, by its id.
+    EditRecording(String),
     /// The Linger account: browser sign-in (and giving up on it), sign-out, fetching the plan
     /// again, Pro checkout (yearly or monthly), the Stripe portal, and deleting the account.
     SignIn,

@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::api::{Api, ApiError};
-use crate::books::BookId;
-use crate::recording::{self, Manifest};
+use crate::books::{BookId, ChapterIdx};
+use crate::recording::{self, Details, Manifest, Source};
 
 const API: &str = "https://api.assemblyai.com/v2";
 /// Longer than any sermon takes to transcribe (a few minutes for an hour of audio).
@@ -32,6 +32,19 @@ pub struct Transcript {
     pub language: Option<String>,
     /// Turns of speech in order. Speakers are "A", "B"… as the transcriber told them apart.
     pub segments: Vec<Segment>,
+    /// What the recording is, from its manifest rather than the transcript file.
+    #[serde(skip)]
+    pub about: About,
+}
+
+/// What a transcribed sermon is: where it came from, what the user said about it, and the passage
+/// it dwells on.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct About {
+    pub source: Option<Source>,
+    pub details: Details,
+    /// The chapter the sermon names most, at least twice: "Romans 10".
+    pub passage: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,13 +56,89 @@ pub struct Segment {
 }
 
 impl Transcript {
-    /// "Sermon · Oct 19, 2026": recordings have no titles yet.
+    /// The user's title, else the passage it dwells on and the day: "Romans 10 · Oct 19, 2026",
+    /// "Sermon · Oct 19, 2026".
     pub fn title(&self) -> String {
-        let (y, m, d) = crate::study::civil_from_days(self.recorded_at.div_euclid(86_400));
-        const MONTHS: [&str; 12] =
-            ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        format!("Sermon · {} {d}, {y}", MONTHS[(m as usize).clamp(1, 12) - 1])
+        match &self.about.details.title {
+            Some(title) => title.clone(),
+            None => format!("{} · {}", self.about.passage.as_deref().unwrap_or("Sermon"), self.day()),
+        }
     }
+
+    /// "Oct 19, 2026", the day it was recorded.
+    pub fn day(&self) -> String {
+        day(self.recorded_at)
+    }
+
+    /// Fills in [`about`](Self::about) from the recording's manifest.
+    pub fn with_manifest(mut self, m: &Manifest) -> Self {
+        let passage = main_passage(&self.segments);
+        self.about = About { source: Some(m.source), details: m.details.clone(), passage };
+        self
+    }
+}
+
+/// "Oct 19, 2026", from Unix seconds.
+pub fn day(unix: i64) -> String {
+    let (y, m, d) = crate::study::civil_from_days(unix.div_euclid(86_400));
+    const MONTHS: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!("{} {d}, {y}", MONTHS[(m as usize).clamp(1, 12) - 1])
+}
+
+/// The chapter a sermon names most often, if it names one at least twice: references as the
+/// transcriber writes them ("Romans 10:9", "First John 4"), with the book capitalized so "my job 3
+/// times" isn't Job.
+pub fn main_passage(segments: &[Segment]) -> Option<String> {
+    let words: Vec<&str> = segments.iter().flat_map(|s| s.text.split_whitespace()).collect();
+    let bare = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+    // Each book's name as words, with "First John" beside "1 John" and "Psalm" beside "Psalms".
+    let mut names: Vec<(Vec<String>, BookId)> = Vec::new();
+    for book in BookId::all() {
+        let name: Vec<String> = book.name().split(' ').map(str::to_lowercase).collect();
+        if let Some(n) = name[0].parse::<usize>().ok().filter(|n| (1..=3).contains(n)) {
+            let mut spoken = name.clone();
+            spoken[0] = ["first", "second", "third"][n - 1].to_string();
+            names.push((spoken, book));
+        }
+        if book == BookId::PSALMS {
+            names.push((vec!["psalm".into()], book));
+        }
+        names.push((name, book));
+    }
+    // Longest names first, and a match skips its words: "First John 4" is 1 John, not John.
+    names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    let mut counts: Vec<(ChapterIdx, u32, usize)> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        // A book's name starts with a capital or a digit.
+        let named = words[i].starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit());
+        let found = names.iter().filter(|_| named).find_map(|(name, book)| {
+            let n = name.len();
+            if i + n >= words.len() || !(0..n).all(|k| bare(words[i + k]).to_lowercase() == name[k]) {
+                return None;
+            }
+            let digits: String = words[i + n].chars().take_while(char::is_ascii_digit).collect();
+            Some((n, digits.parse().ok().and_then(|c| ChapterIdx::new(*book, c))))
+        });
+        let Some((n, chapter)) = found else {
+            i += 1;
+            continue;
+        };
+        if let Some(chapter) = chapter {
+            match counts.iter_mut().find(|(c, ..)| *c == chapter) {
+                Some((_, count, _)) => *count += 1,
+                None => counts.push((chapter, 1, i)),
+            }
+        }
+        i += n + 1;
+    }
+    // The most named; the first named among equals.
+    counts
+        .into_iter()
+        .filter(|(_, n, _)| *n >= 2)
+        .max_by_key(|&(_, n, first)| (n, std::cmp::Reverse(first)))
+        .map(|(c, ..)| c.display())
 }
 
 /// `<data>/recordings/<id>/transcript.json`.
@@ -57,13 +146,20 @@ pub fn path(data_dir: &Path, recording_id: &str) -> PathBuf {
     recording::recordings_dir(data_dir).join(recording_id).join("transcript.json")
 }
 
+/// A sermon's transcript, with [`About`] from its recording.
 pub fn load(data_dir: &Path, recording_id: &str) -> Option<Transcript> {
-    serde_json::from_slice(&std::fs::read(path(data_dir, recording_id)).ok()?).ok()
+    let m = recording::load(data_dir, recording_id)?;
+    read(data_dir, &m)
+}
+
+fn read(data_dir: &Path, m: &Manifest) -> Option<Transcript> {
+    let t: Transcript = serde_json::from_slice(&std::fs::read(path(data_dir, &m.id)).ok()?).ok()?;
+    Some(t.with_manifest(m))
 }
 
 /// Every transcribed sermon, newest first.
 pub fn all(data_dir: &Path) -> Vec<Transcript> {
-    recording::list(data_dir).iter().filter_map(|m| load(data_dir, &m.id)).collect()
+    recording::list(data_dir).iter().filter_map(|m| read(data_dir, m)).collect()
 }
 
 /// "12:30", "1:02:09": a moment in a sermon.
@@ -172,10 +268,11 @@ impl AssemblyAi {
             duration_ms: manifest.duration_ms(),
             language: done["language_code"].as_str().map(str::to_string),
             segments: segments(&done),
+            about: About::default(),
         };
         save(data_dir, &transcript)?;
         self.delete(&agent, &id);
-        Ok(transcript)
+        Ok(with_latest(data_dir, transcript, manifest))
     }
 
     /// Deletes the job and its audio from AssemblyAI. Best effort: the transcript is already
@@ -213,9 +310,17 @@ pub fn transcribe_via_proxy(
         language: done["transcript"]["language"].as_str().map(str::to_string),
         segments: serde_json::from_value(done["transcript"]["segments"].clone())
             .context("unreadable transcript from Linger's servers")?,
+        about: About::default(),
     };
     save(data_dir, &transcript)?;
-    Ok(transcript)
+    Ok(with_latest(data_dir, transcript, manifest))
+}
+
+/// With [`About`] from the manifest as it is now: the user may have named the sermon while it was
+/// being transcribed.
+fn with_latest(data_dir: &Path, t: Transcript, manifest: &Manifest) -> Transcript {
+    let m = recording::load(data_dir, &manifest.id);
+    t.with_manifest(m.as_ref().unwrap_or(manifest))
 }
 
 /// A Free account past its trial: say what Pro adds rather than the bare refusal.
@@ -389,8 +494,26 @@ mod tests {
             duration_ms: 0,
             language: None,
             segments: vec![],
+            about: About::default(),
         };
         assert_eq!(t.title(), "Sermon · Oct 19, 2026");
+    }
+
+    #[test]
+    fn the_main_passage_is_the_chapter_named_most() {
+        let seg = |text: &str| Segment { start_ms: 0, end_ms: 0, speaker: None, text: text.into() };
+        let said = [
+            seg("Turn with me to Romans 10. I lost my job 3 times, and John 3 matters too."),
+            seg("Paul said in Romans 10, verse 9, confess. First John 4:2 agrees, as 1 John 4 says."),
+        ];
+        // Romans 10 and 1 John 4 twice each ("First John" is 1 John): the first named wins. "job 3"
+        // isn't Job, and John 3 is named once.
+        assert_eq!(main_passage(&said).as_deref(), Some("Romans 10"));
+        assert_eq!(main_passage(&said[..1]), None, "named once isn't enough");
+        let psalm = [seg("Psalm 23 says it. Psalms 23 again, and Psalm 151 doesn't exist, Psalm 151.")];
+        assert_eq!(main_passage(&psalm).as_deref(), Some("Psalm 23"));
+        let epistle = [seg("First John 4 and 1 John 4:8 say God is love.")];
+        assert_eq!(main_passage(&epistle).as_deref(), Some("1 John 4"), "not the Gospel's chapter 4");
     }
 
     #[test]

@@ -139,7 +139,7 @@ export const makeApp = (layers: {
 }
 
 export const question = (overrides: Record<string, unknown> = {}) => ({
-  contract: "ask/3",
+  contract: "ask/4",
   questionId: crypto.randomUUID(),
   round: 0,
   mode: "standard",

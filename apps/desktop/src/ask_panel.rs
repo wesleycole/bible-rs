@@ -110,6 +110,8 @@ pub struct AskEnv<'a> {
     pub me: Option<&'a Me>,
     /// The one-time sheet about what Ask sends where was accepted.
     pub consented: bool,
+    /// The user's own church, for telling its sermons from others.
+    pub church: Option<&'a str>,
 }
 
 enum Update {
@@ -181,6 +183,11 @@ impl AskPanel {
             stick_to_bottom: true,
             ..Self::new()
         }
+    }
+
+    /// Reads the sermons again, after their details change.
+    pub fn reload_sermons(&mut self, data_dir: &std::path::Path) {
+        self.sermons = Arc::new(transcribe::all(data_dir));
     }
 
     /// The saved conversation shown, if it has been saved.
@@ -638,13 +645,14 @@ impl AskPanel {
         let translation = env.library.load(env.ask_translation);
         self.sermons = Arc::new(transcribe::all(env.data_dir));
         let sermons = self.sermons.clone();
+        let church = env.church.map(str::to_string);
         let conversation = self.conversation.clone();
         std::thread::Builder::new()
             .name("ask".into())
             .spawn(move || {
                 let update = match translation {
                     Ok(t) => {
-                        let tools = chat::Tools { translation: t, sermons };
+                        let tools = chat::Tools { translation: t, sermons, church };
                         let events: Sender<Update> = tx.clone();
                         let mut conversation = conversation.lock().unwrap_or_else(|e| e.into_inner());
                         match conversation.ask(&config, &tools, context.as_ref(), &question, |e| {
@@ -806,6 +814,7 @@ fn answer(
         // Citations stay in the sentence as accent-coloured references, and become chips below.
         let mut job = LayoutJob::default();
         let mut refs: Vec<Reference> = Vec::new();
+        let mut heard: Vec<(String, String)> = Vec::new();
         let format = |color| TextFormat {
             font_id: font.clone(),
             color,
@@ -822,14 +831,17 @@ fn answer(
                         refs.push(*r);
                     }
                 }
-                // Named in the sentence; opening the transcript at that moment comes with the
-                // sermon library.
+                // Named in the sentence, with a chip below that shows what's known of the recording
+                // (opening the transcript at that moment comes with the sermon library).
                 Segment::Sermon { id, at_ms } => {
-                    let title = sermons
-                        .iter()
-                        .find(|t| t.recording_id.starts_with(id.as_str()))
-                        .map_or_else(|| "a sermon".to_string(), Transcript::title);
+                    let sermon = sermons.iter().find(|t| t.recording_id.starts_with(id.as_str()));
+                    let title = sermon.map_or_else(|| "a sermon".to_string(), Transcript::title);
                     job.append(&format!("{title}, {}", transcribe::clock(*at_ms)), 0.0, format(p.accent));
+                    if let Some(t) = sermon
+                        && !heard.iter().any(|(id, _)| *id == t.recording_id)
+                    {
+                        heard.push((t.recording_id.clone(), title));
+                    }
                 }
             }
         }
@@ -839,27 +851,43 @@ fn answer(
             let (r, _) = ui.allocate_exact_size(vec2(width + 2.0 * PAD, g.size().y), Sense::hover());
             ui.painter().galley(pos2(r.left() + PAD, r.top()), g, p.ink);
         }
-        if !refs.is_empty() {
+        let mut list: Vec<Chip> = refs
+            .iter()
+            .filter_map(|r| {
+                let chapter = ChapterIdx::new(r.book, r.chapter)?;
+                let jump = Action::Jump { chapter, verse: r.verse, flash: true };
+                Some(Chip { label: ref_label(env, r), icon: icons::book, action: jump, tip: None })
+            })
+            .collect();
+        list.extend(heard.into_iter().map(|(id, title)| Chip {
+            label: title,
+            icon: icons::mic,
+            action: Action::EditRecording(id),
+            tip: Some("Who preached and where"),
+        }));
+        if !list.is_empty() {
             ui.add_space(6.0);
-            chips(ui, p, env, &refs, width, actions);
+            chips(ui, p, &list, width, actions);
         }
     }
 }
 
-/// Verse chips, wrapping onto more rows as needed. Clicking one jumps the reader there.
-fn chips(
-    ui: &mut Ui,
-    p: &Palette,
-    env: &AskEnv<'_>,
-    refs: &[Reference],
-    width: f32,
-    actions: &mut Vec<Action>,
-) {
+/// A chip under an answer: a verse it cites, which jumps the reader there, or a sermon, which opens
+/// what's known of the recording.
+struct Chip {
+    label: String,
+    icon: crate::widgets::IconFn,
+    action: Action,
+    tip: Option<&'static str>,
+}
+
+/// Chips, wrapping onto more rows as needed.
+fn chips(ui: &mut Ui, p: &Palette, list: &[Chip], width: f32, actions: &mut Vec<Action>) {
     let font = text::SMALL.font();
     let h = 24.0;
     let gap = 6.0;
     let labels: Vec<_> =
-        refs.iter().map(|r| ui.painter().layout_no_wrap(ref_label(env, r), font.clone(), p.accent)).collect();
+        list.iter().map(|c| ui.painter().layout_no_wrap(c.label.clone(), font.clone(), p.accent)).collect();
     let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
     let mut x = 0.0;
     for (i, g) in labels.iter().enumerate() {
@@ -881,16 +909,18 @@ fn chips(
                 ui.interact(r, egui::Id::new(("ask-chip", ui.id(), band.top() as i32, i)), Sense::click());
             let fill = if resp.hovered() { p.accent.gamma_multiply(0.2) } else { p.accent_soft };
             ui.painter().rect_filled(r, h / 2.0, fill);
-            icons::book(
+            (list[i].icon)(
                 ui.painter(),
                 Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(14.0, 14.0)),
                 p.accent,
             );
             ui.painter().galley(pos2(r.left() + 28.0, r.center().y - g.size().y / 2.0), g.clone(), p.accent);
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
-                && let Some(c) = ChapterIdx::new(refs[i].book, refs[i].chapter)
-            {
-                actions.push(Action::Jump { chapter: c, verse: refs[i].verse, flash: true });
+            let mut resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if let Some(tip) = list[i].tip {
+                resp = resp.on_hover_text(tip);
+            }
+            if resp.clicked() {
+                actions.push(list[i].action.clone());
             }
             x = r.right() + gap;
         }

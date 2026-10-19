@@ -38,6 +38,37 @@ pub struct Chunk {
     pub duration_ms: u64,
 }
 
+/// What a recording is: what the user said about it, and what Linger noticed. Ask attributes what
+/// was said by it ("John Piper, Desiring God") rather than taking every sermon for the user's
+/// church's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Details {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Who preached: "John Piper".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+    /// The church, ministry or channel it came from: "Grace Church", "Desiring God".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The app that played it, for the computer's audio: "Google Chrome".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+impl Details {
+    /// Trimmed, with blank fields as `None`.
+    pub fn cleaned(self) -> Self {
+        let clean = |s: Option<String>| s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        Self {
+            title: clean(self.title),
+            speaker: clean(self.speaker),
+            from: clean(self.from),
+            app: clean(self.app),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
@@ -48,6 +79,8 @@ pub struct Manifest {
     pub ended_at: Option<i64>,
     pub sample_rate: u32,
     pub chunks: Vec<Chunk>,
+    #[serde(default)]
+    pub details: Details,
 }
 
 impl Manifest {
@@ -75,6 +108,27 @@ pub fn list(data_dir: &Path) -> Vec<Manifest> {
 
 const MANIFEST: &str = "recording.json";
 
+/// One recording's manifest.
+pub fn load(data_dir: &Path, id: &str) -> Option<Manifest> {
+    serde_json::from_slice(&std::fs::read(recordings_dir(data_dir).join(id).join(MANIFEST)).ok()?).ok()
+}
+
+/// Replaces a finished recording's details.
+pub fn save_details(data_dir: &Path, id: &str, details: Details) -> Result<Manifest> {
+    let mut m = load(data_dir, id).with_context(|| format!("no recording {id}"))?;
+    m.details = details.cleaned();
+    write(&recordings_dir(data_dir).join(id), &m)?;
+    Ok(m)
+}
+
+/// Writes then renames, so a reader never sees half a manifest.
+fn write(dir: &Path, m: &Manifest) -> Result<()> {
+    let tmp = dir.join(format!("{MANIFEST}.tmp"));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(m)?)?;
+    std::fs::rename(&tmp, dir.join(MANIFEST))?;
+    Ok(())
+}
+
 /// Writes one recording: call [`push`](Self::push) with samples as they arrive, then
 /// [`finish`](Self::finish).
 pub struct ChunkWriter {
@@ -98,6 +152,7 @@ impl ChunkWriter {
             ended_at: None,
             sample_rate: SAMPLE_RATE,
             chunks: Vec::new(),
+            details: Details::default(),
         };
         let w = Self { dir, manifest, current: None, in_chunk: 0, before: 0 };
         w.write_manifest()?;
@@ -155,6 +210,11 @@ impl ChunkWriter {
         Ok(())
     }
 
+    /// Notes the app that played what was recorded, saved when the recording finishes.
+    pub fn set_app(&mut self, app: Option<String>) {
+        self.manifest.details.app = app;
+    }
+
     /// Closes the last chunk and marks the recording finished.
     pub fn finish(mut self) -> Result<Manifest> {
         self.close_chunk()?;
@@ -179,11 +239,7 @@ impl ChunkWriter {
     }
 
     fn write_manifest(&self) -> Result<()> {
-        // Write then rename, so a reader never sees half a manifest.
-        let tmp = self.dir.join(format!("{MANIFEST}.tmp"));
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&self.manifest)?)?;
-        std::fs::rename(&tmp, self.dir.join(MANIFEST))?;
-        Ok(())
+        write(&self.dir, &self.manifest)
     }
 }
 

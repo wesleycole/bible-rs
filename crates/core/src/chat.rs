@@ -22,6 +22,7 @@ use crate::crossrefs::CrossRefs;
 use crate::model::Translation;
 use crate::names::{Category, Entity, Names};
 use crate::original::{self, Original};
+use crate::recording::Source;
 use crate::reference::{self, Reference};
 use crate::search::{self, Scope};
 use crate::transcribe::{self, Transcript};
@@ -37,19 +38,18 @@ pub fn ask_translation(preference: &str) -> &'static str {
 }
 
 /// For the model, with every question: "Passages you read and search come from the BSB (Berean
-/// Standard Bible)." When the user has transcribed sermons, it also says so: otherwise the model
-/// searches them only when asked about a sermon, and a question on a subject their church preached
-/// on would miss what was said.
+/// Standard Bible). The user has recorded 3 sermons. Their own church is Grace Church." The system
+/// prompt says what to do with sermons; this says whether there are any, and which church is the
+/// user's, so a sermon from elsewhere isn't taken for it.
 pub fn tools_note(tools: &Tools) -> String {
     let t = &tools.translation;
     let mut note = format!("Passages you read and search come from the {} ({}).", t.meta.abbrev, t.meta.name);
     match tools.sermons.len() {
         0 => {}
-        n => note.push_str(&format!(
-            " The user has recorded {n} sermon{} at their church. Use search_sermons on what the \
-             question is about, and bring in what was preached if it bears on it.",
-            if n == 1 { "" } else { "s" }
-        )),
+        n => note.push_str(&format!(" The user has recorded {n} sermon{}.", if n == 1 { "" } else { "s" })),
+    }
+    if let Some(church) = &tools.church {
+        note.push_str(&format!(" Their own church is {church}."));
     }
     note
 }
@@ -208,6 +208,8 @@ pub struct Tools {
     pub translation: Arc<Translation>,
     /// Transcribed sermons, newest first.
     pub sermons: Arc<Vec<Transcript>>,
+    /// The user's own church, as they named it in Settings.
+    pub church: Option<String>,
 }
 
 /// The most verses one `get_passage` call returns, so a chapter of Psalm 119 can't flood the
@@ -257,10 +259,10 @@ impl Tools {
             },
             {
                 "name": "search_sermons",
-                "description": "Searches the transcripts of sermons the user recorded at their church (newest \
-                    first). Every word must appear in a passage of the sermon. Returns excerpts with the \
-                    sermon's id and the moment they were said. Use it whenever the user asks what their \
-                    church, pastor or a sermon taught.",
+                "description": "Searches the transcripts of sermons the user recorded, newest first: at their \
+                    own church or from elsewhere, such as a livestream or a video. Every word must appear in a \
+                    passage of the sermon. Returns excerpts with the sermon's id, the moment they were said, \
+                    and who preached and where, when the user said.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -274,7 +276,9 @@ impl Tools {
             {
                 "name": "read_sermon",
                 "description": "Reads a recorded sermon's transcript from a moment on (\"12:30\"; the start by \
-                    default), up to about 15 minutes. With no sermon id, lists the recorded sermons.",
+                    default), up to about 15 minutes. With no sermon id, lists the recorded sermons with what is \
+                    known of each: title, preacher, where it's from, how it was heard, the passage it names \
+                    most.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -618,6 +622,7 @@ impl Tools {
         }
         let mut out = Vec::new();
         for t in self.sermons.iter() {
+            let voices = several_speakers(t);
             for seg in &t.segments {
                 let words: Vec<&str> = seg.text.split_whitespace().collect();
                 let norm: Vec<String> = words
@@ -642,13 +647,14 @@ impl Tools {
                 if b < words.len() {
                     excerpt.push_str(" …");
                 }
-                out.push(json!({
-                    "sermon": short_id(t),
-                    "title": t.title(),
-                    "at": transcribe::clock(at_ms),
-                    "speaker": seg.speaker,
-                    "excerpt": excerpt,
-                }));
+                let mut hit = json!({ "sermon": short_id(t), "title": t.title() });
+                attribution(t, &mut hit);
+                hit["at"] = transcribe::clock(at_ms).into();
+                if voices {
+                    hit["speaker"] = json!(seg.speaker);
+                }
+                hit["excerpt"] = excerpt.into();
+                out.push(hit);
             }
         }
         out
@@ -936,8 +942,42 @@ fn short_id(t: &Transcript) -> &str {
     &t.recording_id[..SHORT_ID.min(t.recording_id.len())]
 }
 
+/// What is known of a sermon, for the model to attribute what was said by.
 fn sermon_summary(t: &Transcript) -> Value {
-    json!({ "sermon": short_id(t), "title": t.title(), "length": transcribe::clock(t.duration_ms) })
+    let mut v = json!({ "sermon": short_id(t), "title": t.title() });
+    attribution(t, &mut v);
+    v["recorded"] = t.day().into();
+    v["heard"] = match (t.about.source, &t.about.details.app) {
+        (Some(Source::Microphone), _) => "in person, through the microphone".into(),
+        (Some(Source::SystemAudio), Some(app)) => format!("played on the computer, in {app}").into(),
+        (Some(Source::SystemAudio), None) => "played on the computer".into(),
+        (Some(Source::File), _) => "imported from a file".into(),
+        (None, _) => Value::Null,
+    };
+    if let Some(p) = &t.about.passage {
+        v["passage"] = p.as_str().into();
+    }
+    v["length"] = transcribe::clock(t.duration_ms).into();
+    v
+}
+
+/// The preacher and where the sermon is from, when the user said.
+fn attribution(t: &Transcript, v: &mut Value) {
+    let d = &t.about.details;
+    if let Some(speaker) = &d.speaker {
+        v["preacher"] = speaker.as_str().into();
+    }
+    if let Some(from) = &d.from {
+        v["from"] = from.as_str().into();
+    }
+}
+
+/// Whether the transcriber heard more than one voice. With one, its label ("A") tells the model
+/// nothing and would only be repeated as if it were a name.
+fn several_speakers(t: &Transcript) -> bool {
+    let mut voices = t.segments.iter().filter_map(|s| s.speaker.as_deref());
+    let first = voices.next();
+    voices.any(|v| Some(v) != first)
 }
 
 /// The turns of speech that overlap `from..to`, up to [`SERMON_WORDS`] words.
@@ -945,6 +985,7 @@ fn read_sermon(t: &Transcript, from: u64, to: u64) -> Value {
     let mut words = 0;
     let mut truncated = false;
     let mut turns = Vec::new();
+    let voices = several_speakers(t);
     for seg in t.segments.iter().filter(|s| s.end_ms > from && s.start_ms < to) {
         let n = seg.text.split_whitespace().count();
         if words + n > SERMON_WORDS && !turns.is_empty() {
@@ -952,16 +993,17 @@ fn read_sermon(t: &Transcript, from: u64, to: u64) -> Value {
             break;
         }
         words += n;
-        turns
-            .push(json!({ "at": transcribe::clock(seg.start_ms), "speaker": seg.speaker, "text": seg.text }));
+        let mut turn = json!({ "at": transcribe::clock(seg.start_ms) });
+        if voices {
+            turn["speaker"] = json!(seg.speaker);
+        }
+        turn["text"] = seg.text.as_str().into();
+        turns.push(turn);
     }
-    json!({
-        "sermon": short_id(t),
-        "title": t.title(),
-        "length": transcribe::clock(t.duration_ms),
-        "turns": turns,
-        "truncated": truncated || t.segments.iter().any(|s| s.start_ms >= to),
-    })
+    let mut v = sermon_summary(t);
+    v["turns"] = turns.into();
+    v["truncated"] = (truncated || t.segments.iter().any(|s| s.start_ms >= to)).into();
+    v
 }
 
 fn scope(s: &str) -> Result<Scope> {
@@ -1073,6 +1115,7 @@ mod tests {
         Tools {
             translation: Arc::new(crate::bundled::load("kjv").unwrap()),
             sermons: Arc::new(vec![sermon()]),
+            church: None,
         }
     }
 
@@ -1097,6 +1140,7 @@ mod tests {
                 seg(60_000, 260_000, &long),
                 seg(900_000, 960_000, "The wind blows where it wishes; new birth is God's work."),
             ],
+            about: Default::default(),
         }
     }
 
@@ -1125,6 +1169,35 @@ mod tests {
         let list = t.run("read_sermon", &json!({})).unwrap();
         assert_eq!(list["sermons"][0]["title"], "Sermon · Oct 19, 2026");
         assert!(t.run("read_sermon", &json!({ "sermon": "ffff" })).is_err());
+    }
+
+    #[test]
+    fn sermons_carry_who_preached_and_where_not_the_transcribers_voice_label() {
+        let mut s = sermon();
+        s.about = transcribe::About {
+            source: Some(Source::SystemAudio),
+            details: crate::recording::Details {
+                speaker: Some("John Piper".into()),
+                from: Some("Desiring God".into()),
+                app: Some("Google Chrome".into()),
+                ..Default::default()
+            },
+            passage: Some("John 3".into()),
+        };
+        let t = Tools { sermons: Arc::new(vec![s]), ..tools() };
+        let list = t.run("read_sermon", &json!({})).unwrap();
+        let about = &list["sermons"][0];
+        assert_eq!(about["preacher"], "John Piper");
+        assert_eq!(about["from"], "Desiring God");
+        assert_eq!(about["heard"], "played on the computer, in Google Chrome");
+        assert_eq!(about["title"], "John 3 · Oct 19, 2026");
+        let hit = &t.run("search_sermons", &json!({ "query": "Nicodemus" })).unwrap()["hits"][0];
+        assert_eq!((&hit["preacher"], &hit["from"]), (&json!("John Piper"), &json!("Desiring God")));
+        // One voice throughout: "A" would only be repeated as if it were a name.
+        assert!(hit.get("speaker").is_none(), "{hit}");
+        let read = t.run("read_sermon", &json!({ "sermon": "a406" })).unwrap();
+        assert!(read["turns"][0].get("speaker").is_none(), "{read}");
+        assert_eq!(read["preacher"], "John Piper");
     }
 
     #[test]
@@ -1426,17 +1499,20 @@ mod tests {
         };
         assert_eq!(ctx.describe(), "The user is reading John 3 in the NLT. They have selected John 3:14–16.");
         let translation = Arc::new(crate::bundled::load("bsb").unwrap());
-        let tools = Tools { translation, sermons: Arc::new(Vec::new()) };
+        let tools = Tools { translation, sermons: Arc::new(Vec::new()), church: None };
         assert_eq!(
             tools_note(&tools),
             "Passages you read and search come from the BSB (Berean Standard Bible)."
         );
-        // With sermons recorded, it points the model at them for any question, not only ones
-        // that ask about a sermon.
-        let tools = Tools { sermons: Arc::new(vec![sermon(), sermon()]), ..tools };
-        assert!(tools_note(&tools).ends_with(
-            "The user has recorded 2 sermons at their church. Use search_sermons on what the question is \
-             about, and bring in what was preached if it bears on it."
-        ));
+        // Whether there are sermons to search, and which church is the user's own.
+        let tools = Tools {
+            sermons: Arc::new(vec![sermon(), sermon()]),
+            church: Some("Grace Church".into()),
+            ..tools
+        };
+        assert!(
+            tools_note(&tools)
+                .ends_with(" The user has recorded 2 sermons. Their own church is Grace Church.")
+        );
     }
 }

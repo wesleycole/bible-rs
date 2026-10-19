@@ -13,6 +13,7 @@
 //! linger transcribe [<recording-id>]   (the latest untranscribed recording by default)
 //! linger signin | signout | account    (Linger's account, for Ask and cloud transcripts)
 //! linger sermons
+//! linger sermon <recording-id> [--title "…"] [--preacher "…"] [--from "…"]   (shows or sets details)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -65,6 +66,7 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         "signout" => signout(data_dir),
         "account" => account(data_dir),
         "sermons" => sermons(data_dir),
+        "sermon" => sermon(rest, data_dir),
         "--version" | "-V" => {
             println!("linger {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -265,6 +267,9 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
     let tools = Tools {
         translation: lib.load(ask_translation(&asked))?,
         sermons: Arc::new(linger_core::transcribe::all(data_dir)),
+        church: StudyStore::open(&data_dir.join("study.sqlite"))
+            .ok()
+            .and_then(|s| crate::app::Settings::load(&s).home_church),
     };
     let question = positional(rest).into_iter().cloned().collect::<Vec<_>>().join(" ");
     if question.trim().is_empty() {
@@ -376,7 +381,43 @@ fn sermons(data_dir: &Path) -> Result<()> {
     use linger_core::transcribe;
     for t in transcribe::all(data_dir) {
         let words: usize = t.segments.iter().map(|s| s.text.split_whitespace().count()).sum();
-        println!("{}  {}  {}  {words} words", t.recording_id, t.title(), transcribe::clock(t.duration_ms));
+        let d = &t.about.details;
+        let by: Vec<&str> = [d.speaker.as_deref(), d.from.as_deref()].into_iter().flatten().collect();
+        let by = if by.is_empty() { String::new() } else { format!("  ({})", by.join(", ")) };
+        println!(
+            "{}  {}{by}  {}  {words} words",
+            t.recording_id,
+            t.title(),
+            transcribe::clock(t.duration_ms)
+        );
+    }
+    Ok(())
+}
+
+/// Shows a recording's details, or sets those given.
+fn sermon(rest: &[String], data_dir: &Path) -> Result<()> {
+    use linger_core::recording;
+    let id = positional(rest).first().map(|s| s.as_str()).context("usage: linger sermon <recording-id>")?;
+    let m = recording::list(data_dir)
+        .into_iter()
+        .find(|m| m.id.starts_with(id))
+        .context("no recording with that id")?;
+    let mut d = m.details.clone();
+    let mut changed = false;
+    for (name, field) in [("--title", &mut d.title), ("--preacher", &mut d.speaker), ("--from", &mut d.from)]
+    {
+        if let Some(v) = flag(rest, name) {
+            *field = Some(v);
+            changed = true;
+        }
+    }
+    let m = if changed { recording::save_details(data_dir, &m.id, d)? } else { m };
+    let d = &m.details;
+    println!("{}", m.id);
+    for (label, v) in
+        [("Title", &d.title), ("Preacher", &d.speaker), ("From", &d.from), ("Played in", &d.app)]
+    {
+        println!("  {label}: {}", v.as_deref().unwrap_or("—"));
     }
     Ok(())
 }

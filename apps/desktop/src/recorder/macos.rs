@@ -20,15 +20,17 @@ use linger_core::recording::{SAMPLE_RATE, Source};
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
+use objc2_app_kit::NSRunningApplication;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_core_audio::{
     AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart,
     AudioDeviceStop, AudioHardwareCreateAggregateDevice, AudioHardwareDestroyAggregateDevice,
-    AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress, CATapDescription,
-    kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceNameKey, kAudioAggregateDeviceTapAutoStartKey,
-    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey, kAudioObjectPropertyElementMain,
-    kAudioObjectPropertyScopeGlobal, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey,
-    kAudioTapPropertyFormat,
+    AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
+    CATapDescription, kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceNameKey,
+    kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
+    kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyElementMain,
+    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, kAudioProcessPropertyIsRunningOutput,
+    kAudioProcessPropertyPID, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey, kAudioTapPropertyFormat,
 };
 use objc2_core_audio_types::{
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, kAudioFormatFlagIsFloat,
@@ -345,7 +347,8 @@ impl Tap {
             desc.setPrivate(true);
             check((api.create)(&*desc, &mut this.tap), "couldn't tap the computer's audio")?;
 
-            let format: AudioStreamBasicDescription = property(this.tap, kAudioTapPropertyFormat)?;
+            let format: AudioStreamBasicDescription = property(this.tap, kAudioTapPropertyFormat)
+                .context("couldn't read the computer's audio format")?;
             if format.mFormatID != kAudioFormatLinearPCM
                 || format.mFormatFlags & kAudioFormatFlagIsFloat == 0
                 || format.mBitsPerChannel != 32
@@ -484,10 +487,100 @@ unsafe fn property<T>(object: AudioObjectID, selector: u32) -> Result<T> {
                 NonNull::from(&mut size),
                 NonNull::from(&mut value).cast(),
             ),
-            "couldn't read the computer's audio format",
+            "Core Audio didn't answer",
         )?;
         Ok(value.assume_init())
     }
+}
+
+/// Reads a property that is a list of Core Audio objects.
+unsafe fn object_list(object: AudioObjectID, selector: u32) -> Result<Vec<AudioObjectID>> {
+    let address = AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut size = 0u32;
+    // SAFETY: the list has room for `size` bytes, as Core Audio reported.
+    unsafe {
+        check(
+            AudioObjectGetPropertyDataSize(
+                object,
+                NonNull::from(&address),
+                0,
+                ptr::null(),
+                NonNull::from(&mut size),
+            ),
+            "Core Audio didn't answer",
+        )?;
+        let mut list = vec![0 as AudioObjectID; size as usize / size_of::<AudioObjectID>()];
+        let mut size = (list.len() * size_of::<AudioObjectID>()) as u32;
+        check(
+            AudioObjectGetPropertyData(
+                object,
+                NonNull::from(&address),
+                0,
+                ptr::null(),
+                NonNull::from(&mut size),
+                NonNull::new(list.as_mut_ptr()).expect("a Vec's pointer").cast(),
+            ),
+            "Core Audio didn't answer",
+        )?;
+        list.truncate(size as usize / size_of::<AudioObjectID>());
+        Ok(list)
+    }
+}
+
+/// The apps playing sound right now, by name: "Google Chrome". A helper process, such as a
+/// browser's audio service or Safari's WebKit, is named by the app it works for.
+pub fn playing_apps() -> Vec<String> {
+    let me = std::process::id() as libc::pid_t;
+    let mut names = Vec::new();
+    // SAFETY: the system object and the process objects it lists answer these properties, with
+    // these types.
+    unsafe {
+        let Ok(processes) =
+            object_list(kAudioObjectSystemObject as u32, kAudioHardwarePropertyProcessObjectList)
+        else {
+            return names;
+        };
+        for p in processes {
+            if property::<u32>(p, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) == 0 {
+                continue;
+            }
+            let Ok(pid) = property::<libc::pid_t>(p, kAudioProcessPropertyPID) else { continue };
+            if pid == me {
+                continue;
+            }
+            if let Some(name) = app_name(pid)
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// The name of the app a process belongs to.
+fn app_name(pid: libc::pid_t) -> Option<String> {
+    type Responsible = unsafe extern "C" fn(libc::pid_t) -> libc::pid_t;
+    static RESPONSIBLE: OnceLock<Option<Responsible>> = OnceLock::new();
+    // The process macOS holds responsible for a helper: the app it works for. Private, but it is
+    // what Activity Monitor groups processes by; without it a helper is named as itself.
+    let responsible = RESPONSIBLE.get_or_init(|| {
+        // SAFETY: dlsym takes any NUL-terminated name; the function takes and returns a pid.
+        unsafe {
+            let f = libc::dlsym(libc::RTLD_DEFAULT, c"responsibility_get_pid_responsible_for_pid".as_ptr());
+            (!f.is_null()).then(|| std::mem::transmute::<*mut c_void, Responsible>(f))
+        }
+    });
+    // SAFETY: the function only looks the pid up.
+    let owner = responsible.map(|f| unsafe { f(pid) }).filter(|&o| o > 0).unwrap_or(pid);
+    let app = NSRunningApplication::runningApplicationWithProcessIdentifier(owner)?;
+    let name = app.localizedName()?.to_string();
+    // A helper that has no responsible app: "Google Chrome Helper (Renderer)" is Google Chrome.
+    Some(name.split(" Helper").next().unwrap_or(&name).trim().to_string())
 }
 
 fn check(status: i32, what: &str) -> Result<()> {

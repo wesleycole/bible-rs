@@ -67,6 +67,9 @@ pub struct Settings {
     pub ask_translation: String,
     /// The one-time Ask sheet (what is sent where) was accepted.
     pub ask_consent: bool,
+    /// The user's own church, as named when saving a recording's details: it fills in where a
+    /// microphone recording is from, and tells Ask which sermons are their church's.
+    pub home_church: Option<String>,
     /// The first-launch screens are done. Settings saved before they existed count as done.
     #[serde(default = "yes")]
     pub onboarded: bool,
@@ -94,6 +97,7 @@ impl Default for Settings {
             plan_reminder: false,
             ask_translation: linger_core::chat::ASK_TRANSLATIONS[0].into(),
             ask_consent: false,
+            home_church: None,
             accent: theme::Accent::Ink,
             toolbar_translation: true,
             sidebar_attached: false,
@@ -293,6 +297,8 @@ pub struct BibleApp {
     compare: Option<crate::compare_popover::ComparePopover>,
     /// Sharing the selected verses as an image or text (frame 22).
     share_sheet: Option<crate::share_sheet::ShareSheet>,
+    /// About This Recording: who preached and where, for a recording just stopped or one Ask cited.
+    details_sheet: Option<crate::details_sheet::DetailsSheet>,
     /// Importing a translation (frames 13–15).
     import_sheet: Option<crate::import_sheet::ImportSheet>,
     /// Focus mode (frame 30): full screen, the chrome hidden, larger type.
@@ -438,6 +444,7 @@ impl BibleApp {
             demo_sign_in: false,
             import_sheet: None,
             share_sheet: None,
+            details_sheet: None,
             compare: None,
             reminded: None,
             focus: false,
@@ -489,6 +496,34 @@ impl BibleApp {
         self.history.push(here);
         let flash = flash && self.settings.flash_jumps && !self.settings.reduce_motion;
         self.reader.jump(chapter, verse, flash);
+    }
+
+    /// Saves what the user said of a recording, and remembers (or forgets) their church by it.
+    fn save_recording_details(
+        &mut self,
+        ctx: &egui::Context,
+        id: &str,
+        details: linger_core::recording::Details,
+        mine: bool,
+    ) {
+        let from = details.from.clone();
+        if let Err(e) = linger_core::recording::save_details(&self.data_dir, id, details) {
+            self.toast(ctx, format!("Couldn't save the details: {e:#}"));
+            return;
+        }
+        let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+        match (mine, from) {
+            (true, Some(from)) => self.settings.home_church = Some(from),
+            // Unticked: it isn't the user's church after all.
+            (false, Some(from)) if self.settings.home_church.as_deref().is_some_and(|h| same(h, &from)) => {
+                self.settings.home_church = None
+            }
+            _ => {}
+        }
+        self.settings.save(&self.study);
+        if let Some(ask) = &mut self.ask {
+            ask.reload_sermons(&self.data_dir);
+        }
     }
 
     fn poll_tasks(&mut self, ctx: &egui::Context) {
@@ -1004,8 +1039,12 @@ impl BibleApp {
             }
             Action::StopRecording => {
                 if let Some(r) = self.recording.take() {
+                    let mut stopped = None;
                     let msg = match r.stop() {
                         Ok(m) => {
+                            if m.duration_ms() > 0 {
+                                stopped = Some(m.clone());
+                            }
                             let length = crate::recorder::duration_label(m.duration_ms() / 1000);
                             // A developer's own AssemblyAI key wins; otherwise Linger's
                             // server, as the signed-in account.
@@ -1037,6 +1076,27 @@ impl BibleApp {
                         Err(e) => format!("Recording stopped: {e:#}"),
                     };
                     self.toast(ctx, msg);
+                    // Who preached and where, while it's fresh; Ask attributes what was said by it.
+                    if let Some(m) = stopped {
+                        self.details_sheet = Some(crate::details_sheet::DetailsSheet::new(
+                            &self.data_dir,
+                            &m,
+                            self.settings.home_church.as_deref(),
+                        ));
+                    }
+                }
+            }
+            Action::EditRecording(id) => {
+                match linger_core::recording::list(&self.data_dir).into_iter().find(|m| m.id.starts_with(&id))
+                {
+                    Some(m) => {
+                        self.details_sheet = Some(crate::details_sheet::DetailsSheet::new(
+                            &self.data_dir,
+                            &m,
+                            self.settings.home_church.as_deref(),
+                        ))
+                    }
+                    None => self.toast(ctx, "That recording is no longer on this Mac"),
                 }
             }
             Action::SignIn => self.account.sign_in(),
@@ -1063,6 +1123,7 @@ impl BibleApp {
     /// `search:<query>`, `scope:<ot|nt>`, `step:<n>` (search results), `offline:<reference>`, `note:<reference>`, `compare:<reference>`, `study:<bookmarks|highlights|notes>`,
     /// `settings:<reading|translations|data|account>`, `plans-tab:<active|browse|completed>`, `ask`,
     /// `account:<state>`, `consent:<yes|no>`, `ask-notice:<kind>`, `sign-in[:<waiting|error>]`,
+    /// `recording[:<id>]` (About This Recording),
     /// `size:<width>x<height>` (the window's inner size).
     fn demo_step(&mut self, ctx: &egui::Context, step: &str, actions: &mut Vec<Action>) {
         let (cmd, arg) = step.split_once(':').unwrap_or((step, ""));
@@ -1079,6 +1140,12 @@ impl BibleApp {
             }
             "select" => self.reader.set_selection(verse()),
             "ask" => actions.push(Action::ToggleAsk),
+            // About This Recording for the newest recording, or the one whose id starts with arg.
+            "recording" => {
+                let newest = linger_core::recording::list(&self.data_dir).into_iter().next().map(|m| m.id);
+                let id = if arg.is_empty() { newest } else { Some(arg.to_string()) };
+                actions.extend(id.map(Action::EditRecording));
+            }
             "palette" => self.palette = Some(CommandPalette::with_query(arg)),
             "search" => actions.push(Action::OpenSearch(Some(arg.to_string()))),
             "step" => actions.push(Action::SearchStep(arg.parse().unwrap_or(1))),
@@ -2860,6 +2927,7 @@ impl eframe::App for BibleApp {
                     api: self.account.api(),
                     me: self.account.me.as_ref(),
                     consented: self.settings.ask_consent,
+                    church: self.settings.home_church.as_deref(),
                 };
                 let close = ask.show(&mut child, p, &env, &mut actions);
                 // After each answer, into Recents.
@@ -2994,6 +3062,16 @@ impl eframe::App for BibleApp {
                         let _ = anchor;
                         self.toast(&ctx, format!("Saved the image to {}", path.display()));
                     }
+                }
+            }
+        }
+        if let Some(sheet) = &mut self.details_sheet {
+            match sheet.show(&ctx, p) {
+                crate::details_sheet::Outcome::Open => {}
+                crate::details_sheet::Outcome::Close => self.details_sheet = None,
+                crate::details_sheet::Outcome::Save { id, details, mine } => {
+                    self.details_sheet = None;
+                    self.save_recording_details(&ctx, &id, details, mine);
                 }
             }
         }

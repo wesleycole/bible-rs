@@ -10,6 +10,7 @@ pub mod ask_panel;
 pub mod book_picker;
 pub mod cli;
 pub mod compare_popover;
+pub mod details_sheet;
 pub mod icons;
 pub mod import_sheet;
 pub mod keymap;
