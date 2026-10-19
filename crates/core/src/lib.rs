@@ -1,6 +1,7 @@
 //! Core of linger: the verse-indexed translation model, the `.bbl` binary format, importers,
 //! full-text search, reference parsing and local study storage. No GUI code lives here.
 
+pub mod assistant;
 pub mod books;
 #[cfg(feature = "bundled")]
 pub mod bundled;

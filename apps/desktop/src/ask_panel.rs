@@ -3,15 +3,17 @@
 //! The reader feeds the conversation (the chapter and any selected verses go with each question,
 //! shown as a chip that can be dropped) and the conversation points back at the reader: every
 //! verse an answer cites is a chip that jumps there, and gets a dot in the reader's margin.
-//! Answers come from `linger_core::chat`; until the assistant is connected, its stand-in.
+//! Answers come from Claude through `linger_core::assistant`, streamed in as they're written;
+//! without a Gateway key, from `linger_core::chat`'s labelled stand-in.
 
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
     self, Align2, FontId, Key, Modifiers, Rect, ScrollArea, Sense, TextFormat, Ui, pos2, vec2,
 };
+use linger_core::assistant::{self, Conversation, Event};
 use linger_core::chat::{self, Message, Role, Segment};
 use linger_core::reference::{self, Reference};
 use linger_core::{ChapterIdx, VerseRef};
@@ -47,9 +49,15 @@ pub fn paint_card(painter: &egui::Painter, p: &Palette, r: Rect) {
 
 #[derive(Default)]
 pub struct AskPanel {
+    /// What the panel shows; the API's view of the same conversation is `conversation`.
     messages: Vec<Message>,
+    conversation: Arc<Mutex<Conversation>>,
+    config: Option<assistant::Config>,
     input: String,
-    pending: Option<Receiver<Message>>,
+    pending: Option<Receiver<Update>>,
+    /// The answer so far while it streams, and what Claude is doing ("Reading John 3:16").
+    streaming: String,
+    status: Option<String>,
     /// The reading context was dropped from the next question.
     context_off: bool,
     focus: bool,
@@ -64,9 +72,14 @@ pub struct AskEnv<'a> {
     pub selection: Option<(VerseRef, VerseRef)>,
 }
 
+enum Update {
+    Event(Event),
+    Done(Message),
+}
+
 impl AskPanel {
     pub fn new() -> Self {
-        Self { focus: true, ..Default::default() }
+        Self { focus: true, config: assistant::Config::from_env(), ..Default::default() }
     }
 
     /// Focus the question field next frame.
@@ -86,11 +99,21 @@ impl AskPanel {
 
     /// Draws the panel's content in `ui` (its card already painted). Returns `true` to close.
     pub fn show(&mut self, ui: &mut Ui, p: &Palette, env: &AskEnv<'_>, actions: &mut Vec<Action>) -> bool {
-        if let Some(rx) = &self.pending
-            && let Ok(m) = rx.try_recv()
-        {
-            self.messages.push(m);
-            self.pending = None;
+        while let Some(update) = self.pending.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            match update {
+                Update::Event(Event::Text(t)) => {
+                    self.streaming.push_str(&t);
+                    self.status = None;
+                }
+                Update::Event(Event::Tool(what)) => self.status = Some(what),
+                Update::Event(Event::Thinking) => self.status = Some("Thinking".into()),
+                Update::Done(m) => {
+                    self.messages.push(m);
+                    self.pending = None;
+                    self.streaming.clear();
+                    self.status = None;
+                }
+            }
             self.stick_to_bottom = true;
         }
         if self.pending.is_some() {
@@ -155,6 +178,7 @@ impl AskPanel {
                 && self.pending.is_none()
             {
                 self.messages.clear();
+                self.conversation = Arc::default();
                 self.focus = true;
             }
         }
@@ -183,15 +207,27 @@ impl AskPanel {
                 ui.add_space(14.0);
             }
             if self.pending.is_some() {
-                let dots = ".".repeat(1 + (ui.input(|i| i.time) * 3.0) as usize % 3);
-                let (r, _) = ui.allocate_exact_size(vec2(width + 2.0 * PAD, 24.0), Sense::hover());
-                ui.painter().text(
-                    pos2(r.left() + PAD, r.center().y),
-                    Align2::LEFT_CENTER,
-                    format!("Looking{dots}"),
-                    text::UI.font(),
-                    p.ink_3,
-                );
+                // The answer so far, without a citation still being written.
+                let shown = match self.streaming.rfind("{{") {
+                    Some(i) if !self.streaming[i..].contains("}}") => &self.streaming[..i],
+                    _ => &self.streaming,
+                };
+                if !shown.trim().is_empty() {
+                    answer(ui, p, env, shown, width, actions);
+                    ui.add_space(8.0);
+                }
+                if self.status.is_some() || shown.trim().is_empty() {
+                    let dots = ".".repeat(1 + (ui.input(|i| i.time) * 3.0) as usize % 3);
+                    let what = self.status.as_deref().unwrap_or("Thinking");
+                    let (r, _) = ui.allocate_exact_size(vec2(width + 2.0 * PAD, 24.0), Sense::hover());
+                    ui.painter().text(
+                        pos2(r.left() + PAD, r.center().y),
+                        Align2::LEFT_CENTER,
+                        format!("{what}{dots}"),
+                        text::UI.font(),
+                        p.ink_3,
+                    );
+                }
             }
             ui.add_space(8.0);
             if stick {
@@ -296,21 +332,35 @@ impl AskPanel {
         self.pending = Some(rx);
         let translation = env.library.load(env.translation);
         let chapter = env.chapter;
+        let config = self.config.clone();
+        let conversation = self.conversation.clone();
         std::thread::Builder::new()
             .name("ask".into())
             .spawn(move || {
-                let reply = match translation {
-                    Ok(t) => {
+                let reply = match (translation, config) {
+                    (Ok(t), Some(cfg)) => {
+                        let tools = chat::Tools { translation: t };
+                        let events: Sender<Update> = tx.clone();
+                        let mut conversation = conversation.lock().unwrap_or_else(|e| e.into_inner());
+                        conversation
+                            .ask(&cfg, &tools, context.as_ref(), &question, |e| {
+                                let _ = events.send(Update::Event(e));
+                            })
+                            .unwrap_or_else(|e| {
+                                Message::assistant(format!("Linger couldn't get an answer: {e:#}."))
+                            })
+                    }
+                    (Ok(t), None) => {
                         let tools = chat::Tools { translation: t };
                         let context = context.unwrap_or(chat::Context { chapter, selection: None });
                         chat::local_reply(&tools, &context, &question)
                     }
-                    Err(_) => Message::assistant(
+                    (Err(_), _) => Message::assistant(
                         "Linger can only look things up in a downloaded translation. Switch to one of \
                          them to ask about it.",
                     ),
                 };
-                let _ = tx.send(reply);
+                let _ = tx.send(Update::Done(reply));
             })
             .expect("spawn ask thread");
     }
@@ -353,21 +403,30 @@ fn answer(ui: &mut Ui, p: &Palette, env: &AskEnv<'_>, text: &str, width: f32, ac
         if i > 0 {
             ui.add_space(10.0);
         }
-        let mut prose = String::new();
+        // Citations stay in the sentence as accent-coloured references, and become chips below.
+        let mut job = LayoutJob::default();
         let mut refs: Vec<Reference> = Vec::new();
-        for seg in chat::segments(para) {
+        let format = |color| TextFormat {
+            font_id: font.clone(),
+            color,
+            line_height: Some(24.0),
+            ..Default::default()
+        };
+        let segments = chat::segments(para.trim());
+        for seg in &segments {
             match seg {
-                Segment::Text(t) => prose.push_str(&t),
+                Segment::Text(t) => job.append(t, 0.0, format(p.ink)),
                 Segment::Verse(r) => {
-                    if !refs.contains(&r) {
-                        refs.push(r);
+                    job.append(&ref_label(env, r), 0.0, format(p.accent));
+                    if !refs.contains(r) {
+                        refs.push(*r);
                     }
                 }
             }
         }
-        let prose = prose.trim();
-        if !prose.is_empty() {
-            let g = layout(ui, prose, font.clone(), p.ink, width, 24.0);
+        if !job.text.trim().is_empty() {
+            job.wrap.max_width = width;
+            let g = ui.fonts_mut(|f| f.layout_job(job));
             let (r, _) = ui.allocate_exact_size(vec2(width + 2.0 * PAD, g.size().y), Sense::hover());
             ui.painter().galley(pos2(r.left() + PAD, r.top()), g, p.ink);
         }
@@ -390,20 +449,8 @@ fn chips(
     let font = text::SMALL.font();
     let h = 24.0;
     let gap = 6.0;
-    let labels: Vec<_> = refs
-        .iter()
-        .map(|r| {
-            let name = env.library.get(env.translation).map(|e| e.meta.ref_name(r.book).to_string());
-            let mut s = format!("{} {}", name.as_deref().unwrap_or(r.book.ref_name()), r.chapter);
-            if let Some(v) = r.verse {
-                s.push_str(&format!(":{v}"));
-                if let Some(e) = r.verse_end.filter(|e| *e > v) {
-                    s.push_str(&format!("–{e}"));
-                }
-            }
-            ui.painter().layout_no_wrap(s, font.clone(), p.accent)
-        })
-        .collect();
+    let labels: Vec<_> =
+        refs.iter().map(|r| ui.painter().layout_no_wrap(ref_label(env, r), font.clone(), p.accent)).collect();
     let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
     let mut x = 0.0;
     for (i, g) in labels.iter().enumerate() {
@@ -439,6 +486,19 @@ fn chips(
             x = r.right() + gap;
         }
     }
+}
+
+/// "John 3:16", "1 Cor 13:4–7", "Psalm 23", with the translation's own book names.
+fn ref_label(env: &AskEnv<'_>, r: &Reference) -> String {
+    let name = env.library.get(env.translation).map(|e| e.meta.ref_name(r.book).to_string());
+    let mut s = format!("{} {}", name.as_deref().unwrap_or(r.book.ref_name()), r.chapter);
+    if let Some(v) = r.verse {
+        s.push_str(&format!(":{v}"));
+        if let Some(e) = r.verse_end.filter(|e| *e > v) {
+            s.push_str(&format!("–{e}"));
+        }
+    }
+    s
 }
 
 fn layout(

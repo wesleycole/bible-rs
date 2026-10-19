@@ -9,6 +9,7 @@
 //! linger export --markdown|--json [-o file]
 //! linger import-notes <export.json>
 //! linger record [--source mic|system] [--seconds N]   (Enter stops)
+//! linger ask "what does born of water mean?" [--at "jn 3:5"] [--translation kjv]
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -55,6 +56,7 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         "export" => export(rest, data_dir),
         "import-notes" => import_notes(rest, data_dir),
         "record" => record(rest, data_dir),
+        "ask" => ask(rest, data_dir),
         "--version" | "-V" => {
             println!("linger {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -65,7 +67,7 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
                 include_str!("cli.rs")
                     .lines()
                     .skip(3)
-                    .take(11)
+                    .take(12)
                     .map(|l| l.trim_start_matches("//! "))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -225,6 +227,42 @@ fn import_notes(rest: &[String], data_dir: &Path) -> Result<()> {
     let mut study = StudyStore::open(&data_dir.join("study.sqlite"))?;
     let (h, n, b) = study.import_json(&std::fs::read_to_string(&path).with_context(|| path.clone())?)?;
     println!("Imported {h} highlights, {n} notes and {b} bookmarks");
+    Ok(())
+}
+
+/// One question to the assistant, with the answer streamed to stdout and its lookups to stderr.
+fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
+    use std::io::Write;
+
+    use linger_core::assistant::{Config, Conversation, Event};
+    use linger_core::chat::{Context as Reading, Tools};
+    let cfg = Config::from_env().context("set AI_GATEWAY_API_KEY to ask the assistant")?;
+    let lib = library(data_dir);
+    let tools = Tools { translation: lib.load(&translation_id(rest, &lib))? };
+    let question = positional(rest).into_iter().cloned().collect::<Vec<_>>().join(" ");
+    if question.trim().is_empty() {
+        bail!("usage: linger ask \"question\" [--at \"jn 3:5\"]");
+    }
+    let context = flag(rest, "--at")
+        .map(|at| -> Result<Reading> {
+            let r = reference::parse(&at).context("--at: not a reference")?;
+            let selection = r.verse.map(|v| {
+                let a = linger_core::VerseRef::new(r.book, r.chapter, v);
+                (a, linger_core::VerseRef::new(r.book, r.chapter, r.verse_end.unwrap_or(v)))
+            });
+            Ok(Reading { chapter: r.chapter_idx(), selection })
+        })
+        .transpose()?;
+    let answer = Conversation::new().ask(&cfg, &tools, context.as_ref(), &question, |e| match e {
+        Event::Text(t) => {
+            print!("{t}");
+            let _ = std::io::stdout().flush();
+        }
+        Event::Tool(what) => eprintln!("\n[{what}]"),
+        Event::Thinking => eprintln!("\n[thinking]"),
+    })?;
+    println!();
+    eprintln!("\n{} verses cited", answer.cited().len());
     Ok(())
 }
 
