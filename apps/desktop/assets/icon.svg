@@ -1,47 +1,38 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The Linger mark (trylinger/linger), an arch, drawn as a lit doorway: warm light glows around
+       it and spills onto the floor of an ink tile. On the macOS icon grid the tile is 824 px with
+       a 100 px margin. The iOS icon (apps/ios/Linger/Assets.xcassets) is the tile alone, full
+       bleed, and `app_icon` in apps/desktop/src/onboarding.rs draws the same picture in the app. -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#7A2E2B"/>
-      <stop offset="1" stop-color="#3E1517"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C2723"/><stop offset="1" stop-color="#121010"/>
     </linearGradient>
-    <linearGradient id="pageL" x1="1" y1="0" x2="0" y2="0">
-      <stop offset="0" stop-color="#E9D7B2"/>
-      <stop offset="0.25" stop-color="#FAF2E1"/>
-      <stop offset="1" stop-color="#F3E6CB"/>
+    <linearGradient id="arch" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFDF8"/><stop offset="1" stop-color="#F5E4C4"/>
     </linearGradient>
-    <linearGradient id="pageR" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#E9D7B2"/>
-      <stop offset="0.25" stop-color="#FAF2E1"/>
-      <stop offset="1" stop-color="#F3E6CB"/>
+    <radialGradient id="glow" cx="512" cy="540" r="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E8B96E" stop-opacity="0.20"/><stop offset="1" stop-color="#E8B96E" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="spill" x1="0" y1="730" x2="0" y2="910" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F5E4C4" stop-opacity="0.26"/><stop offset="1" stop-color="#F5E4C4" stop-opacity="0"/>
     </linearGradient>
-    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#E7C77B"/>
-      <stop offset="1" stop-color="#B98E3E"/>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.20"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.03"/><stop offset="1" stop-color="#fff" stop-opacity="0.08"/>
     </linearGradient>
+    <clipPath id="tc"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="150%"><feGaussianBlur stdDeviation="14"/></filter>
+    <filter id="blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <filter id="halo" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="28"/></filter>
   </defs>
-  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
-  <rect x="100" y="100" width="824" height="824" rx="186" fill="none" stroke="#000" stroke-opacity="0.18" stroke-width="4"/>
-  <!-- book block shadow -->
-  <path d="M512 402 C 432 352 326 334 222 344 L 222 718 C 326 708 432 726 512 776 C 592 726 698 708 802 718 L 802 344 C 698 334 592 352 512 402 Z" fill="#000" fill-opacity="0.22" transform="translate(0 14)"/>
-  <!-- gold edges -->
-  <path d="M512 392 C 432 342 326 324 222 334 L 222 714 C 326 704 432 722 512 772 C 592 722 698 704 802 714 L 802 334 C 698 324 592 342 512 392 Z" fill="url(#gold)"/>
-  <!-- pages -->
-  <path d="M512 380 C 434 330 330 312 236 320 L 236 694 C 330 688 434 706 512 754 Z" fill="url(#pageL)"/>
-  <path d="M512 380 C 590 330 694 312 788 320 L 788 694 C 694 688 590 706 512 754 Z" fill="url(#pageR)"/>
-  <path d="M512 380 L 512 754" stroke="#C9B38A" stroke-width="5"/>
-  <!-- text lines -->
-  <g stroke="#B49B74" stroke-width="10" stroke-linecap="round" fill="none" opacity="0.75">
-    <path d="M290 402 C 350 398 410 408 462 430"/>
-    <path d="M290 446 C 350 442 410 452 462 474"/>
-    <path d="M290 490 C 350 486 410 496 462 518"/>
-    <path d="M290 534 C 350 530 410 540 462 562"/>
-    <path d="M290 578 C 350 574 410 584 462 606"/>
-    <path d="M562 430 C 614 408 674 398 734 402"/>
-    <path d="M562 474 C 614 452 674 442 734 446"/>
-    <path d="M562 518 C 614 496 674 486 734 490"/>
-    <path d="M562 562 C 614 540 674 530 734 534"/>
+  <g id="shadow"><rect x="100" y="112" width="824" height="824" rx="186" fill="#000" opacity="0.32" filter="url(#drop)"/></g>
+  <g id="art">
+    <rect id="ground" x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+    <g clip-path="url(#tc)">
+      <rect x="100" y="100" width="824" height="824" fill="url(#glow)"/>
+      <path d="M330 730 L694 730 L790 910 L234 910 Z" fill="url(#spill)" filter="url(#blur)"/>
+    </g>
+    <path d="M330 730 V430 A182 182 0 0 1 694 430 V730 Z" fill="#F2D49E" opacity="0.30" filter="url(#halo)"/>
+    <path d="M330 730 V430 A182 182 0 0 1 694 430 V730 Z" fill="url(#arch)"/>
   </g>
-  <!-- ribbon -->
-  <path d="M640 346 L 640 640 L 668 612 L 696 640 L 696 336 Z" fill="#B3332C"/>
-  <path d="M640 346 L 640 640 L 668 612 L 668 340 Z" fill="#000" fill-opacity="0.12"/>
+  <g id="rimline"><rect x="102" y="102" width="820" height="820" rx="184" fill="none" stroke="url(#rim)" stroke-width="4"/></g>
 </svg>

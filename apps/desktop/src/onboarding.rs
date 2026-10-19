@@ -418,46 +418,94 @@ fn steps(painter: &Painter, p: &Palette, full: Rect, current: usize) {
     }
 }
 
-/// The app icon: a blue gradient tile with a soft blue shadow, a white hairline and the book glyph.
+/// The app icon: the Linger mark, an arch, drawn as a lit doorway on an ink tile, with the warm
+/// glow and the light on the floor of `assets/icon.svg`.
 pub fn app_icon(painter: &Painter, r: Rect) {
-    // The design's icon at 64 pt: radius 14.4, a 32 pt glyph; it scales with its box.
-    let k = r.width() / 64.0;
-    let radius = 14.4 * k;
-    let top = Color32::from_rgb(61, 93, 186);
-    let bottom = Color32::from_rgb(36, 57, 122);
+    use egui::epaint::{CornerRadius, RectShape};
+    // The design's icon at 64 pt: radius 14.4; it scales with its box. Positions are fractions of
+    // the tile, from the SVG's 824 px tile.
+    let s = r.width();
+    let radius = 14.4 * s / 64.0;
+    let at = |x: f32, y: f32| r.min + vec2(x, y) * s;
+    let light = Color32::from_rgb(0xF5, 0xE4, 0xC4);
     painter.add(
-        egui::epaint::RectShape::filled(
-            r.translate(vec2(0.0, 8.0)),
-            radius,
-            Color32::from_rgba_unmultiplied(36, 57, 122, 77),
-        )
-        .with_blur_width(48.0),
+        RectShape::filled(r.translate(vec2(0.0, 8.0)), radius, Color32::from_black_alpha(70))
+            .with_blur_width(48.0),
     );
+    // The tile, lighter at the top. A flat fill gives the antialiased edge; the gradient sits on it.
+    let (top, bottom) = (Color32::from_rgb(0x2C, 0x27, 0x23), Color32::from_rgb(0x12, 0x10, 0x10));
     painter.rect_filled(r, radius, top.lerp_to_gamma(bottom, 0.5));
-    // The gradient runs at 160° (CSS): down and slightly right.
-    let dir = egui::Vec2::angled(160f32.to_radians() - std::f32::consts::FRAC_PI_2);
-    let span = r.width() * dir.x.abs() + r.height() * dir.y.abs();
-    let inner = r.shrink(0.5);
-    let pts = rounded_rect_points(inner, radius - 0.5);
-    let mut mesh = Mesh::default();
-    let color_at =
-        |q: Pos2| top.lerp_to_gamma(bottom, ((q - r.center()).dot(dir) / span + 0.5).clamp(0.0, 1.0));
-    mesh.colored_vertex(inner.center(), color_at(inner.center()));
-    for q in &pts {
-        mesh.colored_vertex(*q, color_at(*q));
+    painter.add(vertical_gradient(&rounded_rect_points(r.shrink(0.5), radius - 0.5), r, top, bottom));
+    let tile = painter.with_clip_rect(r);
+    // Warm light around the doorway.
+    tile.add(
+        RectShape::filled(
+            Rect::from_center_size(at(0.5, 0.534), vec2(0.2 * s, 0.2 * s)),
+            0.1 * s,
+            Color32::from_rgb(0xE8, 0xB9, 0x6E).gamma_multiply(0.2),
+        )
+        .with_blur_width(0.6 * s),
+    );
+    // Its light on the floor, fading away from the door; three widths soften the sides.
+    for spread in [-0.02, 0.0, 0.02] {
+        let floor =
+            [at(0.279, 0.765), at(0.721, 0.765), at(0.837 + spread, 0.983), at(0.163 - spread, 0.983)];
+        let fade = Rect::from_min_max(floor[0], floor[2]);
+        let start = light.gamma_multiply(0.26 / 3.0);
+        tile.add(vertical_gradient(&floor, fade, start, Color32::TRANSPARENT));
     }
-    let n = pts.len() as u32;
-    for i in 0..n {
-        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
-    }
-    painter.add(mesh);
+    // The arch: 44% of the tile wide, 58.5% tall, with a semicircular top.
+    let arch = Rect::from_min_max(at(0.279, 0.18), at(0.721, 0.765));
+    let arc_r = arch.width() / 2.0;
+    let corner = arc_r.round() as u8;
+    tile.add(
+        RectShape::filled(
+            arch,
+            CornerRadius { nw: corner, ne: corner, sw: 0, se: 0 },
+            Color32::from_rgb(0xF2, 0xD4, 0x9E).gamma_multiply(0.3),
+        )
+        .with_blur_width(0.1 * s),
+    );
+    let arch_points = |a: Rect| {
+        let arc_r = a.width() / 2.0;
+        let centre = pos2(a.center().x, a.top() + arc_r);
+        let mut pts = vec![a.left_bottom()];
+        pts.extend((0..=32).map(|k| {
+            let t = std::f32::consts::PI * (1.0 + k as f32 / 32.0);
+            centre + vec2(t.cos(), t.sin()) * arc_r
+        }));
+        pts.push(a.right_bottom());
+        pts
+    };
+    let (lit_top, lit_bottom) = (Color32::from_rgb(0xFF, 0xFD, 0xF8), light);
+    painter.add(egui::Shape::convex_polygon(
+        arch_points(arch),
+        lit_top.lerp_to_gamma(lit_bottom, 0.5),
+        Stroke::NONE,
+    ));
+    painter.add(vertical_gradient(&arch_points(arch.shrink(0.5)), arch, lit_top, lit_bottom));
     painter.rect_stroke(
         r.shrink(0.25),
         radius,
-        Stroke::new(0.5, Color32::from_white_alpha(64)),
+        Stroke::new(0.5, Color32::from_white_alpha(48)),
         egui::StrokeKind::Middle,
     );
-    icons::book(painter, Rect::from_center_size(r.center(), vec2(32.0 * k, 32.0 * k)), Color32::WHITE);
+}
+
+/// A convex polygon filled with a gradient from `top` at `span`'s top to `bottom` at its bottom.
+fn vertical_gradient(points: &[Pos2], span: Rect, top: Color32, bottom: Color32) -> Mesh {
+    let color_at = |q: Pos2| top.lerp_to_gamma(bottom, ((q.y - span.top()) / span.height()).clamp(0.0, 1.0));
+    let centre = points.iter().fold(Pos2::ZERO, |a, q| a + q.to_vec2() / points.len() as f32);
+    let mut mesh = Mesh::default();
+    mesh.colored_vertex(centre, color_at(centre));
+    for q in points {
+        mesh.colored_vertex(*q, color_at(*q));
+    }
+    let n = points.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    mesh
 }
 
 fn rounded_rect_points(r: Rect, radius: f32) -> Vec<Pos2> {
