@@ -23,6 +23,7 @@ flate2 = "1"
 ureq = "3"
 hound = "3.5"
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 
 # API keys live in the macOS Keychain; other platforms use a 0600 file.
 [target.'cfg(target_os = "macos")'.dependencies]

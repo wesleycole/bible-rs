@@ -1,0 +1,626 @@
+//! Signing in to Linger's account, for Ask and cloud transcripts.
+//!
+//! The desktop app uses Clerk as an OAuth 2.0 provider: a public client with PKCE (S256), the
+//! system browser, and a loopback redirect (`http://127.0.0.1:<port>/callback`, RFC 8252). The
+//! refresh token goes into the OS credential store ([`SecretStore`]); the short-lived access token
+//! stays in memory and is refreshed shortly before it expires, or once after the proxy answers 401.
+//!
+//! Requests ask a [`TokenSource`] for the bearer token, so the same client code works with a
+//! signed-in [`OAuthSession`] or, in development, a pasted [`StaticToken`].
+
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context as _, Result, anyhow, bail};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+use crate::secrets::SecretStore;
+
+/// Clerk's Frontend API for the Linger application: its development instance until a production
+/// instance has a domain (`clerk.linger.app`).
+pub const CLERK_URL: &str = "https://elegant-mink-67.clerk.accounts.dev";
+/// The "Linger Desktop" OAuth application's client id (public: PKCE, no secret).
+pub const CLIENT_ID: &str = "XDg0tXKW3CgO9rJy";
+pub const SCOPES: &str = "openid profile email offline_access";
+/// Where the refresh token is kept.
+pub const REFRESH_KEY: &str = "clerk-refresh-token";
+/// A token pasted in from Settings in development builds.
+pub const DEV_TOKEN_KEY: &str = "dev-clerk-token";
+/// Refresh this long before the access token expires.
+const EARLY: Duration = Duration::from_secs(60);
+
+/// A bearer token for Linger's proxy.
+pub trait TokenSource: Send + Sync {
+    /// A token that should be valid now, refreshed first if it's about to expire.
+    fn token(&self) -> Result<String>;
+    /// A fresh token after the proxy rejected the current one; an error means sign in again.
+    fn refresh(&self) -> Result<String>;
+}
+
+/// One fixed token: the dev Settings field, or `LINGER_API_TOKEN`. It can't be refreshed.
+pub struct StaticToken(pub String);
+
+impl TokenSource for StaticToken {
+    fn token(&self) -> Result<String> {
+        Ok(self.0.clone())
+    }
+
+    fn refresh(&self) -> Result<String> {
+        bail!("the token was rejected")
+    }
+}
+
+/// Where the OAuth endpoints are, and as which client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OAuthConfig {
+    /// Clerk's Frontend API URL, without a trailing slash.
+    pub issuer: String,
+    pub client_id: String,
+}
+
+impl OAuthConfig {
+    /// The built-in Clerk application, overridden by `LINGER_CLERK_URL` and `LINGER_OAUTH_CLIENT_ID`.
+    pub fn from_env() -> Self {
+        let get =
+            |k: &str, d: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty()).unwrap_or(d.into());
+        Self {
+            issuer: get("LINGER_CLERK_URL", CLERK_URL).trim_end_matches('/').to_string(),
+            client_id: get("LINGER_OAUTH_CLIENT_ID", CLIENT_ID),
+        }
+    }
+
+    fn endpoint(&self, path: &str) -> String {
+        format!("{}{path}", self.issuer)
+    }
+}
+
+/// The secrets of one sign-in attempt: the PKCE verifier and the anti-forgery `state`.
+#[derive(Debug, Clone)]
+pub struct Pkce {
+    pub verifier: String,
+    pub challenge: String,
+    pub state: String,
+}
+
+impl Pkce {
+    pub fn new() -> Self {
+        let verifier = base64url(&random_bytes(32));
+        Self { challenge: challenge(&verifier), state: base64url(&random_bytes(16)), verifier }
+    }
+}
+
+impl Default for Pkce {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The S256 code challenge for a verifier (RFC 7636 §4.2).
+pub fn challenge(verifier: &str) -> String {
+    base64url(&Sha256::digest(verifier.as_bytes()))
+}
+
+/// Random bytes from the OS (through `uuid`'s v4 generator, already a dependency).
+fn random_bytes(n: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(n + 16);
+    while out.len() < n {
+        out.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    }
+    out.truncate(n);
+    out
+}
+
+/// Base64url without padding.
+pub fn base64url(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut s = String::with_capacity(bytes.len() * 4 / 3 + 3);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        for i in 0..=chunk.len() {
+            s.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    s
+}
+
+/// Percent-encodes a query or form value (RFC 3986 unreserved characters pass through).
+pub fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+fn decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < b.len() => {
+                match std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+                {
+                    Some(v) => {
+                        out.push(v);
+                        i += 2;
+                    }
+                    None => out.push(b'%'),
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A query string's value for `key`.
+fn query_value(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        (decode(k) == key).then(|| decode(v))
+    })
+}
+
+fn form(pairs: &[(&str, &str)]) -> String {
+    pairs.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect::<Vec<_>>().join("&")
+}
+
+/// The authorization URL the browser opens.
+pub fn authorize_url(cfg: &OAuthConfig, pkce: &Pkce, redirect_uri: &str) -> String {
+    format!(
+        "{}?{}",
+        cfg.endpoint("/oauth/authorize"),
+        form(&[
+            ("response_type", "code"),
+            ("client_id", &cfg.client_id),
+            ("redirect_uri", redirect_uri),
+            ("scope", SCOPES),
+            ("state", &pkce.state),
+            ("code_challenge", &pkce.challenge),
+            ("code_challenge_method", "S256"),
+        ])
+    )
+}
+
+/// What Clerk's token endpoint returns.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Tokens {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    /// Seconds.
+    #[serde(default)]
+    pub expires_in: Option<u64>,
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .user_agent(concat!("linger/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
+}
+
+fn post_form(url: &str, body: String) -> Result<(u16, String)> {
+    let mut resp = agent()
+        .post(url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .send(body)
+        .map_err(|e| anyhow!(e).context("couldn't reach the sign-in service"))?;
+    let status = resp.status().as_u16();
+    Ok((status, resp.body_mut().read_to_string().unwrap_or_default()))
+}
+
+fn token_request(cfg: &OAuthConfig, pairs: &[(&str, &str)]) -> Result<Tokens> {
+    let (status, text) = post_form(&cfg.endpoint("/oauth/token"), form(pairs))?;
+    if status != 200 {
+        let why = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["error_description"].as_str().or(v["error"].as_str()).map(str::to_string))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        bail!("sign-in failed: {why}");
+    }
+    serde_json::from_str(&text).context("unreadable reply from the sign-in service")
+}
+
+/// Trades the authorization code for tokens (step 3 of the flow).
+pub fn exchange_code(cfg: &OAuthConfig, code: &str, verifier: &str, redirect_uri: &str) -> Result<Tokens> {
+    token_request(
+        cfg,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+            ("client_id", &cfg.client_id),
+            ("code_verifier", verifier),
+        ],
+    )
+}
+
+pub fn refresh_tokens(cfg: &OAuthConfig, refresh_token: &str) -> Result<Tokens> {
+    token_request(
+        cfg,
+        &[("grant_type", "refresh_token"), ("refresh_token", refresh_token), ("client_id", &cfg.client_id)],
+    )
+}
+
+/// Revokes a refresh token (RFC 7009); Clerk's never expire on their own.
+pub fn revoke(cfg: &OAuthConfig, token: &str) -> Result<()> {
+    let body = form(&[("token", token), ("token_type_hint", "refresh_token"), ("client_id", &cfg.client_id)]);
+    let (status, _) = post_form(&cfg.endpoint("/oauth/token/revoke"), body)?;
+    if status != 200 {
+        bail!("couldn't revoke the sign-in (HTTP {status})");
+    }
+    Ok(())
+}
+
+/// A listener on a free loopback port, waiting for the browser to come back with the code.
+pub struct Loopback {
+    listener: TcpListener,
+    pub redirect_uri: String,
+}
+
+impl Loopback {
+    pub fn bind() -> Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").context("couldn't listen for the sign-in")?;
+        let port = listener.local_addr()?.port();
+        Ok(Self { listener, redirect_uri: format!("http://127.0.0.1:{port}/callback") })
+    }
+
+    /// Waits for `/callback`, checks `state`, and returns the code. Requests for anything else
+    /// (a browser asking for a favicon) are answered 404 and the wait goes on.
+    pub fn wait(&self, state: &str, timeout: Duration) -> Result<String> {
+        self.listener.set_nonblocking(true)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false)?;
+                    if let Some(result) = handle_callback(stream, state)? {
+                        return result;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() > deadline {
+                        bail!("sign-in timed out");
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+}
+
+const PAGE: &str = "<!doctype html><meta charset=utf-8><title>Linger</title>\
+<body style=\"font:16px -apple-system,system-ui,sans-serif;margin:20vh auto;max-width:28em;text-align:center\">";
+
+/// `None` for a request that isn't the callback.
+fn handle_callback(mut stream: TcpStream, state: &str) -> Result<Option<Result<String>>> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line)?;
+    let target = line.split_whitespace().nth(1).unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if path != "/callback" {
+        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+        return Ok(None);
+    }
+    let result = if let Some(err) = query_value(query, "error") {
+        let why = query_value(query, "error_description").unwrap_or(err);
+        Err(anyhow!("sign-in was cancelled: {why}"))
+    } else if query_value(query, "state").as_deref() != Some(state) {
+        Err(anyhow!("the sign-in reply didn't match this attempt"))
+    } else {
+        query_value(query, "code").context("the sign-in reply had no code")
+    };
+    let message = match &result {
+        Ok(_) => "You're signed in to Linger. You can close this tab.",
+        Err(_) => "Linger couldn't finish signing in. Close this tab and try again.",
+    };
+    let body = format!("{PAGE}<p>{message}</p>");
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    Ok(Some(result))
+}
+
+/// How this device is signed in, if it is: `LINGER_API_TOKEN` (scripts and tests), a token pasted
+/// into the development Settings field (debug builds only), or the last browser sign-in.
+pub fn saved(store: &SecretStore) -> Option<Arc<dyn TokenSource>> {
+    if let Some(t) = std::env::var("LINGER_API_TOKEN").ok().filter(|v| !v.trim().is_empty()) {
+        return Some(Arc::new(StaticToken(t.trim().to_string())));
+    }
+    if cfg!(debug_assertions)
+        && let Some(t) = store.get(DEV_TOKEN_KEY)
+    {
+        return Some(Arc::new(StaticToken(t)));
+    }
+    OAuthSession::restore(OAuthConfig::from_env(), store.clone()).map(|s| Arc::new(s) as Arc<dyn TokenSource>)
+}
+
+/// Signs this device out: revokes and forgets the browser sign-in, and forgets a pasted
+/// development token. The local sign-out happens even when revoking fails; that error is returned
+/// after it.
+pub fn sign_out(store: &SecretStore) -> Result<()> {
+    let revoked = match OAuthSession::restore(OAuthConfig::from_env(), store.clone()) {
+        Some(s) => s.sign_out(),
+        None => Ok(()),
+    };
+    store.delete(DEV_TOKEN_KEY)?;
+    revoked
+}
+
+/// A signed-in account: refreshes its access token as needed.
+pub struct OAuthSession {
+    cfg: OAuthConfig,
+    store: SecretStore,
+    /// The access token and when to stop using it.
+    access: Mutex<Option<(String, Instant)>>,
+}
+
+impl OAuthSession {
+    /// The browser sign-in: opens Clerk's hosted sign-in with `open`, waits for the redirect,
+    /// trades the code and keeps the refresh token.
+    pub fn sign_in(cfg: OAuthConfig, store: SecretStore, open: impl FnOnce(&str)) -> Result<Self> {
+        // TODO(macOS): ASWebAuthenticationSession (objc2-authentication-services) with the
+        // https://auth.linger.app/oauth/callback Associated Domains redirect. The loopback flow
+        // below works on macOS too, so it is used there until that lands.
+        let loopback = Loopback::bind()?;
+        let pkce = Pkce::new();
+        open(&authorize_url(&cfg, &pkce, &loopback.redirect_uri));
+        let code = loopback.wait(&pkce.state, Duration::from_secs(5 * 60))?;
+        let tokens = exchange_code(&cfg, &code, &pkce.verifier, &loopback.redirect_uri)?;
+        let session = Self { cfg, store, access: Mutex::new(None) };
+        session.keep(tokens)?;
+        Ok(session)
+    }
+
+    /// The session left by the last sign-in, if a refresh token is stored.
+    pub fn restore(cfg: OAuthConfig, store: SecretStore) -> Option<Self> {
+        store.get(REFRESH_KEY)?;
+        Some(Self { cfg, store, access: Mutex::new(None) })
+    }
+
+    fn keep(&self, tokens: Tokens) -> Result<String> {
+        if let Some(r) = &tokens.refresh_token {
+            self.store.set(REFRESH_KEY, r)?;
+        }
+        let life = Duration::from_secs(tokens.expires_in.unwrap_or(3600));
+        let until = Instant::now() + life.saturating_sub(EARLY);
+        *self.access.lock().unwrap_or_else(|e| e.into_inner()) = Some((tokens.access_token.clone(), until));
+        Ok(tokens.access_token)
+    }
+
+    /// Revokes the refresh token and forgets it. The local sign-out happens even if Clerk can't
+    /// be reached.
+    pub fn sign_out(&self) -> Result<()> {
+        let revoked = match self.store.get(REFRESH_KEY) {
+            Some(r) => revoke(&self.cfg, &r),
+            None => Ok(()),
+        };
+        self.store.delete(REFRESH_KEY)?;
+        *self.access.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        revoked
+    }
+}
+
+impl TokenSource for OAuthSession {
+    fn token(&self) -> Result<String> {
+        if let Some((t, until)) = &*self.access.lock().unwrap_or_else(|e| e.into_inner())
+            && Instant::now() < *until
+        {
+            return Ok(t.clone());
+        }
+        self.refresh()
+    }
+
+    fn refresh(&self) -> Result<String> {
+        let refresh = self.store.get(REFRESH_KEY).context("sign in to Linger")?;
+        let tokens = refresh_tokens(&self.cfg, &refresh)?;
+        self.keep(tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64url_matches_rfc4648_vectors() {
+        // RFC 4648 §10, unpadded, with the URL alphabet.
+        for (input, out) in [
+            ("", ""),
+            ("f", "Zg"),
+            ("fo", "Zm8"),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg"),
+            ("fooba", "Zm9vYmE"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64url(input.as_bytes()), out);
+        }
+        assert_eq!(base64url(&[0xfb, 0xff]), "-_8");
+    }
+
+    #[test]
+    fn s256_challenge_matches_rfc7636_appendix_b() {
+        assert_eq!(
+            challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+        let p = Pkce::new();
+        assert_eq!(p.verifier.len(), 43, "32 random bytes");
+        assert_ne!(p.verifier, Pkce::new().verifier);
+    }
+
+    #[test]
+    fn query_values_are_decoded() {
+        assert_eq!(query_value("code=a%2Fb+c&state=x", "code").as_deref(), Some("a/b c"));
+        assert_eq!(query_value("code=1", "state"), None);
+        assert_eq!(decode("100%"), "100%");
+        assert_eq!(encode("a b/c~"), "a%20b%2Fc~");
+    }
+
+    #[test]
+    fn authorize_url_carries_pkce_and_state() {
+        let cfg = OAuthConfig { issuer: "https://clerk.example".into(), client_id: "cid".into() };
+        let p = Pkce { verifier: "v".into(), challenge: "ch".into(), state: "st".into() };
+        let url = authorize_url(&cfg, &p, "http://127.0.0.1:5000/callback");
+        let (base, q) = url.split_once('?').unwrap();
+        assert_eq!(base, "https://clerk.example/oauth/authorize");
+        assert_eq!(query_value(q, "code_challenge_method").as_deref(), Some("S256"));
+        assert_eq!(query_value(q, "code_challenge").as_deref(), Some("ch"));
+        assert_eq!(query_value(q, "state").as_deref(), Some("st"));
+        assert_eq!(query_value(q, "redirect_uri").as_deref(), Some("http://127.0.0.1:5000/callback"));
+        assert_eq!(query_value(q, "scope").as_deref(), Some(SCOPES));
+        assert!(!q.contains("code_verifier"), "the verifier never goes to the browser");
+    }
+
+    /// Requests a mock server saw: (path, body).
+    type Seen = Arc<Mutex<Vec<(String, String)>>>;
+
+    /// A stand-in for Clerk's token endpoints: answers each POST from `reply(path, form)` and
+    /// keeps every request it saw.
+    fn mock_clerk(reply: impl Fn(&str, &str) -> (u16, String) + Send + 'static) -> (OAuthConfig, Seen) {
+        use std::io::Read;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let mut length = 0;
+                loop {
+                    let mut h = String::new();
+                    reader.read_line(&mut h).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':')
+                        && k.eq_ignore_ascii_case("content-length")
+                    {
+                        length = v.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let body = String::from_utf8(body).unwrap();
+                let (status, json) = reply(&path, &body);
+                log.lock().unwrap().push((path, body));
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
+                    json.len()
+                );
+            }
+        });
+        (OAuthConfig { issuer, client_id: "cid".into() }, seen)
+    }
+
+    fn get(url: &str) -> (u16, String) {
+        let mut resp = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .new_agent()
+            .get(url)
+            .call()
+            .unwrap();
+        (resp.status().as_u16(), resp.body_mut().read_to_string().unwrap())
+    }
+
+    // The session keeps its refresh token in the SecretStore, which is the Keychain on macOS.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn browser_sign_in_refresh_and_sign_out_against_a_mock_clerk() {
+        let (cfg, seen) = mock_clerk(|path, form| match (path, query_value(form, "grant_type").as_deref()) {
+            ("/oauth/token", Some("authorization_code")) => {
+                (200, r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600}"#.into())
+            }
+            ("/oauth/token", Some("refresh_token")) if form.contains("refresh_token=rt-1") => {
+                (200, r#"{"access_token":"at-2","refresh_token":"rt-2","expires_in":3600}"#.into())
+            }
+            ("/oauth/token/revoke", _) => (200, "{}".into()),
+            _ => (400, r#"{"error":"invalid_grant","error_description":"no such grant"}"#.into()),
+        });
+        let dir = std::env::temp_dir().join(format!("linger-auth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SecretStore::new(&dir);
+
+        // The "browser": a stray favicon request first (answered 404, the wait goes on), then the
+        // redirect back with the code and the attempt's state.
+        let session = OAuthSession::sign_in(cfg.clone(), store.clone(), |url| {
+            let q = url.split_once('?').unwrap().1;
+            let redirect = query_value(q, "redirect_uri").unwrap();
+            let state = query_value(q, "state").unwrap();
+            assert_eq!(query_value(q, "code_challenge").map(|c| c.len()), Some(43));
+            std::thread::spawn(move || {
+                let base = redirect.trim_end_matches("/callback");
+                assert_eq!(get(&format!("{base}/favicon.ico")).0, 404);
+                let (status, page) = get(&format!("{redirect}?code=the-code&state={state}"));
+                assert_eq!(status, 200);
+                assert!(page.contains("signed in"), "{page}");
+            });
+        })
+        .unwrap();
+        assert_eq!(session.token().unwrap(), "at-1");
+        assert_eq!(store.get(REFRESH_KEY).as_deref(), Some("rt-1"));
+        {
+            let seen = seen.lock().unwrap();
+            let (path, form) = &seen[0];
+            assert_eq!(path, "/oauth/token");
+            assert_eq!(query_value(form, "code").as_deref(), Some("the-code"));
+            assert_eq!(query_value(form, "client_id").as_deref(), Some("cid"));
+            // The verifier goes only to the token endpoint, and matches the challenge sent.
+            assert_eq!(query_value(form, "code_verifier").map(|v| v.len()), Some(43));
+        }
+
+        // A 401 from the proxy refreshes; the rotated refresh token replaces the old one, and a
+        // restored session (next launch) uses it.
+        assert_eq!(session.refresh().unwrap(), "at-2");
+        assert_eq!(store.get(REFRESH_KEY).as_deref(), Some("rt-2"));
+        let restored = OAuthSession::restore(cfg.clone(), store.clone()).unwrap();
+        assert!(restored.refresh().unwrap_err().to_string().contains("no such grant"));
+
+        session.sign_out().unwrap();
+        assert_eq!(store.get(REFRESH_KEY), None);
+        assert!(OAuthSession::restore(cfg, store).is_none());
+        let seen = seen.lock().unwrap();
+        let (path, form) = seen.last().unwrap();
+        assert_eq!(path, "/oauth/token/revoke");
+        assert_eq!(query_value(form, "token").as_deref(), Some("rt-2"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn loopback_rejects_a_reply_for_another_attempt() {
+        let loopback = Loopback::bind().unwrap();
+        let url = format!("{}?code=c&state=someone-else", loopback.redirect_uri);
+        let browser = std::thread::spawn(move || get(&url));
+        let err = loopback.wait("mine", Duration::from_secs(10)).unwrap_err();
+        assert!(err.to_string().contains("didn't match"), "{err}");
+        assert!(browser.join().unwrap().1.contains("couldn't finish"));
+        let denied = Loopback::bind().unwrap();
+        let url = format!("{}?error=access_denied&state=mine", denied.redirect_uri);
+        std::thread::spawn(move || get(&url));
+        assert!(denied.wait("mine", Duration::from_secs(10)).unwrap_err().to_string().contains("cancelled"));
+    }
+}

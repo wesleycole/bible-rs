@@ -1,0 +1,42 @@
+{
+  "name": "linger-server",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file=.env.local src/dev/serve.ts",
+    "dev:convex": "bash scripts/convex-local.sh",
+    "dev:token": "tsx scripts/dev-token.ts",
+    "seed": "convex run admin:seed",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p convex",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "mock-gateway": "tsx scripts/mock-gateway.ts",
+    "load-test": "tsx scripts/load-test.ts"
+  },
+  "dependencies": {
+    "@apple/app-store-server-library": "3.1.0",
+    "@clerk/backend": "3.25.0",
+    "@convex-dev/rate-limiter": "0.4.2",
+    "@effect/platform-node": "4.0.5",
+    "@vercel/blob": "2.8.2",
+    "@vercel/functions": "3.10.1",
+    "@vercel/oidc": "4.0.1",
+    "convex": "1.47.0",
+    "convex-helpers": "0.1.128",
+    "effect": "4.0.5",
+    "stripe": "23.0.0"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
+    "@effect/vitest": "4.0.5",
+    "@types/node": "26.6.5",
+    "convex-test": "0.0.62",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "undici": "8.10.2",
+    "vitest": "5.0.5"
+  }
+}

@@ -1,0 +1,133 @@
+/**
+ * Operator functions, run from the dashboard or `npx convex run`. Nothing here is callable by the
+ * proxy or the app.
+ */
+import { v } from "convex/values"
+import { internalMutation, internalQuery } from "./_generated/server.js"
+import { ensureUser } from "./lib/accounts.js"
+import { DEFAULT_PRICES } from "./lib/pricing.js"
+import { DAY } from "./lib/time.js"
+
+const PLANS = [
+  {
+    key: "free",
+    questionsPerMonth: 30,
+    questionsPerDay: 10,
+    deepCost: 2,
+    maxRounds: 6,
+    costCeilingMicros: 250_000,
+    sermonSecondsPerMonth: 0,
+    modelKey: "free"
+  },
+  {
+    key: "pro",
+    questionsPerMonth: 150,
+    questionsPerDay: 150,
+    deepCost: 2,
+    maxRounds: 8,
+    costCeilingMicros: 5_000_000,
+    sermonSecondsPerMonth: 10 * 3600,
+    modelKey: "standard",
+    deepModelKey: "deep",
+    ceilingModelKey: "free"
+  }
+] as const
+
+const MODELS = [
+  { key: "free", gatewayModel: "anthropic/claude-haiku-5.5", effort: "low", maxTokens: 4000 },
+  { key: "standard", gatewayModel: "anthropic/claude-sonnet-5.5", effort: "medium", maxTokens: 8000 },
+  { key: "deep", gatewayModel: "anthropic/claude-opus-5.5", effort: "high", maxTokens: 12000 }
+] as const
+
+/**
+ * Seeds the plans, models and routing rows. Existing rows are left alone unless `overwrite`, so
+ * values retuned in the dashboard survive a re-seed.
+ */
+export const seed = internalMutation({
+  args: { overwrite: v.optional(v.boolean()) },
+  handler: async (ctx, { overwrite }) => {
+    const changed: string[] = []
+    for (const plan of PLANS) {
+      const row = await ctx.db.query("plans").withIndex("by_key", (q) => q.eq("key", plan.key)).unique()
+      if (!row) {
+        await ctx.db.insert("plans", { ...plan })
+        changed.push(`plans.${plan.key}`)
+      } else if (overwrite) {
+        await ctx.db.replace(row._id, { ...plan })
+        changed.push(`plans.${plan.key}`)
+      }
+    }
+    for (const m of MODELS) {
+      const model = {
+        ...m,
+        thinking: "adaptive" as const,
+        enabled: true,
+        prices: DEFAULT_PRICES[m.gatewayModel]
+      }
+      const row = await ctx.db.query("models").withIndex("by_key", (q) => q.eq("key", m.key)).unique()
+      if (!row) {
+        await ctx.db.insert("models", model)
+        changed.push(`models.${m.key}`)
+      } else if (overwrite) {
+        await ctx.db.replace(row._id, model)
+        changed.push(`models.${m.key}`)
+      }
+    }
+    const routing = await ctx.db.query("routing").first()
+    if (!routing) {
+      await ctx.db.insert("routing", { providers: ["anthropic"], note: "default" })
+      changed.push("routing")
+    } else if (overwrite) {
+      await ctx.db.replace(routing._id, { providers: ["anthropic"], note: "default" })
+      changed.push("routing")
+    }
+    return { changed }
+  }
+})
+
+/** Points new questions at other providers (an outage drill or a real outage). */
+export const setRouting = internalMutation({
+  args: { providers: v.array(v.string()), note: v.string() },
+  handler: async (ctx, args) => {
+    const routing = await ctx.db.query("routing").first()
+    if (routing) await ctx.db.replace(routing._id, args)
+    else await ctx.db.insert("routing", args)
+  }
+})
+
+/** Comps, press and family: Pro for `days` days. */
+export const grant = internalMutation({
+  args: { clerkId: v.string(), days: v.number(), note: v.optional(v.string()) },
+  handler: async (ctx, { clerkId, days, note }) => {
+    const user = await ensureUser(ctx, clerkId)
+    const now = Date.now()
+    return await ctx.db.insert("entitlements", {
+      userId: user._id,
+      source: "grant",
+      productId: note ?? "grant",
+      status: "active",
+      periodStart: now,
+      expiresAt: now + days * DAY,
+      originalId: `grant:${user._id}:${now}`,
+      environment: "production",
+      updatedAt: now
+    })
+  }
+})
+
+/** Open reservations and what the ledger recorded since `sinceMs`, by status: a settlement check. */
+export const stats = internalQuery({
+  args: { sinceMs: v.number() },
+  handler: async (ctx, { sinceMs }) => {
+    const open = await ctx.db.query("reservations").collect()
+    const ledger = await ctx.db.query("ledger").withIndex("by_at", (q) => q.gte("at", sinceMs)).collect()
+    const byStatus: Record<string, number> = {}
+    for (const row of ledger) byStatus[row.status] = (byStatus[row.status] ?? 0) + 1
+    return {
+      openReservations: open.length,
+      ledgerRows: ledger.length,
+      byStatus,
+      costMicros: ledger.reduce((sum, row) => sum + row.costMicros, 0)
+    }
+  }
+})

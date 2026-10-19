@@ -673,6 +673,16 @@ pub fn info(p: &Painter, r: Rect, c: Color32) {
     g.dot(10.0, 6.45, 0.9);
 }
 
+/// A head and shoulders in a circle (the account).
+pub fn person(p: &Painter, r: Rect, c: Color32) {
+    let g = Grid::new(p, r, c);
+    g.circle(10.0, 10.0, 7.25);
+    g.circle(10.0, 8.0, 2.5);
+    let pts: Vec<Pos2> =
+        Grid::arc(10.0, 16.75, 4.6, PI + 0.55, 2.0 * PI - 0.55).map(|(x, y)| g.p(x, y)).collect();
+    g.polyline(pts, false);
+}
+
 pub fn ellipsis(p: &Painter, r: Rect, c: Color32) {
     let g = Grid::new(p, r, c);
     for x in [5.0, 10.0, 15.0] {

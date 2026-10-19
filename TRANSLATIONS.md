@@ -5,6 +5,12 @@ texts on the publishers' behalf), or files under an open licence. It never scrap
 that is still under copyright is never part of this repository. Checked October 2026; terms
 change, so the publishers' pages are linked below.
 
+**Release builds don't offer the online NLT, NET, ESV or API.Bible flows yet.** Their free terms
+are non-commercial, and a paid Pro plan makes the whole app commercial under them, so they're in
+development builds only until Tyndale, bible.org, Crossway and API.Bible answer in writing (see
+[the backend plan](docs/backend-plan.md#licensing-shapes-the-product)). Ask never sends any of
+them to a model either way: it reads only the BSB, WEB or KJV.
+
 | Translation | How to get it free in Linger | Key, limits and terms |
 |---|---|---|
 | KJV, WEB, BSB, ASV, YLT, Darby, Webster | Built in | Public domain. |

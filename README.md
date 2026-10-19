@@ -19,13 +19,14 @@ Linger began as a fork of [bible-rs](https://github.com/michaelshimeles/bible-rs
   chapter and section headings, poetry with hanging indents, LORD in small capitals, optional red
   letters, paragraphs or verse-per-line, adjustable size, light / sepia / dark.
 - **Seven public-domain translations built in** (KJV, WEB, BSB, ASV, YLT, Darby, Webster), side by
-  side in parallel columns or one verse across all of them. Add the NLT and the NET Bible free in
-  one click, the ESV with a free key, others with an API.Bible key or a file you own
-  ([which translations, and how](TRANSLATIONS.md)).
+  side in parallel columns or one verse across all of them. Import any other translation from a
+  file you own; development builds can also add the NLT, NET, ESV and API.Bible translations
+  online ([which translations, and how](TRANSLATIONS.md)).
 - **Keyboard-first.** ⌘K jumps anywhere (`jn 3:16`, `Rom 8`, `1co13`, even `revalation 21`),
   ← → turn chapters, ⌘F searches, ⌘[ ⌘] go back and forward, 1–6 highlight.
 - **Yours.** Highlights, notes and bookmarks live in a local SQLite file and export to JSON or
-  Markdown. No accounts, no feeds, no network unless you add an online translation.
+  Markdown. A Linger account signs you in once; after that, reading needs no network unless you
+  add an online translation.
 
 <table>
 <tr>
@@ -129,6 +130,11 @@ The text is converted to Linger's format and stored only in your data folder
 skipped. Remove an import from the same settings page or with `linger remove <id>`.
 
 ### Online translations
+
+**Development builds only, for now.** These services' free terms are non-commercial, and Linger
+will offer a paid Pro plan, so release builds leave them out until the publishers and API.Bible
+answer in writing (see [the backend plan](docs/backend-plan.md#licensing-shapes-the-product)).
+Translations already added keep working, and importing a file you own works in every build.
 
 Chapters are fetched from each publisher's own API as you read, and shown with the publisher's
 notice (which links to their site, as their terms ask). [TRANSLATIONS.md](TRANSLATIONS.md) covers

@@ -1,0 +1,79 @@
+/* eslint-disable */
+/**
+ * Generated `api` utility.
+ *
+ * THIS CODE IS AUTOMATICALLY GENERATED.
+ *
+ * To regenerate, run `npx convex dev`.
+ * @module
+ */
+
+import type * as account from "../account.js";
+import type * as admin from "../admin.js";
+import type * as crons from "../crons.js";
+import type * as entitlements from "../entitlements.js";
+import type * as lib_accounts from "../lib/accounts.js";
+import type * as lib_errors from "../lib/errors.js";
+import type * as lib_pricing from "../lib/pricing.js";
+import type * as lib_server from "../lib/server.js";
+import type * as lib_time from "../lib/time.js";
+import type * as maintenance from "../maintenance.js";
+import type * as rateLimits from "../rateLimits.js";
+import type * as sermons from "../sermons.js";
+import type * as usage from "../usage.js";
+import type * as users from "../users.js";
+import type * as webhooks from "../webhooks.js";
+
+import type {
+  ApiFromModules,
+  FilterApi,
+  FunctionReference,
+} from "convex/server";
+
+declare const fullApi: ApiFromModules<{
+  account: typeof account;
+  admin: typeof admin;
+  crons: typeof crons;
+  entitlements: typeof entitlements;
+  "lib/accounts": typeof lib_accounts;
+  "lib/errors": typeof lib_errors;
+  "lib/pricing": typeof lib_pricing;
+  "lib/server": typeof lib_server;
+  "lib/time": typeof lib_time;
+  maintenance: typeof maintenance;
+  rateLimits: typeof rateLimits;
+  sermons: typeof sermons;
+  usage: typeof usage;
+  users: typeof users;
+  webhooks: typeof webhooks;
+}>;
+
+/**
+ * A utility for referencing Convex functions in your app's public API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = api.myModule.myFunction;
+ * ```
+ */
+export declare const api: FilterApi<
+  typeof fullApi,
+  FunctionReference<any, "public">
+>;
+
+/**
+ * A utility for referencing Convex functions in your app's internal API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = internal.myModule.myFunction;
+ * ```
+ */
+export declare const internal: FilterApi<
+  typeof fullApi,
+  FunctionReference<any, "internal">
+>;
+
+export declare const components: {
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+};

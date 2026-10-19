@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask contract`, `cargo xtask build-data`… (see xtask/src/main.rs)
+xtask = "run --quiet -p xtask --bin xtask --"

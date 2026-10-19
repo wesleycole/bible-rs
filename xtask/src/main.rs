@@ -1,5 +1,8 @@
 //! `cargo run -p xtask -- build-data`
 //!
+//! `cargo xtask contract` writes `server/src/contract/ask-v1.json` from linger-core (see
+//! `linger_core::contract`).
+//!
 //! Downloads the public-domain USFM sources pinned below from eBible.org (into `.sources/`),
 //! verifies their SHA-256, converts them with the same USFM importer users get, and writes
 //! `data/translations/<id>.bbl`. Set `XTASK_ACCEPT_UPDATED_SOURCES=1` to accept a newer upstream
@@ -101,6 +104,19 @@ fn main() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     match args.first().map(String::as_str) {
         Some("build-data") => build_data(&root, &args[1..]),
+        Some("contract") => {
+            // The Ask contract the proxy injects, generated from linger-core's prompt and tools.
+            let path = root.join("server/src/contract/ask-v1.json");
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(&path, linger_core::contract::file())?;
+            println!(
+                "wrote {} ({} {})",
+                path.display(),
+                linger_core::contract::VERSION,
+                linger_core::contract::sha256()
+            );
+            Ok(())
+        }
         Some("missing") => {
             // Lists verses present in the first translation but absent from the others.
             let load = |id: &str| -> Result<linger_core::Translation> {
@@ -215,7 +231,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("usage: cargo run -p xtask -- build-data [ids…] | fetch [ids…]");
+            eprintln!("usage: cargo run -p xtask -- build-data [ids…] | fetch [ids…] | contract");
             std::process::exit(2)
         }
     }

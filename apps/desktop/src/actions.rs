@@ -112,6 +112,21 @@ pub enum Action {
     /// Start recording a sermon from the microphone or the computer's audio.
     StartRecording(linger_core::recording::Source),
     StopRecording,
+    /// The Linger account: browser sign-in (and giving up on it), sign-out, fetching the plan
+    /// again, Pro checkout (yearly or monthly), the Stripe portal, and deleting the account.
+    SignIn,
+    CancelSignIn,
+    SignOut,
+    RefreshAccount,
+    Upgrade {
+        yearly: bool,
+    },
+    ManageSubscription,
+    DeleteAccount,
+    /// Development builds: sign in with a pasted Clerk token (empty forgets it).
+    SetDevToken(String),
+    /// The one-time Ask consent sheet was accepted.
+    AcceptAskConsent,
     Quit,
 }
 
@@ -131,6 +146,7 @@ pub enum SettingsTab {
     Translations,
     Shortcuts,
     Data,
+    Account,
     About,
 }
 

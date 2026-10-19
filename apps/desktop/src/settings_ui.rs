@@ -1,5 +1,5 @@
 //! The Settings window (frame 09 in the design): Reading, Appearance, Translations, Shortcuts,
-//! Data and About, as icon tabs under a 52 pt title bar. It is a window of its own; when the app
+//! Data, Account and About, as icon tabs under a 52 pt title bar. It is a window of its own; when the app
 //! renders offscreen (screenshots) it fills the main window instead.
 
 use std::path::PathBuf;
@@ -15,6 +15,7 @@ use linger_core::online::apibible::RemoteBible;
 use linger_core::online::{OnlineConfig, ProviderKind};
 use linger_core::study::StudyStore;
 
+use crate::account::{self, Account};
 use crate::actions::{Action, ExportKind, SettingsTab};
 use crate::app::{Settings, TaskResult};
 use crate::icons;
@@ -30,14 +31,19 @@ const MARGIN: f32 = 32.0;
 
 type IconFn = fn(&Painter, Rect, Color32);
 
-const TABS: [(SettingsTab, &str, IconFn); 6] = [
+const TABS: [(SettingsTab, &str, IconFn); 7] = [
     (SettingsTab::Reading, "Reading", icons::text_size),
     (SettingsTab::Appearance, "Appearance", icons::sun),
     (SettingsTab::Translations, "Translations", icons::book),
     (SettingsTab::Shortcuts, "Shortcuts", icons::keyboard),
     (SettingsTab::Data, "Data", icons::tray),
+    (SettingsTab::Account, "Account", icons::person),
     (SettingsTab::About, "About", icons::info),
 ];
+
+/// Whether Settings offers the ESV, NLT, NET Bible and API.Bible integrations: development builds
+/// only, for now.
+const LICENSED_ONLINE: bool = cfg!(debug_assertions);
 
 pub struct SettingsUi {
     tab: SettingsTab,
@@ -55,6 +61,9 @@ pub struct SettingsUi {
     recording: Option<&'static str>,
     /// Data: Erase… was pressed and waits for the second click.
     confirm_erase: bool,
+    /// Account: Delete… was pressed and waits for the second click; the development token field.
+    confirm_delete: bool,
+    dev_token: String,
 }
 
 impl SettingsUi {
@@ -72,6 +81,8 @@ impl SettingsUi {
             shortcut_filter: String::new(),
             recording: None,
             confirm_erase: false,
+            confirm_delete: false,
+            dev_token: String::new(),
         }
     }
 
@@ -490,6 +501,299 @@ impl SettingsUi {
         });
     }
 
+    /// Account: who is signed in, the plan and what's left of it this month, Pro, and deleting
+    /// the account. Reading never needs one; Ask and cloud transcripts do.
+    fn account(&mut self, ui: &mut Ui, p: &Palette, account: &Account, actions: &mut Vec<Action>) {
+        if let Some(e) = &account.error {
+            status_line(ui, p, e, p.danger);
+            ui.add_space(12.0);
+        }
+        let me = account.me.as_ref();
+        group_title(ui, p, "Linger account");
+        if !account.signed_in() {
+            rows_card(ui, p, &[64.0], |ui, _, r| {
+                let (right, cy) = (r.right() - 16.0, r.center().y);
+                if let Some(busy) = account.busy {
+                    row_label(ui, p, r, busy, Some("Finish signing in in your browser, then come back."));
+                    let (_, resp) = Button::new(Kind::Plain, "Cancel").small().show_right(
+                        ui,
+                        p,
+                        right,
+                        cy,
+                        ui.id().with("cancel"),
+                    );
+                    if resp.clicked() {
+                        actions.push(Action::CancelSignIn);
+                    }
+                } else {
+                    row_label(
+                        ui,
+                        p,
+                        r,
+                        "Not signed in",
+                        Some("Sign in to use Ask and cloud sermon transcripts."),
+                    );
+                    let (_, resp) = Button::new(Kind::Primary, "Sign In…").small().show_right(
+                        ui,
+                        p,
+                        right,
+                        cy,
+                        ui.id().with("sign-in"),
+                    );
+                    if resp.clicked() {
+                        actions.push(Action::SignIn);
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            footnote(
+                ui,
+                p,
+                "Reading never needs an account. Sign-in opens in your browser, with Apple, Google \
+                 or a code sent to your email. The free plan includes 30 questions a month.",
+            );
+            self.dev_token(ui, p, actions);
+            return;
+        }
+
+        let who = me.map_or("Signed in", |m| m.user.email.as_deref().unwrap_or(&m.user.id));
+        let plan = match me {
+            None if account.error.is_some() => "Couldn't load your plan".to_string(),
+            None => "Loading your plan…".to_string(),
+            Some(m) if m.is_pro() => match &m.renews_at {
+                Some(at) => format!("Linger Pro · renews {}", account::day(at)),
+                None => "Linger Pro".into(),
+            },
+            Some(_) => "Linger Free".into(),
+        };
+        rows_card(ui, p, &[56.0], |ui, _, r| {
+            let (right, cy) = (r.right() - 16.0, r.center().y);
+            row_label(ui, p, r, who, Some(&plan));
+            let (b, resp) = Button::new(Kind::Secondary, "Sign Out").small().show_right(
+                ui,
+                p,
+                right,
+                cy,
+                ui.id().with("sign-out"),
+            );
+            if resp.clicked() {
+                actions.push(Action::SignOut);
+            }
+            if let Some(m) = me {
+                let (label, kind) = if m.is_pro() {
+                    ("PRO", widgets::BadgeKind::Accent)
+                } else {
+                    ("FREE", widgets::BadgeKind::Neutral)
+                };
+                let w = widgets::badge_width(ui.painter(), kind, label);
+                widgets::badge(ui.painter(), p, b.left() - 12.0 - w, cy, kind, label);
+            }
+        });
+        ui.add_space(24.0);
+
+        // This month, with a Refresh beside the title: after buying Pro on the web, or to check.
+        let (title, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
+        ui.painter().text(
+            title.left_center(),
+            Align2::LEFT_CENTER,
+            "This month",
+            text::UI_STRONG.font(),
+            p.ink,
+        );
+        let (_, refresh) = Button::new(Kind::Ghost, "Refresh").small().icon(icons::retry).show_right(
+            ui,
+            p,
+            title.right(),
+            title.center().y,
+            ui.id().with("refresh"),
+        );
+        if refresh.clicked() {
+            actions.push(Action::RefreshAccount);
+        }
+        ui.add_space(8.0);
+        if let Some(m) = me {
+            rows_card(ui, p, &[56.0, 56.0], |ui, i, r| {
+                let (right, cy) = (r.right() - 16.0, r.center().y);
+                let (label, detail, value) = if i == 0 {
+                    let left = m.ask.questions_left;
+                    let deep = if m.ask.deep_available { " Deep study counts as two." } else { "" };
+                    (
+                        "Ask",
+                        format!("Resets {}.{deep}", account::day(&m.ask.resets_at)),
+                        format!("{left} question{} left", if left == 1 { "" } else { "s" }),
+                    )
+                } else if m.is_pro() {
+                    (
+                        "Cloud sermon transcripts",
+                        "Recordings are transcribed by AssemblyAI, then deleted.".to_string(),
+                        format!("{} left", account::hours(m.sermons.hours_left)),
+                    )
+                } else {
+                    (
+                        "Cloud sermon transcripts",
+                        "Part of Pro. Free includes one trial hour.".to_string(),
+                        if m.sermons.trial_available {
+                            "Trial hour available".into()
+                        } else {
+                            "Trial used".into()
+                        },
+                    )
+                };
+                row_label(ui, p, r, label, Some(&detail));
+                ui.painter().text(pos2(right, cy), Align2::RIGHT_CENTER, value, text::UI.font(), p.ink_2);
+            });
+            ui.add_space(24.0);
+
+            group_title(ui, p, "Linger Pro");
+            let busy = account.busy.is_some();
+            if m.is_pro() {
+                let stripe = m.source.as_deref() != Some("app_store");
+                rows_card(ui, p, &[56.0], |ui, _, r| {
+                    let (right, cy) = (r.right() - 16.0, r.center().y);
+                    if stripe {
+                        row_label(
+                            ui,
+                            p,
+                            r,
+                            "Subscription",
+                            Some("Change your plan, payment or cancel, with Stripe."),
+                        );
+                        let (_, resp) = Button::new(Kind::Secondary, account.busy.unwrap_or("Manage…"))
+                            .small()
+                            .icon(icons::external)
+                            .enabled(!busy)
+                            .show_right(ui, p, right, cy, ui.id().with("manage"));
+                        if resp.clicked() {
+                            actions.push(Action::ManageSubscription);
+                        }
+                    } else {
+                        row_label(
+                            ui,
+                            p,
+                            r,
+                            "Subscription",
+                            Some("Bought in the App Store: manage it in your Apple account settings."),
+                        );
+                    }
+                });
+            } else {
+                rows_card(ui, p, &[64.0], |ui, _, r| {
+                    let (right, cy) = (r.right() - 16.0, r.center().y);
+                    row_label(
+                        ui,
+                        p,
+                        r,
+                        "150 questions a month, Deep study, cloud transcripts",
+                        Some(account.busy.unwrap_or("Opens Stripe Checkout in your browser.")),
+                    );
+                    let (b, yearly) = Button::new(Kind::Primary, "$69.99 / year")
+                        .small()
+                        .enabled(!busy)
+                        .show_right(ui, p, right, cy, ui.id().with("yearly"));
+                    let (_, monthly) = Button::new(Kind::Secondary, "$7.99 / month")
+                        .small()
+                        .enabled(!busy)
+                        .show_right(ui, p, b.left() - 8.0, cy, ui.id().with("monthly"));
+                    if yearly.clicked() {
+                        actions.push(Action::Upgrade { yearly: true });
+                    }
+                    if monthly.clicked() {
+                        actions.push(Action::Upgrade { yearly: false });
+                    }
+                });
+            }
+            ui.add_space(24.0);
+        }
+
+        rows_card(ui, p, &[56.0], |ui, _, r| {
+            let (right, cy) = (r.right() - 16.0, r.center().y);
+            if self.confirm_delete {
+                row_label(
+                    ui,
+                    p,
+                    r,
+                    "Delete your account?",
+                    Some("This can't be undone. Cancel a subscription first."),
+                );
+                let (b, resp) = Button::new(Kind::Destructive, "Delete Account").small().show_right(
+                    ui,
+                    p,
+                    right,
+                    cy,
+                    ui.id().with("delete-confirm"),
+                );
+                if resp.clicked() {
+                    actions.push(Action::DeleteAccount);
+                    self.confirm_delete = false;
+                }
+                let (_, cancel) = Button::new(Kind::Plain, "Cancel").small().show_right(
+                    ui,
+                    p,
+                    b.left() - 8.0,
+                    cy,
+                    ui.id().with("delete-cancel"),
+                );
+                if cancel.clicked() {
+                    self.confirm_delete = false;
+                }
+            } else {
+                row_label(
+                    ui,
+                    p,
+                    r,
+                    "Delete account",
+                    Some("Your account, plan and usage. Notes and conversations stay on this computer."),
+                );
+                let (_, resp) = Button::new(Kind::Destructive, "Delete…").small().show_right(
+                    ui,
+                    p,
+                    right,
+                    cy,
+                    ui.id().with("delete"),
+                );
+                if resp.clicked() {
+                    self.confirm_delete = true;
+                }
+            }
+        });
+        self.dev_token(ui, p, actions);
+    }
+
+    /// Development builds: sign in with a pasted Clerk token, against `LINGER_API_URL`.
+    fn dev_token(&mut self, ui: &mut Ui, p: &Palette, actions: &mut Vec<Action>) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        ui.add_space(24.0);
+        group_title(ui, p, "Development");
+        rows_card(ui, p, &[56.0], |ui, _, r| {
+            let (right, cy) = (r.right() - 16.0, r.center().y);
+            let (b, resp) = Button::new(Kind::Secondary, "Use Token").small().show_right(
+                ui,
+                p,
+                right,
+                cy,
+                ui.id().with("dev-use"),
+            );
+            let field =
+                Rect::from_min_max(pos2(r.left() + 16.0, cy - 15.0), pos2(b.left() - 10.0, cy + 15.0));
+            key_field(ui, p, field, &mut self.dev_token, "Clerk session token", ui.id().with("dev-token"));
+            if resp.clicked() {
+                actions.push(Action::SetDevToken(std::mem::take(&mut self.dev_token)));
+            }
+        });
+        ui.add_space(8.0);
+        footnote(
+            ui,
+            p,
+            &format!(
+                "Server: {}. Make a token with `npx tsx scripts/dev-token.ts <user>` in server/; \
+                 an empty token signs out.",
+                linger_core::api::base_url()
+            ),
+        );
+    }
+
     /// Puts a shortcut row into recording (demo steps).
     pub fn record(&mut self, id: &str) {
         self.recording = crate::keymap::ALL.iter().find(|s| s.id == id).map(|s| s.id);
@@ -507,6 +811,7 @@ impl SettingsUi {
         library: &mut Library,
         settings: &mut Settings,
         study: &StudyStore,
+        account: &Account,
         actions: &mut Vec<Action>,
         tx: &Sender<TaskResult>,
         import: &mut Option<(PathBuf, Option<String>)>,
@@ -520,7 +825,7 @@ impl SettingsUi {
                 .show(ctx, |ui| {
                     ui.set_min_size(screen.size());
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(screen));
-                    self.window(&mut child, library, settings, study, actions, tx, import);
+                    self.window(&mut child, library, settings, study, account, actions, tx, import);
                 });
             return true;
         }
@@ -547,7 +852,7 @@ impl SettingsUi {
             }
             let rect = ui.max_rect();
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-            self.window(&mut child, library, settings, study, actions, tx, import);
+            self.window(&mut child, library, settings, study, account, actions, tx, import);
         });
         open
     }
@@ -560,6 +865,7 @@ impl SettingsUi {
         library: &mut Library,
         settings: &mut Settings,
         study: &StudyStore,
+        account: &Account,
         actions: &mut Vec<Action>,
         tx: &Sender<TaskResult>,
         import: &mut Option<(PathBuf, Option<String>)>,
@@ -641,6 +947,7 @@ impl SettingsUi {
                             }
                             SettingsTab::Shortcuts => self.shortcuts(ui, settings),
                             SettingsTab::Data => self.data(ui, library, settings, study, actions),
+                            SettingsTab::Account => self.account(ui, p, account, actions),
                             SettingsTab::About => about(ui, p),
                         }
                     });
@@ -671,9 +978,33 @@ impl SettingsUi {
             .iter()
             .map(|e| (e.meta.id.clone(), e.meta.abbrev.clone(), e.meta.name.clone()))
             .collect();
-        rows_card(ui, p, &[44.0, 44.0], |ui, i, r| {
+        rows_card(ui, p, &[44.0, 44.0, 56.0], |ui, i, r| {
             let right = r.right() - 16.0;
-            if i == 0 {
+            if i == 2 {
+                // Ask sends Scripture to a model, which only public-domain text may reach.
+                row_label(
+                    ui,
+                    p,
+                    r,
+                    "Ask quotes from",
+                    Some("Public domain · citations open in your translation"),
+                );
+                let choices = linger_core::chat::ASK_TRANSLATIONS;
+                let labels: Vec<String> = choices.iter().map(|id| abbrev_of(id)).collect();
+                let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+                let current = linger_core::chat::ask_translation(&settings.ask_translation);
+                let selected = choices.iter().position(|id| *id == current).unwrap_or(0);
+                if let Some(i) = widgets::segmented_fit(
+                    ui,
+                    p,
+                    pos2(right, r.center().y),
+                    ui.id().with("ask-translation"),
+                    &labels,
+                    selected,
+                ) {
+                    settings.ask_translation = choices[i].into();
+                }
+            } else if i == 0 {
                 row_label(ui, p, r, "Default translation", None);
                 let current = ids
                     .iter()
@@ -939,7 +1270,12 @@ impl SettingsUi {
         );
         ui.add_space(24.0);
 
-        // Online translations: the publishers' own APIs.
+        // Online translations: the publishers' own APIs. Their free terms are non-commercial, and
+        // a paid tier makes the whole app commercial, so release builds leave them out until the
+        // publishers answer in writing (docs/backend-plan.md). Ones already added keep working.
+        if !LICENSED_ONLINE {
+            return;
+        }
         group_title(ui, p, "Online translations");
         let esv_saved = library.api_key("esv-api-key").unwrap_or_default();
         let nlt_saved = library.api_key("nlt-api-key").unwrap_or_default();
@@ -1758,6 +2094,16 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
 }
 
 /// A note under a group: 12 pt tertiary, aligned with the group's caption.
+/// A line of status (an error), wrapped, in `color`.
+fn status_line(ui: &mut Ui, p: &Palette, note: &str, color: Color32) {
+    let width = ui.available_width() - 4.0;
+    let mut job = LayoutJob::simple(note.into(), text::UI.font(), color, width);
+    job.sections[0].format.line_height = Some(18.0);
+    let g = ui.painter().layout_job(job);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), g.size().y), Sense::hover());
+    ui.painter().galley(pos2(r.left() + 4.0, r.top()), g, p.ink);
+}
+
 fn footnote(ui: &mut Ui, p: &Palette, note: &str) {
     let width = ui.available_width() - 4.0;
     let mut job = LayoutJob::simple(note.into(), text::SMALL.font(), p.ink_3, width);
@@ -1999,7 +2345,7 @@ impl Trailing<'_> {
     }
 }
 
-fn key_field(ui: &mut Ui, p: &Palette, rect: Rect, value: &mut String, placeholder: &str, id: egui::Id) {
+pub fn key_field(ui: &mut Ui, p: &Palette, rect: Rect, value: &mut String, placeholder: &str, id: egui::Id) {
     let focused = ui.memory(|m| m.has_focus(id));
     let painter = ui.painter();
     if focused {

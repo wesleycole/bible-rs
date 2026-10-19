@@ -2,9 +2,11 @@
 //! assistant runs on the device.
 //!
 //! The model never writes Scripture from memory. It cites references as `{{John 3:16}}` (or a
-//! range, `{{John 3:16-18}}`); the app turns each into a chip that opens the verse in the reader,
-//! and any verse text it shows comes from the user's own translation through [`Tools`]. The same
-//! tools serve the model's tool calls and the offline stand-in, [`local_reply`].
+//! range, `{{John 3:16-18}}`); the app turns each into a chip that opens the verse in the reader's
+//! own translation. Any verse text the model reads comes through [`Tools`], from a bundled
+//! public-domain translation ([`ask_translation`]): copyrighted text must never reach a model,
+//! whatever translation the reader shows. The same tools serve the model's tool calls and the
+//! offline stand-in, [`local_reply`].
 //!
 //! Sermons the user recorded are cited the same way, by recording and moment:
 //! `{{sermon 1a2b3c4d 12:30}}`.
@@ -21,18 +23,37 @@ use crate::reference::{self, Reference};
 use crate::search::{self, Scope};
 use crate::transcribe::{self, Transcript};
 
+/// The translations Ask may read: bundled and public domain, so their text may go to a model.
+/// The first is the default.
+pub const ASK_TRANSLATIONS: [&str; 3] = ["bsb", "web", "kjv"];
+
+/// The translation Ask's tools read, from the user's preference: one of [`ASK_TRANSLATIONS`],
+/// and the BSB for anything else (a licensed or imported translation is never used).
+pub fn ask_translation(preference: &str) -> &'static str {
+    ASK_TRANSLATIONS.iter().copied().find(|id| *id == preference).unwrap_or(ASK_TRANSLATIONS[0])
+}
+
+/// For the model, with every question: "Passages you read and search come from the BSB (Berean
+/// Standard Bible)."
+pub fn tools_note(t: &Translation) -> String {
+    format!("Passages you read and search come from the {} ({}).", t.meta.abbrev, t.meta.name)
+}
+
 /// What the user is looking at when they ask: sent with every question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     pub chapter: ChapterIdx,
     /// An inclusive verse range.
     pub selection: Option<(VerseRef, VerseRef)>,
+    /// The abbreviation of the translation the reader shows ("NLT"): only its name goes to the
+    /// model, never its text.
+    pub reading: String,
 }
 
 impl Context {
-    /// For the model: "The user is reading John 3 in the KJV and has selected John 3:14."
-    pub fn describe(&self, t: &Translation) -> String {
-        let mut s = format!("The user is reading {} in the {}.", self.chapter.display(), t.meta.abbrev);
+    /// For the model: "The user is reading John 3 in the NLT. They have selected John 3:14."
+    pub fn describe(&self) -> String {
+        let mut s = format!("The user is reading {} in the {}.", self.chapter.display(), self.reading);
         if let Some((a, b)) = self.selection {
             s.push_str(&format!(" They have selected {}.", reference::format_range(a, b)));
         }
@@ -166,8 +187,8 @@ pub fn verse_range(r: &Reference) -> Option<(VerseRef, VerseRef)> {
     })
 }
 
-/// The tools the assistant can call, run against the user's reading translation and the sermons
-/// they've recorded.
+/// The tools the assistant can call, run against a public-domain translation (see
+/// [`ask_translation`]) and the sermons the user has recorded.
 pub struct Tools {
     pub translation: Arc<Translation>,
     /// Transcribed sermons, newest first.
@@ -188,9 +209,9 @@ impl Tools {
         json!([
             {
                 "name": "search_bible",
-                "description": "Full-text search of the user's Bible translation. Every word must appear \
-                    (as a word prefix); use \"quotes\" for an exact phrase and -word to exclude. Returns \
-                    matching verses with their text, in canonical order.",
+                "description": "Full-text search of the Bible, in the translation named with the question. \
+                    Every word must appear (as a word prefix); use \"quotes\" for an exact phrase and -word \
+                    to exclude. Returns matching verses with their text, in canonical order.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -237,8 +258,9 @@ impl Tools {
             },
             {
                 "name": "get_passage",
-                "description": "The text of a passage in the user's translation: a verse (\"John 3:16\"), a \
-                    range (\"John 3:16-21\") or a chapter (\"Psalm 23\"). Quote Scripture only from this.",
+                "description": "The text of a passage, in the translation named with the question: a verse \
+                    (\"John 3:16\"), a range (\"John 3:16-21\") or a chapter (\"Psalm 23\"). Quote \
+                    Scripture only from this.",
                 "input_schema": {
                     "type": "object",
                     "properties": { "reference": { "type": "string" } },
@@ -443,11 +465,11 @@ const STOP: &[&str] = &[
 ];
 
 /// The stand-in until the assistant is connected: it says so, quotes the selected passage and
-/// lists what a search of the reading translation finds for the question's words.
+/// lists what a search of the tools' translation finds for the question's words.
 pub fn local_reply(tools: &Tools, context: &Context, question: &str) -> Message {
     let t = &tools.translation;
     let mut out = format!(
-        "The assistant isn't connected yet, so this is what Linger found in your {} on its own.",
+        "The assistant isn't connected yet, so this is what Linger found in the {} on its own.",
         t.meta.abbrev
     );
     if let Some((a, b)) = context.selection {
@@ -655,6 +677,7 @@ mod tests {
         let ctx = Context {
             chapter: ChapterIdx::new(BookId(42), 3).unwrap(),
             selection: Some((john(3, 14), john(3, 14))),
+            reading: "NLT".into(),
         };
         let m = local_reply(&tools(), &ctx, "What does 'lifted up' mean in verse 14?");
         assert!(m.text.starts_with("The assistant isn't connected yet"));
@@ -663,5 +686,34 @@ mod tests {
         assert!(cited.len() > 1, "{}", m.text);
         assert_eq!(cited.iter().filter(|c| **c == (john(3, 14), john(3, 14))).count(), 1);
         assert!(m.text.contains("And as Moses lifted up the serpent in the wilderness"));
+    }
+
+    #[test]
+    fn ask_reads_only_bundled_public_domain_translations() {
+        assert_eq!(ask_translation("web"), "web");
+        assert_eq!(ask_translation("kjv"), "kjv");
+        // A licensed, imported or unknown translation is never what Ask reads.
+        for other in ["esv", "nlt", "net", "api-nasb", "my-import", ""] {
+            assert_eq!(ask_translation(other), "bsb", "{other}");
+        }
+        for id in ASK_TRANSLATIONS {
+            let meta = crate::bundled::load(id).unwrap().meta;
+            assert!(meta.license.starts_with("Public Domain"), "{id}: {}", meta.license);
+        }
+    }
+
+    #[test]
+    fn the_model_hears_what_is_read_and_which_translation_the_tools_quote() {
+        let ctx = Context {
+            chapter: ChapterIdx::new(BookId(42), 3).unwrap(),
+            selection: Some((john(3, 14), john(3, 16))),
+            reading: "NLT".into(),
+        };
+        assert_eq!(ctx.describe(), "The user is reading John 3 in the NLT. They have selected John 3:14–16.");
+        let bsb = crate::bundled::load("bsb").unwrap();
+        assert_eq!(
+            tools_note(&bsb),
+            "Passages you read and search come from the BSB (Berean Standard Bible)."
+        );
     }
 }

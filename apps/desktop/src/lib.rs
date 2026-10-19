@@ -3,6 +3,7 @@
 //! The binary (`main.rs`) only parses arguments and launches [`run`]; keeping the UI in a
 //! library lets benchmarks and integration tests drive the layout engine directly.
 
+pub mod account;
 pub mod actions;
 pub mod app;
 pub mod ask_panel;
@@ -32,6 +33,7 @@ pub mod settings_ui;
 pub mod share_sheet;
 pub mod shortcuts_overlay;
 pub mod sidebar;
+pub mod sign_in;
 pub mod theme;
 pub mod time;
 pub mod verse_menu;

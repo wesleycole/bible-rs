@@ -116,9 +116,16 @@ plan earns.
 | Sermon search in Ask | Yes, over any transcript | Yes |
 | Recents | Local | Local (sync is a later Pro feature) |
 
-Reading never needs an account. Ask and cloud transcription need sign-in, because the allowance
-belongs to an account. App Review guideline 5.1.1(v) allows this for account-based features, and
-account deletion must be in the app.
+Linger needs an account: the desktop app opens on a sign-in screen until the device is signed in,
+so every user has an account that features can be gated on. Being signed in is decided from the
+session kept on the device, so reading works offline once signed in; the server enforces every
+allowance and plan check. Account deletion must be in the app.
+
+**Open risk for iOS:** App Review guideline 5.1.1(v) says apps without significant account-based
+features must let people use them without a login. Reading the Bible is Linger's core and isn't
+account-based, so a login before reading may be rejected on the App Store. Before the iOS release,
+either make the account-based features substantial enough to justify it, or let iOS read signed out
+and ask for sign-in at Ask and transcription. The Developer ID Mac app and Linux aren't reviewed.
 
 ### What it costs us
 
@@ -214,17 +221,18 @@ client.
 server/                          Vercel project root (Root Directory = server)
   package.json                   pnpm; effect, @effect/platform-node, @effect/vitest pinned exactly
   vercel.json                    functions config: maxDuration, regions (iad1), fluid
-  api/[[...path]].ts             the one Vercel entry: export default { fetch } from the Effect app
+  api/index.ts                   the one Vercel entry (vercel.json rewrites /v1/* to it): export default { fetch }
   src/
     Main.ts                      builds the app: HttpApi for JSON routes + HttpRouter for SSE/webhooks
     Api.ts                       HttpApi definition (groups: me, billing, sermons, account)
     routes/
       Ask.ts                     POST /v1/ask: validate, reserve, inject, stream, settle
-      Me.ts                      GET /v1/me
-      Sermons.ts                 POST /v1/sermons, POST /v1/sermons/:id/transcribe, GET /v1/sermons/:id
-      Billing.ts                 Apple transaction attach, Stripe checkout and portal
+      Json.ts                    the HttpApi handlers: GET /v1/me; POST /v1/sermons,
+                                 POST /v1/sermons/:id/transcribe, GET /v1/sermons/:id; Apple
+                                 transaction attach, Stripe checkout and portal; DELETE /v1/account
+      Internal.ts                routes only Convex's crons call (server secret)
+      DevBlob.ts                 local development's stand-in for Blob signed URLs
       Webhooks.ts                /v1/webhooks/{apple,stripe,clerk,assemblyai}
-      Account.ts                 DELETE /v1/account
     services/
       AppConfig.ts               Effect Config: env vars, typed and redacted
       Auth.ts                    Clerk verification → CurrentUser
@@ -237,7 +245,7 @@ server/                          Vercel project root (Root Directory = server)
     contract/
       ask-v1.json                GENERATED from Rust: system prompt, tools, version
     Errors.ts                    Schema.TaggedError types and their HTTP mapping
-    Pricing.ts                   per-model token prices for cost metering
+    SseMeter.ts                  reads usage and time to first token off the passing stream
   convex/
     schema.ts  plans.ts  users.ts  usage.ts  entitlements.ts  sermons.ts  webhooks.ts  crons.ts
     lib/server.ts                customMutation/customQuery that require the server secret
@@ -254,7 +262,7 @@ server/                          Vercel project root (Root Directory = server)
   - Failures are `Schema.TaggedError` classes with HTTP status annotations (see Errors), so the error contract is typed end to end.
 - **The SSE route and webhooks use a plain `HttpRouter` route.** The stream must pass through byte for byte, and webhooks need the raw body to check signatures.
 - **Entry point.** `HttpRouter.toWebHandler(...)` turns the app into a Web-standard
-  `(Request) => Promise<Response>`, which `api/[[...path]].ts` exports. Vercel's Node runtime serves
+  `(Request) => Promise<Response>`, which `api/index.ts` exports. Vercel's Node runtime serves
   Web-standard handlers directly.
 - **Coding style.** Use `Effect.gen` for handlers and `Effect.fn("name")` for traced reusable steps.
   Use `Effect.ensuring` / `Effect.onExit` so settlement runs on success, failure and client abort.
@@ -323,7 +331,7 @@ The steps:
    to the client unchanged. Parse the SSE events alongside it to read `message_start.message.usage`
    and the final `message_delta.usage`.
 6. **Settle** (Convex mutation `usage.settleRound`, run through `Effect.ensuring` + `waitUntil`):
-   - Compute the actual cost from the usage and `Pricing.ts`.
+   - Compute the actual cost from the usage and the prices pinned with the question (each `models` row carries its own prices, so switching a model switches its price too).
    - Replace the reservation and append a ledger row: model, provider, input, cache-read, cache-write and output tokens, cost, time to first token, duration and status.
    - If the client disconnected before `message_delta`, charge the reservation.
 7. **Errors before the first byte** become JSON errors (see Errors). An upstream error after
@@ -338,7 +346,9 @@ The client changes in `assistant.rs`:
 ### Model routing and switching
 
 The point of the Gateway is that a model is a string. Convex holds a `models` table that the proxy
-reads at round 0, with a 60 s in-memory cache per function instance:
+reads at round 0. `usage.beginRound` reads it inside the same Convex mutation that reserves, so a
+switch applies to the next new question everywhere at once and no cache is needed. The question's
+model, provider, settings and prices are pinned on its `questions` row for its later rounds:
 
 | key | gateway model | thinking | effort | max_tokens | enabled |
 |---|---|---|---|---|---|
@@ -441,7 +451,9 @@ allowance and the upload:
 3. **POST /v1/sermons/:id/transcribe**:
    - Confirm the blob exists and that its size matches the duration.
    - Mint a **signed GET URL** (2 hours) and create the AssemblyAI job with the same settings `transcribe.rs` uses today (`universal-3-5-pro`, speaker labels, book names as `keyterms_prompt`).
-   - Pass `webhook_url` → `/v1/webhooks/assemblyai`, with a per-job secret header.
+   - Pass `webhook_url` → `/v1/webhooks/assemblyai`, with a per-job secret header. When the proxy's
+     public URL is loopback or private (local development), the job starts without one and
+     `GET /v1/sermons/:id` checks on it and finishes it instead.
 4. **The webhook:**
    - Verify the secret, fetch the finished transcript and settle the actual `audio_duration` in Convex.
    - Delete the AssemblyAI job (which deletes AssemblyAI's copy) and the blob.
@@ -576,6 +588,14 @@ Check memory, the instance count and that every reservation settles.
 | Stripe | live | test |
 | App Store | production | sandbox and Xcode StoreKit config |
 | AssemblyAI | prod key | same key, its own project if possible |
+
+Until `linger.app` is set up, production runs on free URLs:
+- **Vercel:** project `linger-api` at `https://linger-api.vercel.app`, deployed with the Vercel CLI
+  (not yet connected to Git).
+- **Clerk:** the development instance (`elegant-mink-67.clerk.accounts.dev`). The desktop app's
+  `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and `API_URL` (`crates/core/src/api.rs`)
+  point at these and change when the production instance and domain exist.
+- **Convex:** project `linger` on the personal team, production deployment `expert-rabbit-665`.
 
 Environment variables on Vercel. The Gateway needs none, because it uses OIDC.
 - **Clerk:** `CLERK_SECRET_KEY`, `CLERK_JWT_ISSUER`, `CLERK_AUTHORIZED_PARTIES`.

@@ -84,8 +84,14 @@ impl Onboarding {
         match self.step {
             0 => {
                 self.welcome(ui, p, full, library, settings, actions);
-                let hint = "Have a licensed translation (NASB, ESV, NLT…)? You can import it or add an API key \
-                            later in Settings.";
+                // Release builds don't offer API keys yet (see settings_ui::LICENSED_ONLINE).
+                let hint = if cfg!(debug_assertions) {
+                    "Have a licensed translation (NASB, ESV, NLT…)? You can import it or add an API key \
+                     later in Settings."
+                } else {
+                    "Have a licensed translation (NASB, ESV, NLT…)? You can import a copy you own later in \
+                     Settings."
+                };
                 let cy = footer.center().y;
                 let icon = Rect::from_center_size(pos2(footer.left() + 32.0 + 8.0, cy), vec2(16.0, 16.0));
                 icons::heavy(|| icons::download(ui.painter(), icon, p.ink_2));
@@ -344,17 +350,17 @@ impl Onboarding {
 }
 
 /// The palette the onboarding window itself uses.
-fn palette(ctx: &egui::Context) -> &'static Palette {
+pub fn palette(ctx: &egui::Context) -> &'static Palette {
     if ctx.system_theme() == Some(egui::Theme::Dark) { &theme::DARK } else { &theme::LIGHT }
 }
 
-fn display(size: f32) -> FontId {
+pub fn display(size: f32) -> FontId {
     FontId::new(size, theme::family(theme::SERIF_DISPLAY))
 }
 
 /// One line of text centred on `cx` in a line box `lh` tall at `top`.
 #[allow(clippy::too_many_arguments)]
-fn centered(
+pub fn centered(
     painter: &Painter,
     cx: f32,
     top: f32,

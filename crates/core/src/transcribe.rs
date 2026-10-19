@@ -1,4 +1,6 @@
-//! Turning a recorded sermon into a transcript, through AssemblyAI.
+//! Turning a recorded sermon into a transcript, through AssemblyAI: by way of Linger's proxy
+//! ([`transcribe_via_proxy`], which holds the key and the account's allowance), or directly with a
+//! developer's own key ([`AssemblyAi`]).
 //!
 //! The recording's chunks are joined into one file and sent as one job, so the transcriber sees
 //! the whole sermon (better punctuation and speaker turns than 30-second pieces). Once the
@@ -13,6 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::api::{Api, ApiError};
 use crate::books::BookId;
 use crate::recording::{self, Manifest};
 
@@ -179,6 +182,121 @@ impl AssemblyAi {
     /// saved, and AssemblyAI expires uploads on its own.
     fn delete(&self, agent: &ureq::Agent, id: &str) {
         let _ = agent.delete(format!("{API}/transcript/{id}")).header("authorization", &self.key).call();
+    }
+}
+
+/// Transcribes a finished recording through Linger's proxy and saves the transcript beside it.
+///
+/// The joined WAV goes straight to the signed upload URL the proxy hands out (not through the
+/// proxy), the proxy starts the AssemblyAI job, and the transcript is polled for every 5 s.
+/// `status` hears "Preparing", "Uploading", "Transcribing".
+pub fn transcribe_via_proxy(
+    api: &Api,
+    data_dir: &Path,
+    manifest: &Manifest,
+    mut status: impl FnMut(&str),
+) -> Result<Transcript> {
+    if manifest.chunks.is_empty() {
+        bail!("the recording is empty");
+    }
+    status("Preparing");
+    let dir = recording::recordings_dir(data_dir).join(&manifest.id);
+    let joined = dir.join("upload.wav");
+    join_chunks(&dir, manifest, &joined)?;
+    let result = upload_and_transcribe(api, &joined, manifest, &mut status);
+    let _ = std::fs::remove_file(&joined);
+    let done = result.map_err(plan_message)?;
+    let transcript = Transcript {
+        recording_id: manifest.id.clone(),
+        recorded_at: manifest.started_at,
+        duration_ms: manifest.duration_ms(),
+        language: done["transcript"]["language"].as_str().map(str::to_string),
+        segments: serde_json::from_value(done["transcript"]["segments"].clone())
+            .context("unreadable transcript from Linger's servers")?,
+    };
+    save(data_dir, &transcript)?;
+    Ok(transcript)
+}
+
+/// A Free account past its trial: say what Pro adds rather than the bare refusal.
+fn plan_message(e: anyhow::Error) -> anyhow::Error {
+    match e.downcast_ref::<ApiError>() {
+        Some(ApiError::Upgrade { plan_required: true, upgrade, .. }) => {
+            anyhow::Error::new(ApiError::Upgrade {
+                message: "Cloud transcripts are part of Linger Pro (Free includes one trial hour).".into(),
+                upgrade: *upgrade,
+                plan_required: true,
+            })
+        }
+        _ => e,
+    }
+}
+
+fn upload_and_transcribe(
+    api: &Api,
+    wav: &Path,
+    manifest: &Manifest,
+    status: &mut impl FnMut(&str),
+) -> Result<Value> {
+    let bytes = std::fs::metadata(wav)?.len();
+    // The proxy checks the size against 16-bit mono at the recording's rate.
+    let samples = bytes.saturating_sub(44) / 2;
+    let duration_sec = samples as f64 / f64::from(manifest.sample_rate.max(1));
+    let created = api.json_call(
+        "POST",
+        "/v1/sermons",
+        Some(&json!({
+            "recordingId": manifest.id,
+            "durationSec": duration_sec,
+            "bytes": bytes,
+            "contentType": "audio/wav",
+        })),
+    )?;
+    let id = created["sermonId"].as_str().context("the server sent no sermon id")?.to_string();
+    let upload = &created["upload"];
+    let url = upload["url"].as_str().context("the server sent no upload URL")?;
+
+    status("Uploading");
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_send_body(Some(Duration::from_secs(30 * 60)))
+        .timeout_recv_response(Some(Duration::from_secs(120)))
+        .http_status_as_error(false)
+        .user_agent(concat!("linger/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    let mut put = agent.put(url).header("content-length", bytes.to_string());
+    for (k, v) in upload["headers"].as_object().into_iter().flatten() {
+        if let Some(v) = v.as_str() {
+            put = put.header(k.as_str(), v);
+        }
+    }
+    let mut resp =
+        put.send(std::fs::File::open(wav)?).map_err(|e| anyhow!(e).context("uploading the sermon"))?;
+    if !resp.status().is_success() {
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        bail!(
+            "uploading the sermon: HTTP {}: {}",
+            resp.status().as_u16(),
+            text.chars().take(200).collect::<String>()
+        );
+    }
+
+    api.json_call("POST", &format!("/v1/sermons/{id}/transcribe"), None)?;
+    status("Transcribing");
+    let started = Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let v = api.json_call("GET", &format!("/v1/sermons/{id}"), None)?;
+        match v["status"].as_str() {
+            Some("done") => return Ok(v),
+            Some("error") => bail!(
+                "the sermon couldn't be transcribed: {}",
+                v["error"].as_str().unwrap_or("unknown error")
+            ),
+            _ if started.elapsed() > GIVE_UP_AFTER => bail!("the transcription took too long"),
+            _ => {}
+        }
     }
 }
 

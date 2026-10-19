@@ -1,0 +1,9 @@
+.env.local
+node_modules/
+# Local Convex deployment state, dev Clerk keys and local sermon audio.
+.convex/
+.data/
+.amp/
+.vercel/
+.vercel
+.env*

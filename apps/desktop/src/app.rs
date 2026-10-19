@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use eframe::egui::{self, Align2, Frame, Id, Key, Modifiers, Sense, Stroke, Ui, vec2};
 use linger_core::books::{BookId, ChapterIdx, VerseRef};
 use linger_core::library::Library;
@@ -62,6 +62,11 @@ pub struct Settings {
     pub share: crate::share_sheet::ShareOptions,
     /// Remind about the day's plan reading at 7:00 while the app is open.
     pub plan_reminder: bool,
+    /// The public-domain translation Ask's tools read (`chat::ASK_TRANSLATIONS`), whatever the
+    /// reader shows.
+    pub ask_translation: String,
+    /// The one-time Ask sheet (what is sent where) was accepted.
+    pub ask_consent: bool,
     /// The first-launch screens are done. Settings saved before they existed count as done.
     #[serde(default = "yes")]
     pub onboarded: bool,
@@ -87,6 +92,8 @@ impl Default for Settings {
             verse: 1,
             whole_words: false,
             plan_reminder: false,
+            ask_translation: linger_core::chat::ASK_TRANSLATIONS[0].into(),
+            ask_consent: false,
             accent: theme::Accent::Ink,
             toolbar_translation: true,
             sidebar_attached: false,
@@ -242,6 +249,8 @@ pub struct BibleApp {
     /// The Ask conversation, docked where the verse panel goes; the two never show together.
     pub ask: Option<crate::ask_panel::AskPanel>,
     settings_ui: Option<SettingsUi>,
+    /// The Linger account (Ask and cloud transcripts need one).
+    pub account: crate::account::Account,
     shortcuts_open: bool,
     shortcuts_overlay: crate::shortcuts_overlay::ShortcutsOverlay,
     /// The compact toolbar's More menu: open it next frame (demo), and its keyboard item.
@@ -269,6 +278,12 @@ pub struct BibleApp {
     note_popover: Option<NotePopover>,
     /// The first-launch screens, until they are done.
     onboarding: Option<crate::onboarding::Onboarding>,
+    /// The sign-in screen, which covers everything while this device isn't signed in.
+    sign_in: crate::sign_in::SignIn,
+    /// Whether the sign-in screen showed last frame (the window resizes when that changes).
+    gated: bool,
+    /// Offscreen renders skip the sign-in screen unless a demo step asks for it.
+    demo_sign_in: bool,
     /// Compare Verse as a popover on the selected verse (frame 23).
     compare: Option<crate::compare_popover::ComparePopover>,
     /// Sharing the selected verses as an image or text (frame 22).
@@ -342,6 +357,7 @@ impl BibleApp {
         startup: Startup,
     ) -> Self {
         let Init { data_dir, study, library, settings, elapsed } = init;
+        let account = crate::account::Account::new(&data_dir);
         theme::set_accent(settings.accent);
         theme::apply(&cc.egui_ctx, settings.theme);
         if settings.reduce_motion {
@@ -358,6 +374,11 @@ impl BibleApp {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(crate::onboarding::SIZE));
             crate::onboarding::Onboarding::new(&cc.egui_ctx)
         });
+        let gated = !account.signed_in() && !crate::probing() && !crate::offscreen();
+        if gated {
+            // Sign-in comes first, in the onboarding window.
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(crate::onboarding::SIZE));
+        }
         Self {
             data_dir,
             library,
@@ -375,6 +396,7 @@ impl BibleApp {
             palette: None,
             panel: None,
             ask: None,
+            account,
             settings_ui: None,
             shortcuts_open: false,
             shortcuts_overlay: Default::default(),
@@ -403,6 +425,9 @@ impl BibleApp {
             verse_menu: None,
             note_popover: None,
             onboarding,
+            sign_in: Default::default(),
+            gated,
+            demo_sign_in: false,
             import_sheet: None,
             share_sheet: None,
             compare: None,
@@ -779,6 +804,7 @@ impl BibleApp {
                 if self.ask.take().is_none() {
                     self.ask = Some(crate::ask_panel::AskPanel::new());
                     self.panel = None;
+                    self.account.refresh();
                 }
             }
             Action::OpenChat(_) | Action::NewChat if self.ask.as_ref().is_some_and(|a| a.waiting()) => {
@@ -971,20 +997,31 @@ impl BibleApp {
                     let msg = match r.stop() {
                         Ok(m) => {
                             let length = crate::recorder::duration_label(m.duration_ms() / 1000);
-                            match linger_core::transcribe::AssemblyAi::from_env() {
-                                Some(aai) if !m.chunks.is_empty() => {
-                                    let (tx, data_dir, ctx2) =
-                                        (self.task_tx.clone(), self.data_dir.clone(), ctx.clone());
-                                    std::thread::spawn(move || {
-                                        let r = aai
-                                            .transcribe(&data_dir, &m, |_| {})
-                                            .map_err(|e| format!("{e:#}"));
-                                        let _ = tx.send(TaskResult::Transcribed(r));
-                                        ctx2.request_repaint();
-                                    });
-                                    format!("Saved a {length} recording. Transcribing it…")
-                                }
-                                _ => format!("Saved a {length} recording"),
+                            // A developer's own AssemblyAI key wins; otherwise Linger's
+                            // server, as the signed-in account.
+                            let aai = linger_core::transcribe::AssemblyAi::from_env();
+                            let api = self.account.api().cloned();
+                            if m.chunks.is_empty() || (aai.is_none() && api.is_none()) {
+                                format!("Saved a {length} recording")
+                            } else {
+                                let (tx, data_dir, ctx2) =
+                                    (self.task_tx.clone(), self.data_dir.clone(), ctx.clone());
+                                std::thread::spawn(move || {
+                                    let r = match (aai, api) {
+                                        (Some(aai), _) => aai.transcribe(&data_dir, &m, |_| {}),
+                                        (None, api) => api.context("sign in to transcribe").and_then(|api| {
+                                            linger_core::transcribe::transcribe_via_proxy(
+                                                &api,
+                                                &data_dir,
+                                                &m,
+                                                |_| {},
+                                            )
+                                        }),
+                                    };
+                                    let _ = tx.send(TaskResult::Transcribed(r.map_err(|e| format!("{e:#}"))));
+                                    ctx2.request_repaint();
+                                });
+                                format!("Saved a {length} recording. Transcribing it…")
                             }
                         }
                         Err(e) => format!("Recording stopped: {e:#}"),
@@ -992,13 +1029,30 @@ impl BibleApp {
                     self.toast(ctx, msg);
                 }
             }
+            Action::SignIn => self.account.sign_in(),
+            Action::CancelSignIn => self.account.cancel_sign_in(),
+            Action::SignOut => self.account.sign_out(),
+            Action::RefreshAccount => self.account.refresh(),
+            Action::Upgrade { yearly } => self.account.upgrade(yearly),
+            Action::ManageSubscription => self.account.manage(),
+            Action::DeleteAccount => self.account.delete(),
+            Action::SetDevToken(token) => self.account.set_dev_token(&token),
+            Action::AcceptAskConsent => self.settings.ask_consent = true,
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
 
+    /// Whether the sign-in screen covers the app: Linger needs an account. The probes measure the
+    /// reader, and offscreen renders (tests, screenshots) show the screen only when a demo step
+    /// asks for it.
+    fn sign_in_required(&self) -> bool {
+        !self.account.signed_in() && !crate::probing() && (!crate::offscreen() || self.demo_sign_in)
+    }
+
     /// One `LINGER_DEMO` step: `jump:<reference>`, `select:<reference>`, `palette:<query>`,
     /// `search:<query>`, `scope:<ot|nt>`, `step:<n>` (search results), `offline:<reference>`, `note:<reference>`, `compare:<reference>`, `study:<bookmarks|highlights|notes>`,
-    /// `settings:<reading|translations|data>`, `plans-tab:<active|browse|completed>`,
+    /// `settings:<reading|translations|data|account>`, `plans-tab:<active|browse|completed>`, `ask`,
+    /// `account:<state>`, `consent:<yes|no>`, `ask-notice:<kind>`, `sign-in[:<waiting|error>]`,
     /// `size:<width>x<height>` (the window's inner size).
     fn demo_step(&mut self, ctx: &egui::Context, step: &str, actions: &mut Vec<Action>) {
         let (cmd, arg) = step.split_once(':').unwrap_or((step, ""));
@@ -1014,6 +1068,7 @@ impl BibleApp {
                 }
             }
             "select" => self.reader.set_selection(verse()),
+            "ask" => actions.push(Action::ToggleAsk),
             "palette" => self.palette = Some(CommandPalette::with_query(arg)),
             "search" => actions.push(Action::OpenSearch(Some(arg.to_string()))),
             "step" => actions.push(Action::SearchStep(arg.parse().unwrap_or(1))),
@@ -1116,8 +1171,56 @@ impl BibleApp {
                 "appearance" => SettingsTab::Appearance,
                 "shortcuts" => SettingsTab::Shortcuts,
                 "about" => SettingsTab::About,
+                "account" => SettingsTab::Account,
                 _ => SettingsTab::Reading,
             })),
+            // `account:<free|pro|signed-out|waiting|error>`: the account in that state, without a
+            // server.
+            "account" => {
+                let me = |plan: &str| {
+                    let pro = plan == "pro";
+                    serde_json::from_value::<linger_core::api::Me>(serde_json::json!({
+                        "user": { "id": "user_demo", "email": "ruth@example.com" },
+                        "plan": plan,
+                        "renewsAt": pro.then_some("2026-11-19T00:00:00.000Z"),
+                        "source": pro.then_some("stripe"),
+                        "ask": { "questionsLeft": if pro { 142 } else { 23 }, "resetsAt": "2026-11-01T00:00:00.000Z", "deepAvailable": pro },
+                        "sermons": { "hoursLeft": if pro { 9.5 } else { 0.0 }, "trialAvailable": !pro },
+                    }))
+                    .ok()
+                };
+                match arg {
+                    "pro" => self.account.demo(me("pro"), None, None),
+                    "signed-out" => self.account.demo(None, None, None),
+                    "waiting" => self.account.demo(None, Some("Waiting for the browser…"), None),
+                    "error" => self.account.demo(
+                        None,
+                        None,
+                        Some("Couldn't sign in: sign-in was cancelled: access_denied".into()),
+                    ),
+                    _ => self.account.demo(me("free"), None, None),
+                }
+            }
+            // `sign-in[:<waiting|error>]`: the sign-in screen, signed out.
+            "sign-in" => {
+                self.demo_sign_in = true;
+                match arg {
+                    "waiting" => self.account.demo(None, Some("Waiting for the browser…"), None),
+                    "error" => self.account.demo(
+                        None,
+                        None,
+                        Some("Couldn't sign in: sign-in was cancelled: access_denied".into()),
+                    ),
+                    _ => self.account.demo(None, None, None),
+                }
+            }
+            // `consent:<yes|no>`: the Ask sheet accepted or not.
+            "consent" => self.settings.ask_consent = arg != "no",
+            // `ask-notice:<signin|free|pro|deep|wait|update|long>`: Ask with a question turned down.
+            "ask-notice" => {
+                let me = self.account.me.clone();
+                self.ask.get_or_insert_with(crate::ask_panel::AskPanel::new).demo_notice(arg, me.as_ref());
+            }
             _ => eprintln!("LINGER_DEMO: unknown step {step:?}"),
         }
     }
@@ -2422,13 +2525,16 @@ impl eframe::App for BibleApp {
             ctx.request_repaint();
         }
         self.poll_tasks(&ctx);
+        for msg in self.account.poll(&ctx) {
+            self.toast(&ctx, msg);
+        }
         let mut actions = Vec::new();
         if let Some(probe) = &mut self.sidebar_probe
             && probe.begin(&ctx, frame_start)
         {
             actions.push(Action::ToggleSidebar);
         }
-        if self.onboarding.is_none() {
+        if self.onboarding.is_none() && !self.sign_in_required() {
             self.shortcuts(&ctx, &mut actions);
         }
         #[cfg(target_os = "macos")]
@@ -2456,6 +2562,22 @@ impl eframe::App for BibleApp {
         let p = self.settings.theme.palette();
 
         self.chrome = chrome(frame, &ctx);
+        let gated = self.sign_in_required();
+        if gated != self.gated {
+            if gated {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(crate::onboarding::SIZE));
+            } else if self.onboarding.is_none() {
+                open_reader_window(&ctx);
+            }
+            self.gated = gated;
+        }
+        if gated {
+            egui::CentralPanel::default()
+                .frame(Frame::NONE)
+                .show(ui, |ui| self.sign_in.show(ui, &self.account, &mut actions));
+            self.end_frame(&ctx, frame, frame_start, actions);
+            return;
+        }
         if let Some(onboarding) = &mut self.onboarding {
             let done = egui::CentralPanel::default()
                 .frame(Frame::NONE)
@@ -2679,9 +2801,13 @@ impl eframe::App for BibleApp {
                 let env = crate::ask_panel::AskEnv {
                     library: &self.library,
                     translation: &self.settings.translation,
+                    ask_translation: linger_core::chat::ask_translation(&self.settings.ask_translation),
                     chapter: self.reader.location.0,
                     selection: self.reader.selection,
                     data_dir: &self.data_dir,
+                    api: self.account.api(),
+                    me: self.account.me.as_ref(),
+                    consented: self.settings.ask_consent,
                 };
                 let close = ask.show(&mut child, p, &env, &mut actions);
                 // After each answer, into Recents.
@@ -2765,6 +2891,7 @@ impl eframe::App for BibleApp {
                 &mut self.library,
                 &mut self.settings,
                 &self.study,
+                &self.account,
                 &mut actions,
                 &tx,
                 &mut import,
@@ -2833,7 +2960,7 @@ impl eframe::App for BibleApp {
     }
 }
 
-/// After onboarding: the reader's 1280 × 800 window, centred on the screen.
+/// After onboarding and sign-in: the reader's 1280 × 800 window, centred on the screen.
 fn open_reader_window(ctx: &egui::Context) {
     let size = vec2(1280.0, 800.0);
     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));

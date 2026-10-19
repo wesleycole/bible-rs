@@ -13,6 +13,9 @@ OUT="${OUT:-$ROOT/docs/screenshots}"
 BIN="${BIN:-$ROOT/target/release/linger}"
 export DISPLAY="${DISPLAY_NUM:-:98}"
 export LIBGL_ALWAYS_SOFTWARE=1
+# Linger opens on its sign-in screen until a device is signed in; a stand-in token gets past it.
+# Nothing listens on port 9, so account lookups fail at once instead of reaching a server.
+export LINGER_API_TOKEN="${LINGER_API_TOKEN:-screenshots}" LINGER_API_URL="${LINGER_API_URL:-http://127.0.0.1:9}"
 
 mkdir -p "$OUT"
 if ! xdpyinfo >/dev/null 2>&1; then

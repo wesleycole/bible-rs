@@ -9,8 +9,9 @@
 //! linger export --markdown|--json [-o file]
 //! linger import-notes <export.json>
 //! linger record [--source mic|system] [--seconds N]   (Enter stops)
-//! linger ask "what does born of water mean?" [--at "jn 3:5"] [--translation kjv]
+//! linger ask "what does born of water mean?" [--at "jn 3:5"] [--translation kjv] [--deep]
 //! linger transcribe [<recording-id>]   (the latest untranscribed recording by default)
+//! linger signin | signout | account    (Linger's account, for Ask and cloud transcripts)
 //! linger sermons
 //! ```
 
@@ -60,6 +61,9 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         "record" => record(rest, data_dir),
         "ask" => ask(rest, data_dir),
         "transcribe" => transcribe(rest, data_dir),
+        "signin" => signin(data_dir),
+        "signout" => signout(data_dir),
+        "account" => account(data_dir),
         "sermons" => sermons(data_dir),
         "--version" | "-V" => {
             println!("linger {}", env!("CARGO_PKG_VERSION"));
@@ -71,7 +75,7 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
                 include_str!("cli.rs")
                     .lines()
                     .skip(3)
-                    .take(14)
+                    .take(15)
                     .map(|l| l.trim_start_matches("//! "))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -239,11 +243,27 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
     use std::io::Write;
 
     use linger_core::assistant::{Config, Conversation, Event};
-    use linger_core::chat::{Context as Reading, Tools};
-    let cfg = Config::from_env().context("set AI_GATEWAY_API_KEY to ask the assistant")?;
+    use linger_core::chat::{Context as Reading, Tools, ask_translation};
+    let mode = if rest.iter().any(|a| a == "--deep") {
+        linger_core::assistant::Mode::Deep
+    } else {
+        linger_core::assistant::Mode::Standard
+    };
+    // Signed in, through Linger's proxy; otherwise straight to the Gateway with a developer key.
+    let cfg = match signed_in(data_dir) {
+        Some(api) => Config::proxy(api, mode),
+        None => {
+            Config::from_env().context("sign in with `linger signin` (or set AI_GATEWAY_API_KEY) to ask")?
+        }
+    };
     let lib = library(data_dir);
+    // The tools read a public-domain translation: the one named with --translation if it's one
+    // of those, else the BSB. Only the name of any other reaches the model.
+    let reading = translation_id(rest, &lib);
+    let reading_abbrev = lib.get(&reading).map_or_else(|| reading.to_uppercase(), |e| e.meta.abbrev.clone());
+    let asked = flag(rest, "--translation").or_else(|| flag(rest, "-t")).unwrap_or_default();
     let tools = Tools {
-        translation: lib.load(&translation_id(rest, &lib))?,
+        translation: lib.load(ask_translation(&asked))?,
         sermons: Arc::new(linger_core::transcribe::all(data_dir)),
     };
     let question = positional(rest).into_iter().cloned().collect::<Vec<_>>().join(" ");
@@ -257,7 +277,7 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
                 let a = linger_core::VerseRef::new(r.book, r.chapter, v);
                 (a, linger_core::VerseRef::new(r.book, r.chapter, r.verse_end.unwrap_or(v)))
             });
-            Ok(Reading { chapter: r.chapter_idx(), selection })
+            Ok(Reading { chapter: r.chapter_idx(), selection, reading: reading_abbrev.clone() })
         })
         .transpose()?;
     let answer = Conversation::new().ask(&cfg, &tools, context.as_ref(), &question, |e| match e {
@@ -267,6 +287,14 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
         }
         Event::Tool(what) => eprintln!("\n[{what}]"),
         Event::Thinking => eprintln!("\n[thinking]"),
+        Event::Allowance { questions_left, downgraded } => {
+            if let Some(n) = questions_left {
+                eprintln!("[{n} questions left this month]");
+            }
+            if downgraded {
+                eprintln!("[past this month's limit for the full model: answered by a lighter one]");
+            }
+        }
     })?;
     println!();
     eprintln!("\n{} verses cited", answer.cited().len());
@@ -275,7 +303,6 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
 
 fn transcribe(rest: &[String], data_dir: &Path) -> Result<()> {
     use linger_core::{recording, transcribe};
-    let aai = transcribe::AssemblyAi::from_env().context("set ASSEMBLYAI_API_KEY to transcribe")?;
     let all = recording::list(data_dir);
     let m = match positional(rest).first() {
         Some(id) => {
@@ -286,11 +313,62 @@ fn transcribe(rest: &[String], data_dir: &Path) -> Result<()> {
             .find(|m| m.ended_at.is_some() && transcribe::load(data_dir, &m.id).is_none())
             .context("every recording is transcribed")?,
     };
-    let t = aai.transcribe(data_dir, m, |s| eprintln!("{s}…"))?;
+    // A developer key goes straight to AssemblyAI; otherwise through Linger's proxy.
+    let t = match (transcribe::AssemblyAi::from_env(), signed_in(data_dir)) {
+        (Some(aai), _) => aai.transcribe(data_dir, m, |s| eprintln!("{s}…"))?,
+        (None, Some(api)) => transcribe::transcribe_via_proxy(&api, data_dir, m, |s| eprintln!("{s}…"))?,
+        (None, None) => bail!("sign in with `linger signin` (or set ASSEMBLYAI_API_KEY) to transcribe"),
+    };
     for s in &t.segments {
         println!("[{}] {}: {}", transcribe::clock(s.start_ms), s.speaker.as_deref().unwrap_or("?"), s.text);
     }
     eprintln!("Saved {}", transcribe::path(data_dir, &m.id).display());
+    Ok(())
+}
+
+/// The proxy client, when this device is signed in.
+fn signed_in(data_dir: &Path) -> Option<linger_core::api::Api> {
+    let store = linger_core::secrets::SecretStore::new(data_dir);
+    linger_core::auth::saved(&store).map(|t| linger_core::api::Api::new(linger_core::api::base_url(), t))
+}
+
+/// Browser sign-in (OAuth with PKCE through Clerk, loopback redirect).
+fn signin(data_dir: &Path) -> Result<()> {
+    use linger_core::auth::{OAuthConfig, OAuthSession};
+    let store = linger_core::secrets::SecretStore::new(data_dir);
+    OAuthSession::sign_in(OAuthConfig::from_env(), store, |url| {
+        eprintln!("Opening the browser to sign in. If it doesn't open, visit:\n{url}");
+        crate::app::open_url(url);
+    })?;
+    eprintln!("Signed in.");
+    account(data_dir)
+}
+
+fn signout(data_dir: &Path) -> Result<()> {
+    let store = linger_core::secrets::SecretStore::new(data_dir);
+    if let Err(e) = linger_core::auth::sign_out(&store) {
+        eprintln!("Signed out on this device ({e:#}).");
+    } else {
+        eprintln!("Signed out.");
+    }
+    Ok(())
+}
+
+/// The plan and what's left of it.
+fn account(data_dir: &Path) -> Result<()> {
+    let api = signed_in(data_dir).context("not signed in; run `linger signin`")?;
+    let me = api.me()?;
+    println!(
+        "{} ({})",
+        me.user.email.as_deref().unwrap_or(&me.user.id),
+        if me.is_pro() { "Pro" } else { "Free" }
+    );
+    println!("Ask: {} questions left, resets {}", me.ask.questions_left, me.ask.resets_at);
+    if me.is_pro() {
+        println!("Sermons: {:.1} hours of cloud transcripts left", me.sermons.hours_left);
+    } else if me.sermons.trial_available {
+        println!("Sermons: one free cloud trial hour available");
+    }
     Ok(())
 }
 

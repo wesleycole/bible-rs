@@ -1,12 +1,15 @@
-//! The assistant: Claude, through an Anthropic Messages API endpoint (the Vercel AI Gateway for
-//! now, Linger's own proxy later), answering with the [`chat`](crate::chat) tools run here on the
-//! device.
+//! The assistant: Claude, through Linger's proxy (or, for development, the Vercel AI Gateway
+//! directly), answering with the [`chat`](crate::chat) tools run here on the device.
 //!
 //! One question is one [`Conversation::ask`]: the question goes up with what the user is reading,
 //! and the reply streams back. When Claude calls a tool the loop runs it against the local
 //! translation, sends the result and streams again, until Claude finishes. The conversation keeps
 //! every content block exactly as it came back (thinking blocks included) and only ever appends,
 //! as the API requires to keep reasoning across turns.
+//!
+//! Through the proxy the app sends only the conversation, with a question id and the round; the
+//! proxy adds the model, the system prompt and the tools from the published
+//! [`contract`](crate::contract), and decides what the account may spend.
 
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
@@ -14,59 +17,72 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::chat::{Context, Message, Tools};
+use crate::api::Api;
+use crate::chat::{self, Context, Message, Tools};
+use crate::contract;
 
 /// The Gateway's Anthropic-compatible Messages endpoint.
 pub const GATEWAY_URL: &str = "https://ai-gateway.vercel.sh/v1/messages";
-/// Claude Opus 5.5, by its Gateway name.
-pub const MODEL: &str = "anthropic/claude-opus-5.5";
-/// Rounds of tool calls one question may take before Linger stops it.
-const MAX_ROUNDS: usize = 8;
+/// The model direct mode asks for, unless `LINGER_AI_MODEL` names another.
+pub const MODEL: &str = contract::direct::MODEL;
 
-const SYSTEM: &str = "\
-You are the study assistant in Linger, a Bible reading app. The user reads Scripture on the left of \
-the screen and talks with you on the right, so your answers sit beside the text.
+/// Standard questions, or Deep study (a stronger model; Pro, counts as two questions).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Standard,
+    Deep,
+}
 
-Ground what you say in the text. Use get_passage to read any verse before you quote or rely on it, \
-and search_bible to find where something is said. Quote Scripture only from tool results, in the \
-user's translation, never from memory. Cite each verse you draw on as {{Book Chapter:Verse}} or \
-{{Book Chapter:Verse-Verse}} with the book's full English name, for example {{John 3:16}} or \
-{{1 Corinthians 13:4-7}}; the app turns each citation into a link that opens the passage. Cite only \
-verses you have read with a tool.
+impl Mode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Mode::Standard => "standard",
+            Mode::Deep => "deep",
+        }
+    }
+}
 
-The user records their church's sermons in Linger, and you can read the transcripts: \
-search_sermons finds what was said, read_sermon reads on from a moment. When the user asks what \
-their church, pastor or a sermon taught, search the sermons first, and say plainly when nothing was \
-found. Cite a moment in a sermon as {{sermon <id> <time>}}, for example {{sermon a40671b1 12:30}}, \
-using the id and time a tool gave you. Keep what the preacher said distinct from what Scripture \
-says, and quote a preacher only from a transcript. Transcripts are made by machine, so a word that \
-looks wrong may be a mishearing.
+/// Where requests go.
+#[derive(Clone)]
+pub enum Backend {
+    /// Linger's proxy, as the signed-in user.
+    Proxy(Api),
+    /// Development only: the Gateway itself, with a key from the environment.
+    Direct { url: String, key: String, model: String },
+}
 
-Beyond the text, answer as a thoughtful, well-read guide would. Where Christian traditions differ, \
-say so briefly and fairly rather than taking a side. Keep answers short enough to read in the side \
-panel: a few paragraphs at most, separated by blank lines. Write plain prose; the panel shows no \
-Markdown, so don't use **bold**, headings, tables or bullet symbols.";
-
-/// Where to send requests, and as whom.
+/// Where to send requests, as whom, and in which mode.
 #[derive(Clone)]
 pub struct Config {
-    pub url: String,
-    pub key: String,
-    pub model: String,
+    pub backend: Backend,
+    pub mode: Mode,
 }
 
 impl Config {
-    /// The Gateway, with the key from `LINGER_AI_GATEWAY_KEY` or `AI_GATEWAY_API_KEY`; `None`
-    /// when neither is set (the app then falls back to [`chat::local_reply`](crate::chat::local_reply)).
+    /// Through Linger's proxy.
+    pub fn proxy(api: Api, mode: Mode) -> Self {
+        Self { backend: Backend::Proxy(api), mode }
+    }
+
+    /// Development mode: the Gateway, with the key from `LINGER_AI_GATEWAY_KEY` or
+    /// `AI_GATEWAY_API_KEY`; `None` when neither is set.
     pub fn from_env() -> Option<Self> {
         let key = ["LINGER_AI_GATEWAY_KEY", "AI_GATEWAY_API_KEY"]
             .iter()
             .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))?;
         Some(Self {
-            url: std::env::var("LINGER_AI_URL").unwrap_or_else(|_| GATEWAY_URL.into()),
-            key,
-            model: std::env::var("LINGER_AI_MODEL").unwrap_or_else(|_| MODEL.into()),
+            backend: Backend::Direct {
+                url: std::env::var("LINGER_AI_URL").unwrap_or_else(|_| GATEWAY_URL.into()),
+                key,
+                model: std::env::var("LINGER_AI_MODEL").unwrap_or_else(|_| MODEL.into()),
+            },
+            mode: Mode::Standard,
         })
+    }
+
+    pub fn is_proxy(&self) -> bool {
+        matches!(self.backend, Backend::Proxy(_))
     }
 }
 
@@ -79,6 +95,9 @@ pub enum Event {
     Tool(String),
     /// Claude is thinking (between tool calls, or before it writes).
     Thinking,
+    /// The proxy's word on the account, with each round: questions left this month, and
+    /// whether this question was moved to a lighter model past the month's cost ceiling.
+    Allowance { questions_left: Option<u32>, downgraded: bool },
 }
 
 /// One conversation with Claude, as the API sees it.
@@ -118,17 +137,26 @@ impl Conversation {
         mut on_event: impl FnMut(Event),
     ) -> Result<Message> {
         let mut content = Vec::new();
-        if let Some(c) = context {
-            content.push(json!({ "type": "text", "text": c.describe(&tools.translation) }));
-        }
+        // What the user is reading, and which translation the tools read: per question, so the
+        // system prompt stays the same for everyone.
+        let note = chat::tools_note(&tools.translation);
+        let about = match context {
+            Some(c) => format!("{} {note}", c.describe()),
+            None => note,
+        };
+        content.push(json!({ "type": "text", "text": about }));
         content.push(json!({ "type": "text", "text": question }));
         let start = self.messages.len();
         self.messages.push(json!({ "role": "user", "content": content }));
 
         let agent = agent();
         let mut answer: Vec<String> = Vec::new();
-        for _ in 0..MAX_ROUNDS {
-            let turn = match stream(&agent, cfg, &self.request(cfg), &mut on_event) {
+        // One id for the question and all its tool rounds: the proxy counts the question once
+        // and keeps every round on the model it started on.
+        let question_id = uuid::Uuid::new_v4().to_string();
+        for round in 0..contract::MAX_ROUNDS {
+            let body = self.request(cfg, &question_id, round);
+            let turn = match stream(&agent, cfg, &body, &mut on_event) {
                 Ok(t) => t,
                 Err(e) => {
                     // Nothing of this question stays, so the next one starts from a valid history.
@@ -175,23 +203,33 @@ impl Conversation {
         Ok(Message::assistant(answer.join("\n\n")))
     }
 
-    fn request(&self, cfg: &Config) -> Value {
-        json!({
-            "model": cfg.model,
-            "max_tokens": 16000,
-            "stream": true,
-            // Thinking is always on for Opus 5.5; effort sets how much. Medium suits questions
-            // about a passage; "summarized" makes the wait show as thinking rather than nothing.
-            "thinking": { "type": "adaptive", "display": "summarized" },
-            "output_config": { "effort": "medium" },
-            // A declined request is retried on a model that can answer it.
-            "fallbacks": "default",
-            // Caches the tools, the system prompt and the conversation so far.
-            "cache_control": { "type": "ephemeral" },
-            "system": SYSTEM,
-            "tools": Tools::definitions(),
-            "messages": self.messages,
-        })
+    fn request(&self, cfg: &Config, question_id: &str, round: usize) -> Value {
+        match &cfg.backend {
+            // The proxy injects the model, system prompt, tools and settings itself.
+            Backend::Proxy(_) => json!({
+                "contract": contract::VERSION,
+                "questionId": question_id,
+                "round": round,
+                "mode": cfg.mode.as_str(),
+                "messages": self.messages,
+            }),
+            Backend::Direct { model, .. } => json!({
+                "model": model,
+                "max_tokens": contract::direct::MAX_TOKENS,
+                "stream": true,
+                // Thinking is always on for Opus 5.5; effort sets how much. Medium suits
+                // questions about a passage; "summarized" makes the wait show as thinking.
+                "thinking": { "type": "adaptive", "display": "summarized" },
+                "output_config": { "effort": contract::direct::EFFORT },
+                // A declined request is retried on a model that can answer it.
+                "fallbacks": "default",
+                // Caches the tools, the system prompt and the conversation so far.
+                "cache_control": { "type": "ephemeral" },
+                "system": contract::SYSTEM,
+                "tools": Tools::definitions(),
+                "messages": self.messages,
+            }),
+        }
     }
 }
 
@@ -218,18 +256,35 @@ fn tool_label(name: &str, input: &Value) -> String {
     }
 }
 
-/// Sends one request and reads its event stream, retrying once on overload or a dropped
-/// connection before anything has streamed.
+/// Sends one request and reads its event stream.
+///
+/// Through the proxy a refused request is the proxy's decision (sign in, allowance, rate) and
+/// comes back as an [`ApiError`] for the panel to show; the client only refreshes its token
+/// once on a 401. Direct to the Gateway it retries twice on overload or a dropped connection
+/// before anything has streamed.
 fn stream(agent: &ureq::Agent, cfg: &Config, body: &Value, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
+    let (url, key) = match &cfg.backend {
+        Backend::Proxy(api) => {
+            let resp = api.send("POST", "/v1/ask", Some(body))?;
+            let header =
+                |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+            on_event(Event::Allowance {
+                questions_left: header("x-linger-questions-left").and_then(|v| v.parse().ok()),
+                downgraded: header("x-linger-downgraded").as_deref() == Some("1"),
+            });
+            return read_events(resp, on_event);
+        }
+        Backend::Direct { url, key, .. } => (url, key),
+    };
     let mut last = None;
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(Duration::from_secs(2 * attempt));
         }
         let resp = agent
-            .post(&cfg.url)
+            .post(url)
             .header("content-type", "application/json")
-            .header("x-api-key", &cfg.key)
+            .header("x-api-key", key)
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", "server-side-fallback-2026-07-01")
             .send(body.to_string());
@@ -250,31 +305,35 @@ fn stream(agent: &ureq::Agent, cfg: &Config, body: &Value, on_event: &mut impl F
             }
             return Err(err);
         }
-        let reader = BufReader::new(resp.into_body().into_reader());
-        let mut turn = Turn::default();
-        let mut data = String::new();
-        for line in reader.lines() {
-            let line = line.context("the answer stopped arriving")?;
-            if let Some(d) = line.strip_prefix("data:") {
-                data.push_str(d.trim_start());
-            } else if line.is_empty() && !data.is_empty() {
-                let event: Value =
-                    serde_json::from_str(&data).context("unreadable reply from the assistant")?;
-                data.clear();
-                if let Some(e) = turn.apply(&event)? {
-                    on_event(e);
-                }
-                if turn.done {
-                    break;
-                }
-            }
-        }
-        if !turn.done {
-            bail!("the answer stopped arriving");
-        }
-        return Ok(turn);
+        return read_events(resp, on_event);
     }
     Err(last.unwrap_or_else(|| anyhow!("couldn't reach the assistant")))
+}
+
+/// Folds a Messages event stream into one turn, reporting progress as it goes.
+fn read_events(resp: crate::api::Response, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
+    let reader = BufReader::new(resp.into_body().into_reader());
+    let mut turn = Turn::default();
+    let mut data = String::new();
+    for line in reader.lines() {
+        let line = line.context("the answer stopped arriving")?;
+        if let Some(d) = line.strip_prefix("data:") {
+            data.push_str(d.trim_start());
+        } else if line.is_empty() && !data.is_empty() {
+            let event: Value = serde_json::from_str(&data).context("unreadable reply from the assistant")?;
+            data.clear();
+            if let Some(e) = turn.apply(&event)? {
+                on_event(e);
+            }
+            if turn.done {
+                break;
+            }
+        }
+    }
+    if !turn.done {
+        bail!("the answer stopped arriving");
+    }
+    Ok(turn)
 }
 
 fn api_error(status: u16, body: &str) -> anyhow::Error {

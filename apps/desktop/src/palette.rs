@@ -101,7 +101,7 @@ fn command_list(settings: &Settings) -> Vec<(&'static str, IconFn, Vec<&'static 
         ("Export notes as JSON…", icons::note, vec!["⇧", "⌘", "E"], Action::Export(ExportKind::Json)),
         ("Import a translation…", icons::book, vec!["⌘", "I"], Action::ImportTranslation),
         (
-            "Manage translations & API keys",
+            if cfg!(debug_assertions) { "Manage translations & API keys" } else { "Manage translations" },
             icons::book,
             vec![],
             Action::OpenSettings(SettingsTab::Translations),
