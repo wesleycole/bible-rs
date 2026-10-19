@@ -162,8 +162,9 @@ mod backend {
         pub fn read(&mut self, out: &mut [i16]) -> Result<()> {
             self.bytes.resize(out.len() * 2, 0);
             self.pulse.read(&mut self.bytes).map_err(|e| anyhow::anyhow!("recording failed: {e}"))?;
-            for (s, b) in out.iter_mut().zip(self.bytes.chunks_exact(2)) {
-                *s = i16::from_le_bytes([b[0], b[1]]);
+            let (pairs, _) = self.bytes.as_chunks::<2>();
+            for (s, b) in out.iter_mut().zip(pairs) {
+                *s = i16::from_le_bytes(*b);
             }
             Ok(())
         }

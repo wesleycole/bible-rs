@@ -34,3 +34,6 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         CODE_SIGN_STYLE: Automatic
+        # The XCFramework's simulator slice is Apple Silicon only (scripts/build-ios-core.sh), so
+        # don't build for Intel simulators.
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
