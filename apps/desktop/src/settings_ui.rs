@@ -2251,6 +2251,22 @@ fn about(ui: &mut Ui, p: &Palette) {
     ui.add_space(8.0);
     footnote(ui, p, "Source texts: eBible.org USFM editions, pinned by SHA-256.");
     ui.add_space(24.0);
+    group_title(ui, p, "Hebrew and Greek");
+    licences(
+        ui,
+        &[
+            ("STEPBible", "CC BY 4.0 · Tyndale House, Cambridge"),
+            ("Open Scriptures", "CC BY 4.0 · BDB and Strong's"),
+            ("Abbott-Smith", "Public domain"),
+        ],
+    );
+    ui.add_space(8.0);
+    footnote(
+        ui,
+        p,
+        "Ask's word studies use data created by STEPBible.org based on work at Tyndale House, Cambridge, and the Open Scriptures Hebrew Bible Project.",
+    );
+    ui.add_space(24.0);
     group_title(ui, p, "Fonts");
     licences(ui, &[("Literata", "SIL Open Font License 1.1"), ("Inter", "SIL Open Font License 1.1")]);
     ui.add_space(24.0);

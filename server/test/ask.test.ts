@@ -44,7 +44,7 @@ describe("POST /v1/ask", () => {
     expect(sent.providerOptions.gateway).toEqual({ only: ["anthropic"], zeroDataRetention: true })
     expect(sent.system).toContain("study assistant in Linger")
     expect(sent.tools.map((x: { name: string }) => x.name).sort()).toEqual(
-      ["get_passage", "read_sermon", "search_bible", "search_sermons"]
+      ["get_passage", "lexicon", "original_words", "read_sermon", "search_bible", "search_sermons", "word_occurrences"]
     )
     expect(sent.messages).toEqual(body.messages)
     expect(sent.fallbacks).toBeUndefined()

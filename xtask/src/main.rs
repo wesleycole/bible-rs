@@ -1,6 +1,9 @@
 //! `cargo run -p xtask -- build-data`
 //!
-//! `cargo xtask contract` writes `server/src/contract/ask-v1.json` from linger-core (see
+//! `cargo xtask build-original` writes `data/original/original.zst`, the Hebrew and Greek text
+//! and lexicon for Ask's word-study tools (see `original.rs`).
+//!
+//! `cargo xtask contract` writes `server/src/contract/ask-v<N>.json` from linger-core (see
 //! `linger_core::contract`).
 //!
 //! Downloads the public-domain USFM sources pinned below from eBible.org (into `.sources/`),
@@ -16,6 +19,8 @@ use linger_core::format;
 use linger_core::model::{Origin, TranslationBuilder, TranslationMeta};
 use linger_core::usfm;
 use sha2::{Digest, Sha256};
+
+mod original;
 
 struct Source {
     id: &'static str,
@@ -104,9 +109,10 @@ fn main() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     match args.first().map(String::as_str) {
         Some("build-data") => build_data(&root, &args[1..]),
+        Some("build-original") => original::build(&root),
         Some("contract") => {
             // The Ask contract the proxy injects, generated from linger-core's prompt and tools.
-            let path = root.join("server/src/contract/ask-v1.json");
+            let path = root.join("server/src/contract").join(linger_core::contract::file_name());
             std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, linger_core::contract::file())?;
             println!(
@@ -231,7 +237,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("usage: cargo run -p xtask -- build-data [ids…] | fetch [ids…] | contract");
+            eprintln!(
+                "usage: cargo run -p xtask -- build-data [ids…] | build-original | fetch [ids…] | contract"
+            );
             std::process::exit(2)
         }
     }

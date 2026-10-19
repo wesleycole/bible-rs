@@ -36,7 +36,7 @@ const one = async (i: number) => {
     dispatcher,
     headers: { "content-type": "application/json", authorization: `Bearer ${tokens[i]}` },
     body: JSON.stringify({
-      contract: "ask/1",
+      contract: "ask/2",
       questionId: crypto.randomUUID(),
       round: 0,
       mode: "standard",

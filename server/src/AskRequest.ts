@@ -66,7 +66,7 @@ export const validateAsk = Effect.fn("validateAsk")(function*(
   }
   const raw = yield* Effect.try({ try: () => JSON.parse(text) as unknown, catch: () => invalid("The body isn't JSON.") })
   const body = yield* Schema.decodeUnknownEffect(AskBody)(raw).pipe(
-    Effect.mapError((e) => invalid(`The request doesn't match ask/1: ${e.message}`))
+    Effect.mapError((e) => invalid(`The request isn't an Ask request: ${e.message}`))
   )
   const contract = contractFor(body.contract)
   if (!contract) {

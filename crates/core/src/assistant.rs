@@ -252,6 +252,19 @@ fn tool_label(name: &str, input: &Value) -> String {
         "search_bible" => format!("Searching for “{}”", input["query"].as_str().unwrap_or("")),
         "search_sermons" => format!("Searching sermons for “{}”", input["query"].as_str().unwrap_or("")),
         "read_sermon" => "Reading a sermon".into(),
+        "original_words" => {
+            let r = input["reference"].as_str().unwrap_or("");
+            let language = match crate::reference::parse(r).map(|r| r.book.testament()) {
+                Some(crate::Testament::New) => "Greek",
+                Some(crate::Testament::Old) => "Hebrew",
+                None => "original",
+            };
+            format!("Reading the {language} of {r}")
+        }
+        "lexicon" => format!("Looking up {}", chat::word_label(input["word"].as_str().unwrap_or(""))),
+        "word_occurrences" => {
+            format!("Finding where {} is used", chat::word_label(input["word"].as_str().unwrap_or("")))
+        }
         _ => "Looking something up".into(),
     }
 }

@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 
 use crate::books::{BookId, ChapterIdx, VerseRef};
 use crate::model::Translation;
+use crate::original::{self, Original};
 use crate::reference::{self, Reference};
 use crate::search::{self, Scope};
 use crate::transcribe::{self, Transcript};
@@ -202,6 +203,12 @@ const PASSAGE_LIMIT: usize = 60;
 const SERMON_WORDS: usize = 2500;
 /// The first characters of a recording id: enough to tell a person's sermons apart.
 const SHORT_ID: usize = 8;
+/// Verses one `original_words` call returns at most: each is a few kilobytes of words.
+const ORIGINAL_VERSES: usize = 5;
+/// Lexicon entries one `lexicon` call returns in full; more are listed by number and gloss.
+const LEXICON_ENTRIES: usize = 6;
+/// Characters of one definition: Abbott-Smith's longest entries run to tens of thousands.
+const DEFINITION_CHARS: usize = 5000;
 
 impl Tools {
     /// Tool definitions in the Anthropic Messages API's `tools` format.
@@ -253,6 +260,52 @@ impl Tools {
                         "from": { "type": "string" },
                         "minutes": { "type": "integer", "minimum": 1, "maximum": 15 }
                     },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "original_words",
+                "description": "The Hebrew (Old Testament) or Greek (New Testament) behind a verse or a few \
+                    verses, word by word: each word as written and transliterated, its English sense in this \
+                    verse, its dictionary form (lemma) with its Strong's number, gloss and grammar. Up to 5 \
+                    verses. Use it before saying what a word means in the original.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": { "reference": { "type": "string" } },
+                    "required": ["reference"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "lexicon",
+                "description": "A Hebrew or Greek word's lexicon entry: its definition (Abbott-Smith for Greek; \
+                    an outline of Brown-Driver-Briggs and Strong's for Hebrew), gloss and number of \
+                    occurrences. Give a Strong's number from original_words (\"G3056\", \"H1254A\") or a lemma \
+                    as original_words gives it; a number without its letter returns every sense.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": { "word": { "type": "string" } },
+                    "required": ["word"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "word_occurrences",
+                "description": "Where a Hebrew or Greek word is used, for a word study: how often in each book, \
+                    the English senses it is given and how often, and the verses (with their text in the \
+                    translation named with the question) in canonical order. Give a Strong's number or lemma \
+                    as for lexicon.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "word": { "type": "string" },
+                        "scope": {
+                            "type": "string",
+                            "description": "\"all\" (default), \"ot\", \"nt\", or a book name such as \"John\"."
+                        },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    },
+                    "required": ["word"],
                     "additionalProperties": false
                 }
             },
@@ -326,8 +379,88 @@ impl Tools {
                     Ok(read_sermon(t, from, from + minutes * 60_000))
                 }
             },
+            "original_words" => {
+                let text = input["reference"].as_str().context("reference is required")?;
+                let r = parse_citation(text).with_context(|| format!("not a reference: {text:?}"))?;
+                self.original_words(&r)
+            }
+            "lexicon" => {
+                let word = input["word"].as_str().context("word is required")?;
+                lexicon(original()?, word)
+            }
+            "word_occurrences" => {
+                let word = input["word"].as_str().context("word is required")?;
+                let scope = scope(input["scope"].as_str().unwrap_or("all"))?;
+                let limit = input["limit"].as_u64().unwrap_or(15).clamp(1, 50) as usize;
+                self.word_occurrences(word, scope, limit)
+            }
             other => bail!("unknown tool {other}"),
         }
+    }
+
+    fn original_words(&self, r: &Reference) -> Result<Value> {
+        let o = original()?;
+        let (a, b) = verse_range(r).with_context(|| format!("no such passage: {}", r.display()))?;
+        let last = b.verse.min(a.chapter_idx().kjv_verses());
+        let mut verses = Vec::new();
+        for n in a.verse..=last {
+            let words: Vec<Value> =
+                o.words_in(VerseRef::new(a.book, a.chapter, n)).map(|w| word_json(o, &w)).collect();
+            if !words.is_empty() {
+                verses.push(json!({ "verse": n, "words": words }));
+            }
+        }
+        if verses.is_empty() {
+            bail!("no such passage: {}", r.display());
+        }
+        let more = verses.len() > ORIGINAL_VERSES;
+        verses.truncate(ORIGINAL_VERSES);
+        let language = match a.book.testament() {
+            crate::Testament::Old => "Hebrew (Aramaic where a word's grammar says so)",
+            crate::Testament::New => "Greek",
+        };
+        Ok(json!({ "reference": r.display(), "language": language, "verses": verses, "truncated": more }))
+    }
+
+    fn word_occurrences(&self, word: &str, scope: Scope, limit: usize) -> Result<Value> {
+        let o = original()?;
+        let entries = o.lookup(word);
+        if entries.is_empty() {
+            bail!("no Hebrew or Greek word {word:?}; use a Strong's number or lemma from original_words");
+        }
+        let strongs: Vec<&str> = entries.iter().map(|e| e.strong).collect();
+        let study = o.study(&strongs, scope);
+        // One line per verse, with every form of the word in it.
+        let mut verses: Vec<(VerseRef, Vec<String>, Vec<String>)> = Vec::new();
+        for w in &study.words {
+            let english = original::rendering(w, &strongs);
+            match verses.last_mut() {
+                Some((v, forms, senses)) if *v == w.verse => {
+                    forms.push(w.text.to_string());
+                    senses.push(english);
+                }
+                _ => verses.push((w.verse, vec![w.text.to_string()], vec![english])),
+            }
+        }
+        let listed: Vec<Value> = verses
+            .iter()
+            .take(limit)
+            .map(|(v, forms, senses)| {
+                let text = self.translation.find(*v).map(|t| t.plain_text()).unwrap_or_default();
+                json!({ "reference": v.display(), "original": forms.join(" … "), "english": senses.join(" … "), "text": text })
+            })
+            .collect();
+        let lemmas: Vec<String> =
+            entries.iter().map(|e| format!("{} {} ({})", e.strong, e.lemma, e.translit)).collect();
+        Ok(json!({
+            "word": lemmas.join("; "),
+            "total": study.total,
+            "verses_with_it": verses.len(),
+            "by_book": study.by_book.iter().map(|(b, n)| json!({ "book": b.name(), "count": n })).collect::<Vec<_>>(),
+            "renderings": study.renderings.iter().take(12).map(|(e, n)| json!({ "english": e, "count": n })).collect::<Vec<_>>(),
+            "verses": listed,
+            "truncated": verses.len() > limit,
+        }))
     }
 
     /// The transcribed sermon whose id starts with `id`.
@@ -405,6 +538,109 @@ impl Tools {
         out.truncate(PASSAGE_LIMIT);
         (out, more)
     }
+}
+
+/// The Hebrew and Greek text, decoded the first time a tool needs it.
+fn original() -> Result<&'static Original> {
+    #[cfg(feature = "bundled")]
+    return Original::bundled();
+    #[cfg(not(feature = "bundled"))]
+    bail!("this build has no Hebrew or Greek text")
+}
+
+fn word_json(o: &Original, w: &original::Word<'_>) -> Value {
+    let roots = w.roots();
+    let entries: Vec<original::Entry<'_>> = roots.iter().filter_map(|s| o.entry(s)).collect();
+    let mut v = json!({
+        "text": w.text,
+        "translit": w.translit,
+        "english": w.english,
+        "strong": roots.join(" + "),
+        "lemma": entries.iter().map(|e| e.lemma).collect::<Vec<_>>().join(" + "),
+        "gloss": entries.iter().map(|e| e.gloss).collect::<Vec<_>>().join(" + "),
+        "grammar": o.describe_grammar(w.grammar),
+    });
+    if w.grammar.starts_with('A') {
+        v["aramaic"] = json!(true);
+    }
+    if w.in_title() {
+        v["psalm_title"] = json!(true);
+    }
+    if let Some(e) = w.edition() {
+        v["edition"] = json!(e);
+    }
+    v
+}
+
+fn lexicon(o: &Original, word: &str) -> Result<Value> {
+    let entries = o.lookup(word);
+    if entries.is_empty() {
+        bail!("no Hebrew or Greek word {word:?}; use a Strong's number or lemma from original_words");
+    }
+    let clip = |s: &str| -> (String, bool) {
+        match s.char_indices().nth(DEFINITION_CHARS) {
+            Some((i, _)) => (format!("{} …", &s[..i]), true),
+            None => (s.to_string(), false),
+        }
+    };
+    // Senses of one number usually share their definitions: give them once.
+    let mut given: Vec<(&str, &str, &str)> = Vec::new();
+    let full: Vec<Value> = entries
+        .iter()
+        .take(LEXICON_ENTRIES)
+        .map(|e| {
+            let same = given
+                .iter()
+                .find(|(_, d, s)| *d == e.definition && *s == e.strongs_definition)
+                .map(|(strong, ..)| *strong);
+            if same.is_none() {
+                given.push((e.strong, &e.definition, &e.strongs_definition));
+            }
+            let (definition, cut) = if same.is_some() { (String::new(), false) } else { clip(&e.definition) };
+            let mut v = json!({
+                "strong": e.strong,
+                "lemma": e.lemma,
+                "translit": e.translit,
+                "grammar": e.grammar,
+                "gloss": e.gloss,
+                "occurrences": o.count(e.strong),
+            });
+            if !definition.is_empty() {
+                v["definition"] = json!(definition);
+            }
+            if cut {
+                v["definition_truncated"] = json!(true);
+            }
+            if let Some(strong) = same {
+                v["definition_as_for"] = json!(strong);
+            } else if !e.strongs_definition.is_empty() {
+                v["strongs_definition"] = json!(e.strongs_definition);
+            }
+            v
+        })
+        .collect();
+    let more: Vec<Value> = entries
+        .iter()
+        .skip(LEXICON_ENTRIES)
+        .map(|e| json!({ "strong": e.strong, "gloss": e.gloss, "occurrences": o.count(e.strong) }))
+        .collect();
+    let mut out = json!({ "entries": full });
+    if !more.is_empty() {
+        out["other_senses"] = json!(more);
+    }
+    Ok(out)
+}
+
+/// "λόγος (logos)" for a word the model looks up by Strong's number; the query itself when it
+/// isn't one the lexicon knows (or the text isn't loaded yet).
+pub fn word_label(query: &str) -> String {
+    #[cfg(feature = "bundled")]
+    if let Ok(o) = Original::bundled()
+        && let Some(e) = o.lookup(query).first()
+    {
+        return format!("{} ({})", e.lemma, e.translit);
+    }
+    query.trim().to_string()
 }
 
 fn short_id(t: &Transcript) -> &str {
@@ -663,6 +899,100 @@ mod tests {
         assert!(v["total"].as_u64().unwrap() > 3);
         assert!(verses.iter().all(|h| h["reference"].as_str().unwrap().starts_with("Hebrews")));
         assert!(tools().run("search_bible", &json!({ "query": "x", "scope": "Hezekiah" })).is_err());
+    }
+
+    #[test]
+    fn original_words_give_each_word_its_lemma_gloss_and_grammar() {
+        let v = tools().run("original_words", &json!({ "reference": "John 1:1" })).unwrap();
+        assert_eq!(v["language"], "Greek");
+        let words = v["verses"][0]["words"].as_array().unwrap();
+        let logos = words.iter().find(|w| w["strong"] == "G3056").unwrap();
+        assert_eq!(logos["lemma"], "λόγος");
+        assert_eq!(logos["gloss"], "word");
+        assert!(logos["grammar"].as_str().unwrap().contains("Nominative"), "{logos}");
+
+        let v = tools().run("original_words", &json!({ "reference": "Genesis 1:1" })).unwrap();
+        let first = &v["verses"][0]["words"][0];
+        assert_eq!(first["strong"], "H7225G", "the root, not the prefix: {first}");
+        assert!(first["grammar"].as_str().unwrap().starts_with("Preposition / "), "{first}");
+
+        // A Psalm's title is part of verse 1, as in English Bibles.
+        let v = tools().run("original_words", &json!({ "reference": "Psalm 23:1" })).unwrap();
+        let words = v["verses"][0]["words"].as_array().unwrap();
+        assert_eq!(words[0]["psalm_title"], true);
+        assert!(words.iter().any(|w| w["strong"] == "H3068G" && w.get("psalm_title").is_none()));
+
+        // The Johannine Comma is only in the Greek behind the KJV.
+        let v = tools().run("original_words", &json!({ "reference": "1 John 5:7" })).unwrap();
+        let heaven =
+            v["verses"][0]["words"].as_array().unwrap().iter().find(|w| w["strong"] == "G3772").unwrap();
+        assert!(heaven["edition"].as_str().unwrap().starts_with("only in the Greek behind the KJV"));
+
+        let long = tools().run("original_words", &json!({ "reference": "Psalm 119:1-20" })).unwrap();
+        assert_eq!(long["verses"].as_array().unwrap().len(), ORIGINAL_VERSES);
+        assert_eq!(long["truncated"], true);
+        assert!(tools().run("original_words", &json!({ "reference": "John 22:1" })).is_err());
+    }
+
+    #[test]
+    fn lexicon_entries_by_number_and_by_lemma() {
+        let v = tools().run("lexicon", &json!({ "word": "G3056" })).unwrap();
+        assert!(v["entries"][0]["definition"].as_str().unwrap().starts_with("λόγος"));
+        assert_eq!(
+            tools().run("lexicon", &json!({ "word": "λόγος" })).unwrap()["entries"][0]["strong"],
+            "G3056"
+        );
+
+        let v = tools().run("lexicon", &json!({ "word": "h1254" })).unwrap();
+        let senses: Vec<&str> =
+            v["entries"].as_array().unwrap().iter().map(|e| e["strong"].as_str().unwrap()).collect();
+        assert!(
+            senses.starts_with(&["H1254A", "H1254B"]),
+            "create and be fat are different words: {senses:?}"
+        );
+        let create = &v["entries"][0];
+        assert!(create["definition"].as_str().unwrap().starts_with("BDB: בָּרָא"), "{create}");
+        assert!(create["strongs_definition"].as_str().unwrap().contains("create"));
+
+        // Senses that share a definition give it once.
+        let v = tools().run("lexicon", &json!({ "word": "H0430" })).unwrap();
+        let entries = v["entries"].as_array().unwrap();
+        assert!(entries[0]["definition"].is_string());
+        assert!(entries[1..].iter().all(|e| e["definition_as_for"] == entries[0]["strong"]), "{v}");
+        assert!(tools().run("lexicon", &json!({ "word": "G99999" })).is_err());
+    }
+
+    #[test]
+    fn word_occurrences_count_render_and_quote() {
+        // φιλέω: 13 times in John (25 in the New Testament).
+        let v = tools()
+            .run("word_occurrences", &json!({ "word": "G5368", "scope": "John", "limit": 50 }))
+            .unwrap();
+        assert_eq!(v["total"], 13);
+        assert_eq!(v["by_book"], json!([{ "book": "John", "count": 13 }]));
+        let verses = v["verses"].as_array().unwrap();
+        let peter = verses.iter().find(|x| x["reference"] == "John 21:17").unwrap();
+        assert!(
+            peter["text"].as_str().unwrap().contains("lovest thou me"),
+            "the tools' translation: {peter}"
+        );
+        assert_eq!(peter["original"].as_str().unwrap().matches(" … ").count(), 2, "three times in one verse");
+        assert_eq!(v["truncated"], false);
+        let nt =
+            tools().run("word_occurrences", &json!({ "word": "G5368", "scope": "nt", "limit": 1 })).unwrap();
+        assert_eq!(nt["total"], 25);
+        assert_eq!(nt["truncated"], true);
+
+        // A Hebrew root behind a prefix is rendered by its own English.
+        let v = tools()
+            .run("word_occurrences", &json!({ "word": "H0776G", "scope": "Genesis", "limit": 1 }))
+            .unwrap();
+        assert_eq!(v["verses"][0]["reference"], "Genesis 1:1");
+        assert_eq!(v["verses"][0]["english"], "earth");
+        assert_eq!(
+            tools().run("word_occurrences", &json!({ "word": "H0776G", "scope": "nt" })).unwrap()["total"],
+            0
+        );
     }
 
     #[test]

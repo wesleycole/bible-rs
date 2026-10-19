@@ -2,7 +2,7 @@
 //! request carries, identical for every user so the shared prompt cache stays warm.
 //!
 //! Linger's proxy injects these into each request rather than trusting the client to send them,
-//! so they're published as `server/src/contract/ask-v1.json` (written by `cargo xtask contract`)
+//! so they're published as `server/src/contract/ask-v<N>.json` (written by `cargo xtask contract`)
 //! and checked against this code by a test. Changing the prompt or the tools means a new
 //! [`VERSION`]: the proxy serves the last two and tells older apps to update.
 //!
@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 
 use crate::chat::Tools;
 
-/// The contract version requests name (`"contract": "ask/1"`).
-pub const VERSION: &str = "ask/1";
+/// The contract version requests name (`"contract": "ask/2"`).
+pub const VERSION: &str = "ask/2";
 
 /// Rounds of tool calls one question may take before Linger stops it.
 pub const MAX_ROUNDS: usize = 8;
@@ -41,6 +41,14 @@ found. Cite a moment in a sermon as {{sermon <id> <time>}}, for example {{sermon
 using the id and time a tool gave you. Keep what the preacher said distinct from what Scripture \
 says, and quote a preacher only from a transcript. Transcripts are made by machine, so a word that \
 looks wrong may be a mishearing.
+
+For the Hebrew or Greek behind the text, original_words shows a passage word by word, lexicon \
+gives a word's definition, and word_occurrences shows where else the word is used and how it is \
+translated, which is how to see its range of meaning and the company it keeps. Say what a word \
+means in the original only from these tools, never from memory, and keep the lexicon's meaning \
+distinct from your reading of the passage. Write a Hebrew or Greek word transliterated, with the \
+original script after it in brackets when that helps; mention a Strong's number only if the user \
+asks for one.
 
 Beyond the text, answer as a thoughtful, well-read guide would. Where Christian traditions differ, \
 say so briefly and fairly rather than taking a side. Keep answers short enough to read in the side \
@@ -72,7 +80,12 @@ pub fn sha256() -> String {
     Sha256::digest(&canonical).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `ask-v1.json` as it should be checked in.
+/// The checked-in file's name: `ask-v2.json` for `ask/2`.
+pub fn file_name() -> String {
+    format!("ask-v{}.json", VERSION.trim_start_matches("ask/"))
+}
+
+/// The contract file as it should be checked in.
 pub fn file() -> String {
     let mut v = body();
     v["sha256"] = Value::String(sha256());
@@ -87,8 +100,9 @@ mod tests {
 
     #[test]
     fn the_checked_in_contract_is_current() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../server/src/contract/ask-v1.json");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../server/src/contract")
+            .join(file_name());
         let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(
             on_disk == file(),

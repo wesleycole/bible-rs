@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto"
 import { Schema } from "effect"
 import askV1 from "./contract/ask-v1.json" with { type: "json" }
+import askV2 from "./contract/ask-v2.json" with { type: "json" }
 
 export const Tool = Schema.Struct({
   name: Schema.String,
@@ -45,7 +46,7 @@ const load = (raw: unknown): AskContract => {
 }
 
 /** Newest first; the proxy serves these and answers 409 for anything older. */
-export const CONTRACTS: ReadonlyArray<AskContract> = [load(askV1)]
+export const CONTRACTS: ReadonlyArray<AskContract> = [load(askV2), load(askV1)]
 
 export const contractFor = (version: string): AskContract | undefined => CONTRACTS.find((c) => c.version === version)
 

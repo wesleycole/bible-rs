@@ -35,6 +35,48 @@ every source above; copies of those statements are reproduced in [`bibles.md`](b
   text, no derived index, no test fixtures. They can be imported from a file the user owns or
   fetched with the user's own API key (see the README).
 
+## Hebrew and Greek text and lexicon — CC BY 4.0 and public domain
+
+`data/original/original.zst` holds the Hebrew Old Testament and Greek New Testament word by word,
+with a lexicon, for Ask's word-study tools (`original_words`, `lexicon`, `word_occurrences`). It is
+built by `cargo xtask build-original`; the commit and SHA-256 of every source file are pinned in
+`xtask/src/original.rs`.
+
+| Part | Source | Licence |
+|---|---|---|
+| Tagged Hebrew OT (Leningrad Codex): words, transliteration, English, Strong's numbers, grammar | STEPBible TAHOT, Tyndale House Cambridge | CC BY 4.0 |
+| Tagged Greek NT (NA27/28, TR and other editions): the same | STEPBible TAGNT, Tyndale House Cambridge. Its English follows the Berean Study Bible, now in the public domain | CC BY 4.0 |
+| Lemmas, transliterations and glosses for every word | STEPBible TBESH (Hebrew) and TBESG (Greek) | CC BY 4.0 |
+| Greek definitions | Abbott-Smith, *A Manual Greek Lexicon of the New Testament* (1922), as corrected in STEPBible TBESG | Public domain text; STEPBible's edition CC BY 4.0 |
+| Hebrew definitions | Open Scriptures HebrewLexicon: BDB outline (`BrownDriverBriggs.xml`) and Strong's Hebrew dictionary (`HebrewStrong.xml`) | CC BY 4.0; the BDB and Strong's text is public domain |
+| Descriptions of grammar codes | STEPBible TEHMC and TEGMC | CC BY 4.0 |
+
+Attribution: "Data created by STEPBible.org based on work at Tyndale House, Cambridge"
+(https://www.stepbible.org, https://github.com/STEPBible/STEPBible-Data), and the Open Scriptures
+Hebrew Bible Project (https://github.com/openscriptures/HebrewLexicon). Settings shows both.
+
+STEPBible's licence asks that changes be noted. Linger reformats the data and makes these changes:
+
+* Only the words of the 66-book canon on the KJV verse grid. A Psalm title (STEPBible's verse 0)
+  joins verse 1, and a Greek word whose KJV verse differs (STEPBible's `[…]` reference) moves to
+  it. Hebrew words that STEPBible reconstructs from the Septuagint (type X) and Greek words found in
+  neither the modern critical text nor the Greek behind the KJV (type O only) are left out.
+* Punctuation tags after `\` in Hebrew are dropped, lexicon HTML becomes plain text, the `(AS)`
+  source marks go, all text is NFC-normalized, and BDB's occurrence counts after headwords are
+  dropped (the tools count occurrences themselves).
+* 26 tags that the lexicon doesn't list (newer sense letters) use the entry of the same number.
+
+Left out, and why:
+
+* **TBESH definitions.** STEPBible says they are Online Bible's Abridged BDB and that permission
+  should be gained from Online Bible before they are used. Hebrew definitions come from Open
+  Scriptures instead; TBESH supplies only the lemma, transliteration and gloss.
+* **Greek definitions from Middle Liddell (ML)** (Perseus, CC BY-SA) and Mounce's Teknia (MT)
+  (used by STEPBible with permission). Those words keep STEPBible's gloss without a definition.
+* **TFLSJ (full Liddell-Scott-Jones).** It comes from Perseus under CC BY-SA, and it is 24 MB.
+* **TAGNT's Spanish and sub-meaning columns** (from the Marvel Bible project and OpenGNT) and
+  **TTESV** (CC BY-NC tags for the copyrighted ESV).
+
 ## Fonts — SIL Open Font License 1.1
 
 | Font | Use | Source | Licence |

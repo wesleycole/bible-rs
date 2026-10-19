@@ -115,6 +115,29 @@ The pluggable provider interface (`Library` → bundled / imported / online entr
 Highlights, notes and bookmarks are keyed by canonical reference, not by translation, so they
 follow the reader across translations.
 
+## Hebrew and Greek for Ask
+
+Ask's word studies read a bundled copy of the original-language text instead of the model's
+memory: STEPBible's Hebrew OT and Greek NT tagged word by word (lemma, Strong's number, grammar,
+English sense in context), with Abbott-Smith for Greek definitions and the Open Scriptures BDB
+outline and Strong's for Hebrew (sources and licences in `LICENSES/README.md`). Three tools use it:
+`original_words` (a passage word by word), `lexicon` (a definition) and `word_occurrences`
+(counts by book, how the word is translated, and the verses in the Ask translation). Seeing where
+else a word is used and how it is rendered is how a reader judges its range of meaning, which a
+single dictionary definition can't show.
+
+- **One file, read lazily.** `data/original/original.zst` is zstd-compressed text (29 MB → 4.2 MB):
+  grammar codes, the lexicon, then each verse's words, one line each. The first tool call
+  decompresses it and indexes the lines (~0.2 s in a release build, ~30 MB in memory); nothing
+  is decoded at launch. An index from Strong's number to words makes a word study a lookup.
+- **Strong's numbers are STEPBible's extended and disambiguated ones**: `H1254A` (create) and
+  `H1254B` (be fat) are different words that Strong numbered alike, and `H0430G` is אֱלֹהִים
+  as "God". A bare number finds every sense.
+- **Greek editions are marked, not chosen.** A word in only the modern critical text or only the
+  Greek behind the KJV says so, so the assistant can explain a reading such as 1 John 5:7.
+- **Licences decided what was left out**, not size: the Hebrew definitions STEPBible ships need
+  Online Bible's permission, and the full LSJ and Middle Liddell are share-alike.
+
 ## Search
 
 No inverted index: each translation lazily builds a normalized corpus (lower-case, diacritics
