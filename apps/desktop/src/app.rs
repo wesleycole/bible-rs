@@ -248,6 +248,11 @@ pub struct BibleApp {
     pub panel: Option<VersePanel>,
     /// The Ask conversation, docked where the verse panel goes; the two never show together.
     pub ask: Option<crate::ask_panel::AskPanel>,
+    /// The Ask card's slide (0 hidden, 1 shown) and this frame's value, on the sidebar's spring
+    /// and clock; a closed conversation stays in `ask_leaving` until it is out of the window.
+    ask_motion: crate::motion::Spring,
+    ask_shown: f32,
+    ask_leaving: Option<crate::ask_panel::AskPanel>,
     settings_ui: Option<SettingsUi>,
     /// The Linger account (Ask and cloud transcripts need one).
     pub account: crate::account::Account,
@@ -396,6 +401,9 @@ impl BibleApp {
             palette: None,
             panel: None,
             ask: None,
+            ask_motion: crate::motion::Spring::new(0.0),
+            ask_shown: 0.0,
+            ask_leaving: None,
             account,
             settings_ui: None,
             shortcuts_open: false,
@@ -801,7 +809,9 @@ impl BibleApp {
                 self.library.warm(&ids);
             }
             Action::ToggleAsk => {
-                if self.ask.take().is_none() {
+                if self.ask.is_some() {
+                    self.close_ask();
+                } else {
                     self.ask = Some(crate::ask_panel::AskPanel::new());
                     self.panel = None;
                     self.account.refresh();
@@ -850,7 +860,7 @@ impl BibleApp {
                 } else if self.panel.is_some() {
                     self.panel = None;
                 } else {
-                    self.ask = None;
+                    self.close_ask();
                 }
             }
             Action::SelectNext => {
@@ -1373,16 +1383,21 @@ impl BibleApp {
         }
     }
 
-    /// How far out the sidebar is this frame (0 hidden, 1 shown), moving it toward where the
-    /// settings and focus mode want it and repainting until it gets there. Reduce Motion (the
-    /// app's setting or the system's) and offscreen rendering show and hide it at once.
-    fn sidebar_open_fraction(&mut self, ctx: &egui::Context, frame: &eframe::Frame) -> f32 {
+    /// How far out the sidebar and the Ask card are this frame (0 hidden, 1 shown), moving them
+    /// toward where the settings, focus mode and Ask want them and repainting until they get
+    /// there. Reduce Motion (the app's setting or the system's) and offscreen rendering show and
+    /// hide them at once, as does the inspector taking the Ask card's place.
+    fn slide_fractions(&mut self, ctx: &egui::Context, frame: &eframe::Frame) -> (f32, f32) {
         use theme::metrics::{SIDEBAR_INSET, SIDEBAR_WIDTH};
         let width = if self.sidebar.searching() { SEARCH_SIDEBAR_WIDTH } else { SIDEBAR_WIDTH };
         let inset = if self.settings.sidebar_attached { 0.0 } else { SIDEBAR_INSET };
         self.sidebar_extent = inset + width;
         let target = if self.settings.sidebar_open && !self.focus { 1.0 } else { 0.0 };
-        let changed = target != self.sidebar_motion.target();
+        let ask_target = if self.ask.is_some() && self.panel.is_none() { 1.0 } else { 0.0 };
+        if self.ask.is_some() {
+            self.ask_leaving = None;
+        }
+        let changed = target != self.sidebar_motion.target() || ask_target != self.ask_motion.target();
         let instant = changed
             && (self.settings.reduce_motion
                 || crate::offscreen_still()
@@ -1403,11 +1418,29 @@ impl BibleApp {
         self.motion_clock += (now - self.last_frame_time).clamp(0.0, self.motion_step);
         self.last_frame_time = now;
         let open = self.sidebar_motion.update(target, since, self.motion_clock, instant);
-        if self.sidebar_motion.moving() {
+        let ask_instant = instant || self.panel.is_some();
+        let ask = self.ask_motion.update(ask_target, since, self.motion_clock, ask_instant);
+        if !self.ask_motion.moving() && ask == 0.0 {
+            self.ask_leaving = None;
+        }
+        if self.sliding() {
             ctx.request_repaint();
         }
         self.sidebar_shown = open;
-        open
+        self.ask_shown = ask;
+        (open, ask)
+    }
+
+    /// Whether the sidebar or the Ask card is on its way in or out.
+    fn sliding(&self) -> bool {
+        self.sidebar_motion.moving() || self.ask_motion.moving()
+    }
+
+    /// Closes Ask, keeping the conversation on screen while its card slides out.
+    fn close_ask(&mut self) {
+        if let Some(ask) = self.ask.take() {
+            self.ask_leaving = Some(ask);
+        }
     }
 
     /// The toolbar over the reading area (`ds-06` in the design): back/forward (after the
@@ -1472,9 +1505,11 @@ impl BibleApp {
 
         // Trailing: one capsule, Search, Ask and More (frame 34), which holds the view tools
         // (parallel, text); while searching, the field in its place, narrower in a compact window.
-        // Compactness is judged at the width the bar is heading for, so a sliding sidebar
-        // switches it at once rather than halfway.
-        let compact = bar.width() + extent * (open - self.sidebar_motion.target()) < COMPACT_TOOLBAR;
+        // Compactness is judged at the width the bar is heading for, so a sliding sidebar or Ask
+        // card switches it at once rather than halfway.
+        let ask = crate::ask_panel::ASK_WIDTH * (self.ask_shown - self.ask_motion.target());
+        let compact =
+            bar.width() + extent * (open - self.sidebar_motion.target()) + ask < COMPACT_TOOLBAR;
         let focus_field = self.sidebar.take_focus();
         let show_field = focus_field || self.sidebar.searching() || self.sidebar.field_focused;
         let trailing_left;
@@ -2434,10 +2469,10 @@ impl BibleApp {
                 }
             });
             rects.sort_by(|a, b| a.left().total_cmp(&b.left()));
-            // Not while the sidebar slides: moving AppKit views every frame makes AppKit ask for
+            // Not while the sidebar or Ask slides: moving AppKit views every frame makes AppKit ask for
             // extra redraws between the display's, which upsets the pacing. They catch up when
             // it stops.
-            if !self.sidebar_motion.moving() {
+            if !self.sliding() {
                 self.no_drag.set(frame, &rects, ctx.zoom_factor());
             }
         }
@@ -2609,7 +2644,7 @@ impl eframe::App for BibleApp {
         self.toolbar_items.clear();
         // The sidebar slides in from the window's edge at its full width, so nothing in it is laid
         // out again, while the main area beside it narrows; a spring drives both.
-        let open = self.sidebar_open_fraction(&ctx, frame);
+        let (open, ask_open) = self.slide_fractions(&ctx, frame);
         self.sidebar_card = None;
         if open > 0.0 {
             // A floating source list, full height: the traffic lights and the sidebar toggle sit
@@ -2692,13 +2727,12 @@ impl eframe::App for BibleApp {
                 return;
             }
             // The reader runs the full height, beside the inspector when one is open; the
-            // toolbar floats over the top of both.
+            // toolbar floats over the top of both. Ask slides in like the sidebar: at its full
+            // width from the window's edge, while the reader narrows beside it.
             let inspector = if self.panel.is_some() {
                 crate::panel::INSPECTOR_WIDTH
-            } else if self.ask.is_some() {
-                crate::ask_panel::ASK_WIDTH
             } else {
-                0.0
+                crate::ask_panel::ASK_WIDTH * ask_open
             };
             let reader_rect =
                 egui::Rect::from_min_max(full.min, egui::pos2(full.right() - inspector, full.bottom()));
@@ -2733,7 +2767,7 @@ impl eframe::App for BibleApp {
                 keyboard,
                 online_generation: &self.online_gen,
                 toolbar: top,
-                resizing: self.sidebar_motion.moving(),
+                resizing: self.sliding(),
                 // The scroll probe flings through many chapters.
                 continuous: self.settings.continuous_scroll || self.scroll_probe.is_some(),
             };
@@ -2797,12 +2831,14 @@ impl eframe::App for BibleApp {
                 if panel.show(&mut child, &self.library, &self.settings, &cols, &mut actions) {
                     self.panel = None;
                 }
-            } else if let Some(ask) = &mut self.ask {
+            } else if ask_open > 0.0
+                && let Some(ask) = self.ask.as_mut().or(self.ask_leaving.as_mut())
+            {
                 // Full height, inset like the floating sidebar: the toolbar ends beside it.
                 let inset = theme::metrics::SIDEBAR_INSET;
                 let r = egui::Rect::from_min_max(
                     egui::pos2(reader_rect.right(), full.top() + inset),
-                    egui::pos2(full.right() - inset, full.bottom() - inset),
+                    egui::pos2(reader_rect.right() + crate::ask_panel::ASK_WIDTH - inset, full.bottom() - inset),
                 );
                 // Its top is in the title bar, which mustn't drag the window from under it.
                 #[cfg(target_os = "macos")]
@@ -2827,7 +2863,7 @@ impl eframe::App for BibleApp {
                 // After each answer, into Recents.
                 let saved = ask.save(&mut self.study);
                 if close {
-                    self.ask = None;
+                    self.close_ask();
                 }
                 if let Err(e) = saved {
                     self.toast(&ctx, format!("Couldn't save the conversation: {e:#}"));
@@ -2842,7 +2878,7 @@ impl eframe::App for BibleApp {
                 self.focus_chrome(ui, full, &mut actions);
             } else {
                 // Beside the Ask card, the toolbar spans only the reader.
-                let bar = if self.ask.is_some() && self.panel.is_none() {
+                let bar = if self.panel.is_none() {
                     egui::Rect::from_min_max(full.min, egui::pos2(reader_rect.right(), full.bottom()))
                 } else {
                     full
