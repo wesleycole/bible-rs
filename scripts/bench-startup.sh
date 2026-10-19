@@ -3,17 +3,17 @@
 #
 #   scripts/bench-startup.sh          # 10 launches + one scroll run
 #   RUNS=20 scripts/bench-startup.sh
-#   BIBLE_RS_RENDERER=wgpu scripts/bench-startup.sh   # glow (default) or wgpu, app and baseline
+#   LINGER_RENDERER=wgpu scripts/bench-startup.sh   # glow (default) or wgpu, app and baseline
 #
 # On Linux without a display it starts Xvfb (software OpenGL); on macOS it opens real windows.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${BIN:-$ROOT/target/release/bible-rs}"
+BIN="${BIN:-$ROOT/target/release/linger}"
 FLOOR="$ROOT/target/release/examples/startup_floor"
 RUNS="${RUNS:-10}"
-[[ -x "$BIN" ]] || (cd "$ROOT" && cargo build --release -p bible-rs)
-[[ -x "$FLOOR" ]] || (cd "$ROOT" && cargo build --release -p bible-rs --example startup_floor)
+[[ -x "$BIN" ]] || (cd "$ROOT" && cargo build --release -p linger)
+[[ -x "$FLOOR" ]] || (cd "$ROOT" && cargo build --release -p linger --example startup_floor)
 if [[ "$(uname -s)" == "Linux" ]]; then
   export DISPLAY="${DISPLAY:-:98}"
   export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
@@ -26,7 +26,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 fi
 HOME_DIR="$(mktemp -d)"
 # One warm-up launch creates the database (first run only) and warms the OS file cache.
-BIBLE_RS_HOME="$HOME_DIR" BIBLE_RS_STARTUP_PROBE=1 "$BIN" >/dev/null 2>&1 || true
+LINGER_HOME="$HOME_DIR" LINGER_STARTUP_PROBE=1 "$BIN" >/dev/null 2>&1 || true
 
 now_ms() { python3 -c 'import time; print(time.time()*1000)'; }
 built=() presented=() external=() floor_built=() floor_presented=()
@@ -36,7 +36,7 @@ for _ in $(seq 1 "$RUNS"); do
   floor_built+=("$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["first_frame_built_ms"])' "$fl")")
   floor_presented+=("$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["first_frame_presented_ms"])' "$fl")")
   start=$(now_ms)
-  line=$(BIBLE_RS_HOME="$HOME_DIR" BIBLE_RS_STARTUP_PROBE=1 "$BIN" 2>/dev/null | tail -1)
+  line=$(LINGER_HOME="$HOME_DIR" LINGER_STARTUP_PROBE=1 "$BIN" 2>/dev/null | tail -1)
   b=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["first_frame_built_ms"])' "$line")
   p=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["first_frame_presented_ms"])' "$line")
   e=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["epoch_ms"] - float(sys.argv[2]))' "$line" "$start")
@@ -45,9 +45,9 @@ done
 python3 - "${built[*]}" "${presented[*]}" "${external[*]}" "${floor_built[*]}" "${floor_presented[*]}" <<'PY'
 import statistics, sys
 names = [
-    "bible-rs: first frame built",
-    "bible-rs: first frame presented",
-    "bible-rs: launch → first frame presented (wall)",
+    "linger: first frame built",
+    "linger: first frame presented",
+    "linger: launch → first frame presented (wall)",
     "empty eframe window: first frame built",
     "empty eframe window: first frame presented",
 ]
@@ -55,7 +55,7 @@ for name, arg in zip(names, sys.argv[1:]):
     v = sorted(float(x) for x in arg.split())
     print(f"{name:<44} median {statistics.median(v):7.1f} ms   min {v[0]:7.1f}   max {v[-1]:7.1f}   (n={len(v)})")
 PY
-echo "renderer: ${BIBLE_RS_RENDERER:-default}"
+echo "renderer: ${LINGER_RENDERER:-default}"
 echo "scrolling (900 frames, ~2,200 px/s through consecutive chapters):"
-BIBLE_RS_HOME="$HOME_DIR" BIBLE_RS_SCROLL_PROBE=1 "$BIN" 2>/dev/null | tail -1
+LINGER_HOME="$HOME_DIR" LINGER_SCROLL_PROBE=1 "$BIN" 2>/dev/null | tail -1
 rm -rf "$HOME_DIR"

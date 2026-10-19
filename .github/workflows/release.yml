@@ -99,24 +99,24 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: bible-rs-${{ github.ref_name }}-macos
+          name: linger-${{ github.ref_name }}-macos
           path: |
-            dist/bible-rs-*universal.dmg
-            dist/bible-rs-*-universal.zip
-            dist/bible-rs-*-SHA256SUMS.txt
+            dist/linger-*universal.dmg
+            dist/linger-*-universal.zip
+            dist/linger-*-SHA256SUMS.txt
           if-no-files-found: error
 
-      # bible-rs-universal.dmg is the name bible-rs.vercel.app/download points at.
+      # linger-universal.dmg is the fixed name the website's Download link points at.
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          assets=(dist/bible-rs-*universal.dmg dist/bible-rs-*-universal.zip dist/bible-rs-*-SHA256SUMS.txt)
+          assets=(dist/linger-*universal.dmg dist/linger-*-universal.zip dist/linger-*-SHA256SUMS.txt)
           draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null || echo none)"
           case "$draft" in
             none)
               gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes \
-                --title "bible-rs ${GITHUB_REF_NAME#v}" "${assets[@]}" ;;
+                --title "linger ${GITHUB_REF_NAME#v}" "${assets[@]}" ;;
             true) # a draft made by hand keeps its notes; only the files change
               gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber ;;
             *) # never swap the files of a published release behind a maintainer's back

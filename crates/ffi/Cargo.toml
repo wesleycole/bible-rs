@@ -1,0 +1,18 @@
+[package]
+name = "linger-ffi"
+description = "Swift (and Kotlin) bindings to linger-core for the mobile apps, generated with UniFFI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "linger_ffi"
+# staticlib for the iOS XCFramework; cdylib so uniffi-bindgen can read the interface on any host.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+linger-core.workspace = true
+thiserror.workspace = true
+uniffi.workspace = true

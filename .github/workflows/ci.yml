@@ -19,7 +19,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: System libraries
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev xvfb mesa-utils x11-utils
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libpulse-dev xvfb mesa-utils x11-utils
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy
@@ -27,11 +27,11 @@ jobs:
       - name: Tests
         run: cargo test --workspace
       - name: Search smoke test (release)
-        run: cargo run --release -p bible-rs -- search "love one another" --limit 3
+        run: cargo run --release -p linger -- search "love one another" --limit 3
       - name: Benchmarks (quick)
         run: |
-          cargo bench -p bible-core --bench search -- --warm-up-time 1 --measurement-time 2
-          cargo bench -p bible-rs --bench layout -- --warm-up-time 1 --measurement-time 2
+          cargo bench -p linger-core --bench search -- --warm-up-time 1 --measurement-time 2
+          cargo bench -p linger --bench layout -- --warm-up-time 1 --measurement-time 2
       - name: Startup and scrolling under Xvfb (software OpenGL)
         run: RUNS=5 scripts/bench-startup.sh
 
@@ -51,18 +51,38 @@ jobs:
       - name: Universal app, DMG and zip (ad-hoc signed; release.yml signs and notarizes)
         run: scripts/release-macos.sh --ad-hoc
       - name: Startup and scrolling (glow)
-        run: BIN=dist/bible-rs.app/Contents/MacOS/bible-rs BIBLE_RS_RENDERER=glow RUNS=10 scripts/bench-startup.sh || true
+        run: BIN=dist/Linger.app/Contents/MacOS/linger LINGER_RENDERER=glow RUNS=10 scripts/bench-startup.sh || true
       - name: Startup and scrolling (wgpu / Metal)
-        run: BIN=dist/bible-rs.app/Contents/MacOS/bible-rs BIBLE_RS_RENDERER=wgpu RUNS=10 scripts/bench-startup.sh || true
+        run: BIN=dist/Linger.app/Contents/MacOS/linger LINGER_RENDERER=wgpu RUNS=10 scripts/bench-startup.sh || true
       - name: Startup phases
         run: |
           for r in glow wgpu; do
             echo "== $r"
-            BIBLE_RS_HOME="$(mktemp -d)" BIBLE_RS_RENDERER=$r BIBLE_RS_TRACE_STARTUP=1 BIBLE_RS_STARTUP_PROBE=1 \
-              dist/bible-rs.app/Contents/MacOS/bible-rs 2>&1 | tail -20 || true
+            LINGER_HOME="$(mktemp -d)" LINGER_RENDERER=$r LINGER_TRACE_STARTUP=1 LINGER_STARTUP_PROBE=1 \
+              dist/Linger.app/Contents/MacOS/linger 2>&1 | tail -20 || true
           done
       - uses: actions/upload-artifact@v4
         with:
-          name: bible-rs-macos
+          name: linger-macos
           path: |
-            dist/bible-rs-*-universal.dmg
+            dist/linger-*-universal.dmg
+
+  ios:
+    name: iOS · Rust core XCFramework, Swift bindings tests, simulator build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: XCFramework and Swift bindings
+        run: scripts/build-ios-core.sh
+      - name: LingerCore tests (Swift → Rust, macOS slice)
+        run: swift test --package-path apps/ios/LingerCore
+      - name: App build for the simulator
+        run: |
+          brew install xcodegen
+          cd apps/ios && xcodegen
+          xcodebuild build -project Linger.xcodeproj -scheme Linger \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO

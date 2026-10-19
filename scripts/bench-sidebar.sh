@@ -4,7 +4,7 @@
 #
 #   scripts/bench-sidebar.sh                 # every scenario, 8 toggles each
 #   TOGGLES=12 scripts/bench-sidebar.sh default compact
-#   BIN=/path/to/bible-rs scripts/bench-sidebar.sh
+#   BIN=/path/to/linger scripts/bench-sidebar.sh
 #   TRACE=1 scripts/bench-sidebar.sh compact # also every frame, to <scenario>.trace
 #
 # macOS doesn't draw a covered window, so there the binary is wrapped in a temporary bundle and
@@ -13,24 +13,24 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${BIN:-$ROOT/target/release/bible-rs}"
+BIN="${BIN:-$ROOT/target/release/linger}"
 TOGGLES="${TOGGLES:-8}"
-[[ -x "$BIN" ]] || (cd "$ROOT" && cargo build --release -p bible-rs)
+[[ -x "$BIN" ]] || (cd "$ROOT" && cargo build --release -p linger)
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  APP="$WORK/bible-rs.app"
+  APP="$WORK/Linger.app"
   mkdir -p "$APP/Contents/MacOS"
-  cp "$BIN" "$APP/Contents/MacOS/bible-rs"
+  cp "$BIN" "$APP/Contents/MacOS/linger"
   cat >"$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>bible-rs</string>
-  <key>CFBundleIdentifier</key><string>dev.bible-rs.bench</string>
-  <key>CFBundleExecutable</key><string>bible-rs</string>
+  <key>CFBundleName</key><string>Linger</string>
+  <key>CFBundleIdentifier</key><string>com.wesleycole.linger.bench</string>
+  <key>CFBundleExecutable</key><string>linger</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
@@ -42,11 +42,11 @@ fi
 # probe <data dir> <demo steps> <stdout> <stderr>
 probe() {
   if [[ -n "${APP:-}" ]]; then
-    open -n -W --env BIBLE_RS_HOME="$1" --env "BIBLE_RS_DEMO=$2" --env BIBLE_RS_SIDEBAR_PROBE="$TOGGLES" \
-      --env BIBLE_RS_SIDEBAR_PROBE_TRACE="${TRACE:-}" --stdout "$3" --stderr "$4" "$APP"
+    open -n -W --env LINGER_HOME="$1" --env "LINGER_DEMO=$2" --env LINGER_SIDEBAR_PROBE="$TOGGLES" \
+      --env LINGER_SIDEBAR_PROBE_TRACE="${TRACE:-}" --stdout "$3" --stderr "$4" "$APP"
   else
-    BIBLE_RS_HOME="$1" BIBLE_RS_DEMO="$2" BIBLE_RS_SIDEBAR_PROBE="$TOGGLES" \
-      BIBLE_RS_SIDEBAR_PROBE_TRACE="${TRACE:-}" "$BIN" >"$3" 2>"$4"
+    LINGER_HOME="$1" LINGER_DEMO="$2" LINGER_SIDEBAR_PROBE="$TOGGLES" \
+      LINGER_SIDEBAR_PROBE_TRACE="${TRACE:-}" "$BIN" >"$3" 2>"$4"
   fi
 }
 
@@ -57,9 +57,9 @@ run() {
   mkdir -p "$home"
   # Importing an empty notes file creates the database without a window; the settings are then
   # written into it.
-  printf '{"app":"bible-rs","format":1,"exported_at":"2026-01-01T00:00:00Z","translation":"KJV","highlights":[],"notes":[],"bookmarks":[]}' \
+  printf '{"app":"linger","format":1,"exported_at":"2026-01-01T00:00:00Z","translation":"KJV","highlights":[],"notes":[],"bookmarks":[]}' \
     >"$home/notes.json"
-  BIBLE_RS_HOME="$home" "$BIN" import-notes "$home/notes.json" >/dev/null
+  LINGER_HOME="$home" "$BIN" import-notes "$home/notes.json" >/dev/null
   printf '{"translation":"kjv",%s}' "$fields" >"$home/settings.json"
   sqlite3 "$home/study.sqlite" \
     "INSERT OR REPLACE INTO settings(key, value) VALUES('app', CAST(readfile('$home/settings.json') AS TEXT));"

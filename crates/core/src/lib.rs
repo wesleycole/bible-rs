@@ -1,9 +1,10 @@
-//! Core of bible-rs: the verse-indexed translation model, the `.bbl` binary format, importers,
+//! Core of linger: the verse-indexed translation model, the `.bbl` binary format, importers,
 //! full-text search, reference parsing and local study storage. No GUI code lives here.
 
 pub mod books;
 #[cfg(feature = "bundled")]
 pub mod bundled;
+pub mod chat;
 pub mod copy;
 pub mod format;
 pub mod import;
@@ -11,6 +12,7 @@ pub mod library;
 pub mod model;
 pub mod online;
 pub mod plans;
+pub mod recording;
 pub mod reference;
 pub mod search;
 pub mod secrets;

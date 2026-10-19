@@ -1,6 +1,6 @@
 [package]
-name = "bible-core"
-description = "Translation model, importers, search and study storage for bible-rs"
+name = "linger-core"
+description = "Translation model, importers, search and study storage for linger"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 ureq = "3"
+hound = "3.5"
+uuid = { version = "1", features = ["v4"] }
 
 # API keys live in the macOS Keychain; other platforms use a 0600 file.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/bible-rs.app on macOS. scripts/release-macos.sh wraps it to make the signed,
+# Builds dist/Linger.app on macOS. scripts/release-macos.sh wraps it to make the signed,
 # notarized DMG and zip (see RELEASING.md).
 #
 #   scripts/bundle-macos.sh              # native architecture, ad-hoc signature
@@ -21,7 +21,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 COPYRIGHT="$(sed -n 's/^Copyright (c) /Copyright © /p' LICENSE | head -1)"
-APP="dist/bible-rs.app"
+APP="dist/Linger.app"
 ENTITLEMENTS="packaging/macos/entitlements.plist"
 
 # The window code calls NSWindow.toolbarStyle, new in macOS 11, and the x86_64 target would
@@ -30,24 +30,24 @@ export MACOSX_DEPLOYMENT_TARGET=11.0
 
 if [[ "${UNIVERSAL:-0}" == "1" ]]; then
   rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
-  cargo build --release -p bible-rs --target aarch64-apple-darwin --target x86_64-apple-darwin
-  BIN="$(mktemp -d)/bible-rs"
+  cargo build --release -p linger --target aarch64-apple-darwin --target x86_64-apple-darwin
+  BIN="$(mktemp -d)/linger"
   lipo -create -output "$BIN" \
-    target/aarch64-apple-darwin/release/bible-rs \
-    target/x86_64-apple-darwin/release/bible-rs
+    target/aarch64-apple-darwin/release/linger \
+    target/x86_64-apple-darwin/release/linger
 else
-  cargo build --release -p bible-rs
-  BIN="target/release/bible-rs"
+  cargo build --release -p linger
+  BIN="target/release/linger"
 fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/bible-rs"
+cp "$BIN" "$APP/Contents/MacOS/linger"
 
 # App icon from the 1024 px PNG.
 ICONSET="$(mktemp -d)/AppIcon.iconset"
 mkdir -p "$ICONSET"
-SRC="crates/app/assets/icon.png"
+SRC="apps/desktop/assets/icon.png"
 for size in 16 32 128 256 512; do
   sips -z "$size" "$size" "$SRC" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
   double=$((size * 2))
@@ -63,10 +63,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>bible-rs</string>
-  <key>CFBundleDisplayName</key><string>bible-rs</string>
-  <key>CFBundleIdentifier</key><string>dev.bible-rs.app</string>
-  <key>CFBundleExecutable</key><string>bible-rs</string>
+  <key>CFBundleName</key><string>Linger</string>
+  <key>CFBundleDisplayName</key><string>Linger</string>
+  <key>CFBundleIdentifier</key><string>com.wesleycole.linger.mac</string>
+  <key>CFBundleExecutable</key><string>linger</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
@@ -93,4 +93,4 @@ else
   codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$APP"
 fi
 
-echo "Built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/bible-rs"))"
+echo "Built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/linger"))"

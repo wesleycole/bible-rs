@@ -1,6 +1,6 @@
 # Licences and provenance
 
-bible-rs's own code is MIT-licensed (see `../LICENSE`). Everything else that ships inside the
+Linger's own code is MIT-licensed (see `../LICENSE`). Everything else that ships inside the
 binary is listed here with where it came from and why it may be redistributed.
 
 ## Bundled Bible translations — all public domain
@@ -13,7 +13,7 @@ Strong's numbers and introductions are dropped; the verse text itself is unchang
 | Id | Translation | Source (eBible.org id) | Status | Notes |
 |---|---|---|---|---|
 | `kjv` | King James Version (1769 Oxford standard text) | `eng-kjv2006` | Public domain | Outside the UK. In the United Kingdom the KJV is under perpetual Crown letters patent (printing/importing printed copies needs permission from the Queen's/King's Printers: Cambridge UP, Oxford UP, Collins). eBible.org: "This royal decree has no effect outside of the UK, where this work is firmly in the Public Domain." |
-| `web` | World English Bible (2020 stable text, 66 books) | `engwebp` | Public domain | Dedicated to the public domain by its translators. "World English Bible" is a trademark of eBible.org; the name may only be used for unmodified text. bible-rs does not alter the words (it only omits footnotes), so the name is kept. |
+| `web` | World English Bible (2020 stable text, 66 books) | `engwebp` | Public domain | Dedicated to the public domain by its translators. "World English Bible" is a trademark of eBible.org; the name may only be used for unmodified text. Linger does not alter the words (it only omits footnotes), so the name is kept. |
 | `bsb` | Berean Standard Bible | `engbsb` | Public domain | Dedicated to the public domain by BSB Publishing / the Berean Bible Translation Committee on April 30, 2023 ("This text of God's Word has been dedicated to the public domain"). |
 | `asv` | American Standard Version (1901) | `eng-asv` | Public domain | Published 1901; copyright long expired. |
 | `ylt` | Young's Literal Translation (1898) | `engylt` | Public domain | Robert Young; published 1862/1898. |
@@ -39,9 +39,9 @@ every source above; copies of those statements are reproduced in [`bibles.md`](b
 
 | Font | Use | Source | Licence |
 |---|---|---|---|
-| Literata (variable, roman + italic) | Scripture text | github.com/google/fonts `ofl/literata` | [OFL-Literata.txt](../crates/app/assets/fonts/OFL-Literata.txt) |
-| Inter (variable) | Interface | github.com/google/fonts `ofl/inter` | [OFL-Inter.txt](../crates/app/assets/fonts/OFL-Inter.txt) |
-| Inter Medium, Inter SemiBold (static instances of the variable Inter, made with `fonttools varLib.instancer`, wght 500/600, opsz 14) | Interface, verse numbers | derived from the above | [OFL-Inter.txt](../crates/app/assets/fonts/OFL-Inter.txt) |
+| Literata (variable, roman + italic) | Scripture text | github.com/google/fonts `ofl/literata` | [OFL-Literata.txt](../apps/desktop/assets/fonts/OFL-Literata.txt) |
+| Inter (variable) | Interface | github.com/google/fonts `ofl/inter` | [OFL-Inter.txt](../apps/desktop/assets/fonts/OFL-Inter.txt) |
+| Inter Medium, Inter SemiBold (static instances of the variable Inter, made with `fonttools varLib.instancer`, wght 500/600, opsz 14) | Interface, verse numbers | derived from the above | [OFL-Inter.txt](../apps/desktop/assets/fonts/OFL-Inter.txt) |
 
 egui's default fonts (Ubuntu-Light, Hack, Noto Emoji, emoji-icon-font; OFL/Apache/MIT) remain as
 fallbacks for symbols.

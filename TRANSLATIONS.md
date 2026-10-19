@@ -1,11 +1,11 @@
 # Getting translations for free, legally
 
-bible-rs only uses sources the publishers sanction: their own APIs, API.Bible (which licenses
+Linger only uses sources the publishers sanction: their own APIs, API.Bible (which licenses
 texts on the publishers' behalf), or files under an open licence. It never scrapes websites. Text
 that is still under copyright is never part of this repository. Checked October 2026; terms
 change, so the publishers' pages are linked below.
 
-| Translation | How to get it free in bible-rs | Key, limits and terms |
+| Translation | How to get it free in Linger | Key, limits and terms |
 |---|---|---|
 | KJV, WEB, BSB, ASV, YLT, Darby, Webster | Built in | Public domain. |
 | **NLT** (Tyndale) | Settings → Translations → **Add NLT** | No key needed: 50 verses a request, 500 requests a day. An optional free key from [api.nlt.to](https://api.nlt.to/) raises that to 500 verses and 5,000 requests. Non-commercial use only, and consistent with [Tyndale's purpose](https://www.tyndale.com/purpose). At most 500 verses are kept on disk, and never a whole book. Tyndale's credit line appears under each chapter. |
@@ -25,13 +25,13 @@ change, so the publishers' pages are linked below.
 
 **API.Bible.** API.Bible's free Starter plan is for non-commercial use and covers up to three
 licensed Bibles and 5,000 calls a month. Its Bibles page also says Standard License Bibles need a
-paid plan, so check what your key lists. bible-rs keeps fewer than 500 consecutive verses and
+paid plan, so check what your key lists. Linger keeps fewer than 500 consecutive verses and
 refreshes them within 14 days. It reports each chapter you read through API.Bible's fair-use
 system (FUMS), and shows the copyright API.Bible returns, followed by the citation and link its
 Starter plan requires.
 
 **Why the NET isn't built in.** The NET's terms let it be copied only if "free means free": it
-"cannot be bundled with anything sold". bible-rs's licence lets anyone sell builds of the app, and
+"cannot be bundled with anything sold". Linger's licence lets anyone sell builds of the app, and
 the repository never holds copyrighted text. So the NET is fetched instead, and eBible.org's NET
 download is there for personal use. bible.org's API documentation is behind a bot check that
 couldn't be read, so this follows the NET Bible copyright page, which the API defers to.

@@ -34,11 +34,11 @@ mod backend {
     use super::*;
 
     /// The Keychain service. Tests must never see or overwrite the user's keys: unit tests use
-    /// their own service, and `BIBLE_RS_KEYCHAIN_SERVICE` (set by the integration tests)
+    /// their own service, and `LINGER_KEYCHAIN_SERVICE` (set by the integration tests)
     /// overrides it.
     fn service() -> String {
-        std::env::var("BIBLE_RS_KEYCHAIN_SERVICE")
-            .unwrap_or_else(|_| if cfg!(test) { "bible-rs-tests" } else { "bible-rs" }.into())
+        std::env::var("LINGER_KEYCHAIN_SERVICE")
+            .unwrap_or_else(|_| if cfg!(test) { "linger-tests" } else { "linger" }.into())
     }
 
     impl SecretStore {
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn file_store_round_trip_with_private_permissions() {
-        let dir = std::env::temp_dir().join(format!("bible-rs-secrets-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("linger-secrets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = SecretStore::new(&dir);
         assert_eq!(store.get("esv-api-key"), None);

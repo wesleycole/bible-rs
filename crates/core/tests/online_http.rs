@@ -7,19 +7,19 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bible_core::books::{BookId, ChapterIdx, VerseRef};
-use bible_core::library::{Chapter, Library};
-use bible_core::online::apibible::{ApiBible, list_bibles};
-use bible_core::online::esv::Esv;
-use bible_core::online::net::Net;
-use bible_core::online::nlt::Nlt;
-use bible_core::online::{OnlineConfig, ProviderKind};
+use linger_core::books::{BookId, ChapterIdx, VerseRef};
+use linger_core::library::{Chapter, Library};
+use linger_core::online::apibible::{ApiBible, list_bibles};
+use linger_core::online::esv::Esv;
+use linger_core::online::net::Net;
+use linger_core::online::nlt::Nlt;
+use linger_core::online::{OnlineConfig, ProviderKind};
 
 /// Keeps these tests out of the user's own Keychain entries (macOS stores API keys there).
 fn isolate_keychain() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     // SAFETY: every test calls this first, and `call_once` blocks the others until it is set.
-    ONCE.call_once(|| unsafe { std::env::set_var("BIBLE_RS_KEYCHAIN_SERVICE", "bible-rs-tests") });
+    ONCE.call_once(|| unsafe { std::env::set_var("LINGER_KEYCHAIN_SERVICE", "linger-tests") });
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +67,7 @@ fn serve(handler: Arc<Handler>) -> (String, Arc<Mutex<Vec<Req>>>) {
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("bible-rs-online-{}-{name}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("linger-online-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     d
 }

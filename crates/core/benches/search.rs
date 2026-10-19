@@ -2,13 +2,13 @@
 
 use std::hint::black_box;
 
-use bible_core::search::{self, Scope};
 use criterion::{Criterion, criterion_group, criterion_main};
+use linger_core::search::{self, Scope};
 
 fn bench(c: &mut Criterion) {
-    let kjv = bible_core::bundled::load("kjv").unwrap();
+    let kjv = linger_core::bundled::load("kjv").unwrap();
     c.bench_function("search/build index (KJV)", |b| {
-        b.iter(|| black_box(bible_core::search::SearchIndex::build(&kjv)))
+        b.iter(|| black_box(linger_core::search::SearchIndex::build(&kjv)))
     });
     kjv.search_index();
     let mut g = c.benchmark_group("search");
@@ -21,7 +21,7 @@ fn bench(c: &mut Criterion) {
         ("phrase \"jesus wept\"", "\"jesus wept\"", Scope::All),
         ("exclusion \"light -darkness\"", "light -darkness", Scope::All),
         ("NT only \"faith\"", "faith", Scope::NewTestament),
-        ("single book \"shepherd\" in Psalms", "shepherd", Scope::Book(bible_core::BookId::PSALMS)),
+        ("single book \"shepherd\" in Psalms", "shepherd", Scope::Book(linger_core::BookId::PSALMS)),
     ] {
         g.bench_function(name, |b| {
             b.iter(|| black_box(search::run(&kjv, black_box(q), scope, false).verses.len()))

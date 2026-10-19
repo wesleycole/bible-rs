@@ -4,3 +4,10 @@
 *.dmg
 .DS_Store
 /.amp/portals/*
+# Built by scripts/build-ios-core.sh and xcodegen.
+/apps/ios/LingerCore/LingerFFI.xcframework
+/apps/ios/LingerCore/Sources/LingerCore/Generated
+/apps/ios/LingerCore/.build
+/apps/ios/LingerCore/.swiftpm
+/apps/ios/Linger.xcodeproj
+xcuserdata/

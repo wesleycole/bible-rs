@@ -1,6 +1,6 @@
 # Design decisions
 
-Why bible-rs is built the way it is, and what was traded away. The brief: a very snappy, extremely
+Why Linger is built the way it is, and what was traded away. The brief: a very snappy, extremely
 fast native Bible reader for the Mac — nicely formatted text, search, highlights, notes — built on
 a headless Linux VPS.
 
@@ -36,7 +36,7 @@ between frames) where Metal held the display's 60, and time to first frame was w
 runner's noise. Under Xvfb on Linux, glow creates its context about twice as fast as wgpu
 (≈90 ms vs ≈170 ms with software rendering) and scrolls fine. wgpu asks for the **low-power GPU**:
 a reader has no use for a discrete GPU, and waking one costs start-up time and battery.
-`BIBLE_RS_RENDERER=glow|wgpu` overrides the choice.
+`LINGER_RENDERER=glow|wgpu` overrides the choice.
 
 ## Typography
 
@@ -180,7 +180,7 @@ disk. Export to JSON (round-trips via import) and Markdown.
   display's 120 Hz frames: half again as many frames, unevenly spaced.
 - Reduce Motion, the app's setting or the system's (read when the sidebar is toggled, never at
   launch), shows and hides the sidebar at once.
-- `scripts/bundle-macos.sh` builds `bible-rs.app` (icon, Info.plist, ad-hoc or Developer ID
+- `scripts/bundle-macos.sh` builds `Linger.app` (icon, Info.plist, ad-hoc or Developer ID
   signature, hardened runtime). `scripts/release-macos.sh` wraps it for releases (RELEASING.md):
   universal binary, notarization, DMG, zip, checksums. CI runs it ad-hoc signed on `macos-latest`
   and uploads the DMG.
@@ -191,7 +191,7 @@ disk. Export to JSON (round-trips via import) and Markdown.
   releases signed by the same team read existing keys without a prompt.
 - dmgbuild lays out the DMG. It writes Finder's `.DS_Store` itself, so it needs no Finder
   scripting and runs headless in CI. lzma compression (ULMO) makes the DMG 16 % smaller than zlib.
-- Releases carry the DMG twice: `bible-rs-<version>-universal.dmg`, and `bible-rs-universal.dmg`
+- Releases carry the DMG twice: `linger-<version>-universal.dmg`, and `linger-universal.dmg`
   for the website, whose Download button points at `releases/latest/download/` with a fixed name.
 - No in-app update check. The app makes no network requests of its own; About's "Check for
   Updates…" opens the latest release page in the browser.
@@ -201,7 +201,7 @@ disk. Export to JSON (round-trips via import) and Markdown.
 The interface follows the high-fidelity designs in the Paper file "Bible" (Screens 01–09, Flows
 10–34 and the Design System page). How they map onto the app:
 
-- **Tokens are compiled in.** `crates/app/assets/design-tokens.json` is the design's token file,
+- **Tokens are compiled in.** `apps/desktop/assets/design-tokens.json` is the design's token file,
   copied verbatim. `build.rs` turns it into Rust constants: one `Palette` per theme whose fields
   are the design's colour roles (`paper`, `ink`, `ink_2`, `accent_soft`, `fill`, …), the six
   highlight fills and swatches, the shadows as ring + drop `Elevation`s, the type scale

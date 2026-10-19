@@ -414,7 +414,7 @@ mod tests {
 
     fn tmp() -> PathBuf {
         let d = std::env::temp_dir().join(format!(
-            "bible-rs-lib-{}-{:?}",
+            "linger-lib-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

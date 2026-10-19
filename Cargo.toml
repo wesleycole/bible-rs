@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/app", "xtask"]
-default-members = ["crates/core", "crates/app"]
+members = ["crates/core", "crates/ffi", "apps/desktop", "xtask"]
+default-members = ["crates/core", "crates/ffi", "apps/desktop"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,16 +9,18 @@ edition = "2024"
 # egui 0.36's minimum (the core crate's file locking needs 1.89).
 rust-version = "1.95"
 license = "MIT"
-repository = "https://github.com/michaelshimeles/bible-rs"
+repository = "https://github.com/wesleycole/bible-rs"
 
 [workspace.dependencies]
-bible-core = { path = "crates/core" }
+linger-core = { path = "crates/core" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 memchr = "2"
 zstd = { version = "0.13", default-features = false }
+# The bindings crate and the bindgen binary in xtask must use the same version.
+uniffi = "0.32"
 
 [profile.release]
 opt-level = 3

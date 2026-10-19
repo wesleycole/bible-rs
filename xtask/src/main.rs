@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use bible_core::format;
-use bible_core::model::{Origin, TranslationBuilder, TranslationMeta};
-use bible_core::usfm;
+use linger_core::format;
+use linger_core::model::{Origin, TranslationBuilder, TranslationMeta};
+use linger_core::usfm;
 use sha2::{Digest, Sha256};
 
 struct Source {
@@ -103,14 +103,14 @@ fn main() -> Result<()> {
         Some("build-data") => build_data(&root, &args[1..]),
         Some("missing") => {
             // Lists verses present in the first translation but absent from the others.
-            let load = |id: &str| -> Result<bible_core::Translation> {
+            let load = |id: &str| -> Result<linger_core::Translation> {
                 format::decode(&std::fs::read(root.join(format!("data/translations/{id}.bbl")))?)
             };
             let base = load(&args[1])?;
             for other in &args[2..] {
                 let t = load(other)?;
                 let mut missing = Vec::new();
-                for c in bible_core::ChapterIdx::all() {
+                for c in linger_core::ChapterIdx::all() {
                     for v in base.verses_in(c) {
                         if t.find(v.reference()).is_none() {
                             missing.push(v.reference().to_string());
@@ -123,7 +123,7 @@ fn main() -> Result<()> {
         }
         Some("dump") => {
             let t = format::decode(&std::fs::read(root.join(format!("data/translations/{}.bbl", args[1])))?)?;
-            let r = bible_core::reference::parse(&args[2]).context("bad reference")?;
+            let r = linger_core::reference::parse(&args[2]).context("bad reference")?;
             let c = r.chapter_idx();
             println!("{} — {:?}", c.display(), t.meta.books[c.book().index()]);
             for v in t.verses_in(c) {
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
         Some("verse-table") => {
             let t = format::decode(&std::fs::read(root.join("data/translations/kjv.bbl"))?)?;
             let counts: Vec<String> =
-                bible_core::ChapterIdx::all().map(|c| t.last_verse(c).to_string()).collect();
+                linger_core::ChapterIdx::all().map(|c| t.last_verse(c).to_string()).collect();
             for line in counts.chunks(30) {
                 println!("    {},", line.join(", "));
             }
@@ -162,7 +162,7 @@ fn main() -> Result<()> {
         Some("import") => {
             // Imports a file and compares it verse by verse with a bundled translation.
             let started = std::time::Instant::now();
-            let imp = bible_core::import::import_path(Path::new(&args[1]), &Default::default())?;
+            let imp = linger_core::import::import_path(Path::new(&args[1]), &Default::default())?;
             let t = imp.translation;
             println!(
                 "{} — {} ({}) — {} verses in {:?}; {} warnings",
@@ -176,7 +176,7 @@ fn main() -> Result<()> {
             if let Some(base) = args.get(2) {
                 let b = format::decode(&std::fs::read(root.join(format!("data/translations/{base}.bbl")))?)?;
                 let (mut same, mut diff, mut missing) = (0, 0, 0);
-                for c in bible_core::ChapterIdx::all() {
+                for c in linger_core::ChapterIdx::all() {
                     for v in b.verses_in(c) {
                         match t.find(v.reference()) {
                             Some(o) if o.plain_text() == v.plain_text() => same += 1,
@@ -198,7 +198,7 @@ fn main() -> Result<()> {
                 println!("vs {base}: {same} identical, {diff} different, {missing} missing");
             }
             for r in ["ps 23:1", "jn 3:16", "gen 1:1", "rev 22:21"] {
-                let r = bible_core::reference::parse(r).unwrap();
+                let r = linger_core::reference::parse(r).unwrap();
                 if let Some(v) = t.find(r.verse_ref()) {
                     let marks: Vec<String> =
                         v.marks.iter().map(|m| format!("{:?}{}", m.kind, m.level)).collect();

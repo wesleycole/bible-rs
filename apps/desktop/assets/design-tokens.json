@@ -1,0 +1,691 @@
+{
+  "$schema_note": "linger design tokens. Colours are sRGB hex (#RRGGBB or #RRGGBBAA); all lengths are pt (1 pt = 1 CSS px in the Paper mockups = 1 logical point in the app). Paper variable for color.<theme>.<role> is --<theme>-<role> (underscores become hyphens); highlight fills are --<theme>-hl-<colour>, swatches --swatch-<colour>.",
+  "version": 1,
+  "color": {
+    "light": {
+      "paper": "#FFFFFF",
+      "sidebar": "#F2F2F4",
+      "surface": "#FFFFFF",
+      "toolbar": "#FFFFFFCC",
+      "glass": "#FFFFFFE0",
+      "field": "#FFFFFF",
+      "raised": "#FFFFFF",
+      "fill": "#1C1D210D",
+      "fill_strong": "#1C1D211A",
+      "separator": "#E4E4E8",
+      "border": "#1C1D211F",
+      "scrim": "#1C1D2138",
+      "ink": "#1C1D21",
+      "ink_2": "#6E6F76",
+      "ink_3": "#A0A1A8",
+      "verse": "#7383B0",
+      "rubric": "#B0281F",
+      "accent": "#2D4A9E",
+      "on_accent": "#FFFFFF",
+      "accent_soft": "#E4E9F6",
+      "selection": "#2D4A9E24",
+      "focus": "#2D4A9E66",
+      "danger": "#C4372C",
+      "success": "#2F7D4F"
+    },
+    "dark": {
+      "paper": "#161618",
+      "sidebar": "#222225",
+      "surface": "#26262A",
+      "toolbar": "#161618CC",
+      "glass": "#303034E0",
+      "field": "#1E1E21",
+      "raised": "#46464C",
+      "fill": "#FFFFFF0F",
+      "fill_strong": "#FFFFFF1C",
+      "separator": "#2E2E33",
+      "border": "#FFFFFF1F",
+      "scrim": "#00000073",
+      "ink": "#E6E3DC",
+      "ink_2": "#9C9CA3",
+      "ink_3": "#66666D",
+      "verse": "#8592BC",
+      "rubric": "#F0897C",
+      "accent": "#8EA6F2",
+      "on_accent": "#111526",
+      "accent_soft": "#263156",
+      "selection": "#8EA6F233",
+      "focus": "#8EA6F280",
+      "danger": "#F07A6E",
+      "success": "#6CC48F"
+    },
+    "sepia": {
+      "paper": "#F6EEDC",
+      "sidebar": "#ECE2CB",
+      "surface": "#FBF5E8",
+      "toolbar": "#F6EEDCD1",
+      "glass": "#FCF7ECE6",
+      "field": "#FBF7EE",
+      "raised": "#FFFDF7",
+      "fill": "#3A2E220F",
+      "fill_strong": "#3A2E221C",
+      "separator": "#E0D2B4",
+      "border": "#3A2E2226",
+      "scrim": "#3A2E2238",
+      "ink": "#3A2E22",
+      "ink_2": "#73624E",
+      "ink_3": "#A8977E",
+      "verse": "#8C7A62",
+      "rubric": "#A3362A",
+      "accent": "#3C5490",
+      "on_accent": "#FFF9EE",
+      "accent_soft": "#E2DFDA",
+      "selection": "#3C549024",
+      "focus": "#3C549066",
+      "danger": "#A8392C",
+      "success": "#4E7A3E"
+    },
+    "highlight": {
+      "yellow": {
+        "key": 1,
+        "swatch": "#EBC24A",
+        "light": "#FBE7A1",
+        "dark": "#584A1E",
+        "sepia": "#EED896"
+      },
+      "green": {
+        "key": 2,
+        "swatch": "#6DBE7E",
+        "light": "#D3ECCB",
+        "dark": "#27452F",
+        "sepia": "#D2DCB0"
+      },
+      "blue": {
+        "key": 3,
+        "swatch": "#5B9BE6",
+        "light": "#D4E4FA",
+        "dark": "#213A5C",
+        "sepia": "#CCD9DD"
+      },
+      "pink": {
+        "key": 4,
+        "swatch": "#E88AAE",
+        "light": "#F8D5E1",
+        "dark": "#56293B",
+        "sepia": "#ECCBC2"
+      },
+      "purple": {
+        "key": 5,
+        "swatch": "#A58BE0",
+        "light": "#E3DAF6",
+        "dark": "#3B325E",
+        "sepia": "#DACCDD"
+      },
+      "orange": {
+        "key": 6,
+        "swatch": "#EE9A55",
+        "light": "#FADDC2",
+        "dark": "#5A3A22",
+        "sepia": "#EEC9A6"
+      }
+    },
+    "traffic_lights": {
+      "close": "#FF5F57",
+      "minimize": "#FEBC2E",
+      "zoom": "#28C840"
+    }
+  },
+  "type": {
+    "family": {
+      "ui": "Inter",
+      "reading": "Literata",
+      "ui_system": "SF Pro Text",
+      "reading_fallback": "Georgia",
+      "mono": "JetBrains Mono"
+    },
+    "styles": {
+      "display": {
+        "family": "reading",
+        "size": 48,
+        "line_height": 56,
+        "weight": 300,
+        "tracking_em": -0.015,
+        "usage": "Book title, onboarding hero"
+      },
+      "heading": {
+        "family": "reading",
+        "size": 28,
+        "line_height": 36,
+        "weight": 400,
+        "tracking_em": -0.01,
+        "usage": "Page titles (Notes, Bookmarks…), chapter numerals in lists"
+      },
+      "body": {
+        "family": "reading",
+        "size": 20,
+        "line_height": 32,
+        "weight": 400,
+        "tracking_em": 0,
+        "usage": "Scripture (default 20 pt; user-adjustable 14–32)"
+      },
+      "subtitle": {
+        "family": "reading",
+        "size": 17,
+        "line_height": 24,
+        "weight": 400,
+        "tracking_em": 0,
+        "usage": "Book subtitle (italic), empty-state titles"
+      },
+      "snippet": {
+        "family": "reading",
+        "size": 16,
+        "line_height": 24,
+        "weight": 400,
+        "tracking_em": 0,
+        "usage": "Verse snippets in lists, note bodies, share card"
+      },
+      "snippet-sm": {
+        "family": "reading",
+        "size": 14,
+        "line_height": 20,
+        "weight": 400,
+        "tracking_em": 0,
+        "usage": "Compact snippets (sidebar items, palette previews)"
+      },
+      "ui-title": {
+        "family": "ui",
+        "size": 15,
+        "line_height": 20,
+        "weight": 600,
+        "tracking_em": -0.005,
+        "usage": "Window / sheet / popover titles"
+      },
+      "ui": {
+        "family": "ui",
+        "size": 13,
+        "line_height": 20,
+        "weight": 400,
+        "tracking_em": 0,
+        "usage": "Default interface text, rows, buttons (500)"
+      },
+      "ui-strong": {
+        "family": "ui",
+        "size": 13,
+        "line_height": 20,
+        "weight": 600,
+        "tracking_em": 0,
+        "usage": "Selected rows, toolbar pickers, references"
+      },
+      "small": {
+        "family": "ui",
+        "size": 12,
+        "line_height": 16,
+        "weight": 400,
+        "tracking_em": 0,
+        "usage": "Counts, metadata, verse numbers (600)"
+      },
+      "caption": {
+        "family": "ui",
+        "size": 11,
+        "line_height": 16,
+        "weight": 600,
+        "tracking_em": 0,
+        "usage": "Section headers in source lists"
+      },
+      "label": {
+        "family": "ui",
+        "size": 11,
+        "line_height": 16,
+        "weight": 600,
+        "tracking_em": 0.12,
+        "usage": "UPPERCASE labels (CHAPTER 1, sheet group titles)"
+      }
+    },
+    "reading": {
+      "size_default": 20,
+      "size_range": [
+        14,
+        32
+      ],
+      "line_height_ratio": 1.6,
+      "line_spacing_range": [
+        1.3,
+        2.0
+      ],
+      "measure": 640,
+      "measure_chars": 66,
+      "paragraph_gap": 16,
+      "first_line_indent": 32,
+      "poetry_indent": 32,
+      "stanza_gap": 16,
+      "verse_per_line_gutter": 44
+    },
+    "verse_number": {
+      "family": "ui",
+      "size": 11,
+      "weight": 600,
+      "raise": 8,
+      "space_after": 3,
+      "color": "verse",
+      "verse_per_line": {
+        "size": 12,
+        "weight": 600,
+        "gutter": 44,
+        "align": "right"
+      }
+    },
+    "small_caps_lord": {
+      "cap_size": 20,
+      "small_cap_size": 15,
+      "tracking_em": 0.04
+    },
+    "chapter_heading": {
+      "label": "label",
+      "numeral": {
+        "family": "reading",
+        "size": 48,
+        "line_height": 56,
+        "weight": 300
+      }
+    }
+  },
+  "space": {
+    "1": 4,
+    "2": 8,
+    "3": 12,
+    "4": 16,
+    "6": 24,
+    "8": 32,
+    "12": 48,
+    "16": 64
+  },
+  "radius": {
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "window": 24,
+    "pill": 999
+  },
+  "size": {
+    "toolbar": 52,
+    "control": 32,
+    "control-sm": 24,
+    "control-lg": 40,
+    "row": 32,
+    "icon": 20,
+    "icon-sm": 16,
+    "traffic": 14,
+    "sidebar": 256,
+    "measure": 640,
+    "popover": 320,
+    "palette": 600,
+    "sheet": 560
+  },
+  "menu": {
+    "radius": 12,
+    "padding_x": 8,
+    "padding_y": 10,
+    "item_height": 28,
+    "item_radius": 6,
+    "item_padding": 10,
+    "icon_gap": 8,
+    "header_height": 24,
+    "separator_height": 9
+  },
+  "shadow": {
+    "control": {
+      "light": {
+        "css": "0 0 0 0.5px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#0000001A"
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "blur": 4.0,
+            "spread": 0.0,
+            "color": "#0000000F"
+          }
+        ]
+      },
+      "sepia": {
+        "css": "0 0 0 0.5px rgba(58,46,34,0.14), 0 1px 4px rgba(58,46,34,0.07)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#3A2E2224"
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "blur": 4.0,
+            "spread": 0.0,
+            "color": "#3A2E2212"
+          }
+        ]
+      },
+      "dark": {
+        "css": "0 0 0 0.5px rgba(255,255,255,0.10), 0 1px 4px rgba(0,0,0,0.30)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#FFFFFF1A"
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "blur": 4.0,
+            "spread": 0.0,
+            "color": "#0000004C"
+          }
+        ]
+      }
+    },
+    "panel": {
+      "light": {
+        "css": "0 0 0 0.5px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.04)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#00000014"
+          },
+          {
+            "x": 0.0,
+            "y": 4.0,
+            "blur": 16.0,
+            "spread": 0.0,
+            "color": "#0000000A"
+          }
+        ]
+      },
+      "sepia": {
+        "css": "0 0 0 0.5px rgba(58,46,34,0.10), 0 4px 16px rgba(58,46,34,0.05)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#3A2E221A"
+          },
+          {
+            "x": 0.0,
+            "y": 4.0,
+            "blur": 16.0,
+            "spread": 0.0,
+            "color": "#3A2E220D"
+          }
+        ]
+      },
+      "dark": {
+        "css": "0 0 0 0.5px rgba(255,255,255,0.08), 0 4px 16px rgba(0,0,0,0.30)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#FFFFFF14"
+          },
+          {
+            "x": 0.0,
+            "y": 4.0,
+            "blur": 16.0,
+            "spread": 0.0,
+            "color": "#0000004C"
+          }
+        ]
+      }
+    },
+    "popover": {
+      "light": {
+        "css": "0 0 0 0.5px rgba(0,0,0,0.12), 0 8px 24px rgba(0,0,0,0.12)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#0000001F"
+          },
+          {
+            "x": 0.0,
+            "y": 8.0,
+            "blur": 24.0,
+            "spread": 0.0,
+            "color": "#0000001F"
+          }
+        ]
+      },
+      "sepia": {
+        "css": "0 0 0 0.5px rgba(58,46,34,0.16), 0 8px 24px rgba(58,46,34,0.14)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#3A2E2229"
+          },
+          {
+            "x": 0.0,
+            "y": 8.0,
+            "blur": 24.0,
+            "spread": 0.0,
+            "color": "#3A2E2224"
+          }
+        ]
+      },
+      "dark": {
+        "css": "0 0 0 0.5px rgba(255,255,255,0.12), 0 8px 24px rgba(0,0,0,0.50)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#FFFFFF1F"
+          },
+          {
+            "x": 0.0,
+            "y": 8.0,
+            "blur": 24.0,
+            "spread": 0.0,
+            "color": "#00000080"
+          }
+        ]
+      }
+    },
+    "modal": {
+      "light": {
+        "css": "0 0 0 0.5px rgba(0,0,0,0.12), 0 24px 64px rgba(0,0,0,0.20)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#0000001F"
+          },
+          {
+            "x": 0.0,
+            "y": 24.0,
+            "blur": 64.0,
+            "spread": 0.0,
+            "color": "#00000033"
+          }
+        ]
+      },
+      "sepia": {
+        "css": "0 0 0 0.5px rgba(58,46,34,0.16), 0 24px 64px rgba(58,46,34,0.22)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#3A2E2229"
+          },
+          {
+            "x": 0.0,
+            "y": 24.0,
+            "blur": 64.0,
+            "spread": 0.0,
+            "color": "#3A2E2238"
+          }
+        ]
+      },
+      "dark": {
+        "css": "0 0 0 0.5px rgba(255,255,255,0.14), 0 24px 64px rgba(0,0,0,0.60)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#FFFFFF24"
+          },
+          {
+            "x": 0.0,
+            "y": 24.0,
+            "blur": 64.0,
+            "spread": 0.0,
+            "color": "#00000099"
+          }
+        ]
+      }
+    },
+    "knob": {
+      "light": {
+        "css": "0 0 0 0.5px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.20)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#00000014"
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "blur": 3.0,
+            "spread": 0.0,
+            "color": "#00000033"
+          }
+        ]
+      },
+      "sepia": {
+        "css": "0 0 0 0.5px rgba(58,46,34,0.10), 0 1px 3px rgba(58,46,34,0.22)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#3A2E221A"
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "blur": 3.0,
+            "spread": 0.0,
+            "color": "#3A2E2238"
+          }
+        ]
+      },
+      "dark": {
+        "css": "0 0 0 0.5px rgba(0,0,0,0.30), 0 1px 3px rgba(0,0,0,0.50)",
+        "layers": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "blur": 0.0,
+            "spread": 0.5,
+            "color": "#0000004C"
+          },
+          {
+            "x": 0.0,
+            "y": 1.0,
+            "blur": 3.0,
+            "spread": 0.0,
+            "color": "#00000080"
+          }
+        ]
+      }
+    }
+  },
+  "icon": {
+    "grid": 20,
+    "sizes": [
+      16,
+      20,
+      24
+    ],
+    "stroke": {
+      "16": 1.75,
+      "20": 1.5,
+      "24": 1.5
+    },
+    "live_area": 16,
+    "padding": 2,
+    "cap": "round",
+    "join": "round",
+    "toolbar": 20,
+    "row": 16,
+    "menu": 16,
+    "empty_state": 32
+  },
+  "titlebar": {
+    "height": 52,
+    "centre_line": 26,
+    "leading_inset_sidebar_hidden": 20,
+    "leading_inset_sidebar_shown": 8,
+    "trailing_inset": 16,
+    "traffic_light": {
+      "diameter": 14,
+      "gap": 9,
+      "first_center_x": 27,
+      "center_y": 26
+    },
+    "group_gap": 8,
+    "capsule_height": 32,
+    "capsule_radius": 16,
+    "button_width": 36,
+    "sidebar_toggle_width": 40,
+    "divider": {
+      "width": 1,
+      "height": 16
+    },
+    "search_field_width": 176,
+    "search_field_width_compact": 136,
+    "sidebar_inset": 8,
+    "sidebar_width": 256,
+    "sidebar_header_height": 36
+  },
+  "state": {
+    "hover_wash_light": "#00000012",
+    "pressed_wash_light": "#00000024",
+    "hover_wash_dark": "#FFFFFF1A",
+    "pressed_wash_dark": "#FFFFFF2E",
+    "disabled_opacity": 0.4,
+    "focus_ring_width": 3
+  },
+  "motion": {
+    "fast_ms": 120,
+    "base_ms": 200,
+    "slow_ms": 320,
+    "easing": "cubic-bezier(0.2, 0, 0, 1)",
+    "verse_flash_ms": 900
+  }
+}

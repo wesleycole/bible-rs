@@ -10,7 +10,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$ROOT/docs/screenshots}"
-BIN="${BIN:-$ROOT/target/release/bible-rs}"
+BIN="${BIN:-$ROOT/target/release/linger}"
 export DISPLAY="${DISPLAY_NUM:-:98}"
 export LIBGL_ALWAYS_SOFTWARE=1
 
@@ -20,10 +20,10 @@ if ! xdpyinfo >/dev/null 2>&1; then
   XVFB_PID=$!
   sleep 1
 fi
-[[ -x "$BIN" ]] || (cd "$ROOT" && cargo build --release -p bible-rs)
-WORK="$(mktemp -d /tmp/bible-rs-shots.XXXXXX)"
+[[ -x "$BIN" ]] || (cd "$ROOT" && cargo build --release -p linger)
+WORK="$(mktemp -d /tmp/linger-shots.XXXXXX)"
 cleanup() {
-  pkill -x bible-rs 2>/dev/null || true
+  pkill -x linger 2>/dev/null || true
   [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null || true
   rm -rf "$WORK"
 }
@@ -31,7 +31,7 @@ trap cleanup EXIT
 
 # Demo study data (public-domain verses only).
 cat >"$WORK/notes.json" <<'JSON'
-{"app":"bible-rs","format":1,"exported_at":"2026-10-14T12:00:00Z","translation":"KJV",
+{"app":"linger","format":1,"exported_at":"2026-10-14T12:00:00Z","translation":"KJV",
  "highlights":[
   {"reference":"John 1:1","book":"JHN","chapter":1,"verse":1,"color":"yellow","created":"2026-10-14T12:00:00Z"},
   {"reference":"John 1:4","book":"JHN","chapter":1,"verse":4,"color":"green","created":"2026-10-14T12:00:00Z"},
@@ -56,18 +56,18 @@ WID=
 prepare() {
   APP_HOME="$WORK/home-$RANDOM"
   mkdir -p "$APP_HOME"
-  BIBLE_RS_HOME="$APP_HOME" "$BIN" import-notes "$WORK/notes.json" >/dev/null
+  LINGER_HOME="$APP_HOME" "$BIN" import-notes "$WORK/notes.json" >/dev/null
   local typo='{"size":19.0,"line_height":1.62,"mode":"'"${MODE:-Paragraph}"'","red_letters":true,"justify":false,"verse_numbers":true,"headings":true,"measure":34.0}'
   printf '{"translation":"%s","theme":"%s","typo":%s,%s}' "$2" "$1" "$typo" "${3:-\"sidebar_open\":false}" >"$WORK/settings.json"
   sqlite3 "$APP_HOME/study.sqlite" "INSERT OR REPLACE INTO settings(key, value) VALUES('app', CAST(readfile('$WORK/settings.json') AS TEXT));"
 }
 
 launch() {
-  pkill -x bible-rs 2>/dev/null || true
+  pkill -x linger 2>/dev/null || true
   sleep 0.4
-  BIBLE_RS_HOME="$APP_HOME" setsid "$BIN" >"$WORK/app.log" 2>&1 </dev/null &
+  LINGER_HOME="$APP_HOME" setsid "$BIN" >"$WORK/app.log" 2>&1 </dev/null &
   disown
-  WID="$(xdotool search --sync --onlyvisible --name '^bible-rs$' | head -1)"
+  WID="$(xdotool search --sync --onlyvisible --name '^Linger$' | head -1)"
   if [[ -n "${SIZE:-}" ]]; then
     xdotool windowsize "$WID" ${SIZE/x/ }
     xdotool windowmove "$WID" $(( (1600 - ${SIZE%x*}) / 2 )) 20
@@ -176,7 +176,7 @@ scene_translations() {
     mkdir -p "$ROOT/.sources"
     curl -fsSL -o "$mod" https://www.crosswire.org/ftpmirror/pub/sword/packages/rawzip/Geneva1599.zip || true
   fi
-  [[ -f "$mod" ]] && BIBLE_RS_HOME="$APP_HOME" "$BIN" import "$mod" --abbrev GNV >/dev/null
+  [[ -f "$mod" ]] && LINGER_HOME="$APP_HOME" "$BIN" import "$mod" --abbrev GNV >/dev/null
   SIZE=1280x960 launch
   goto "jn 1"
   key ctrl+comma

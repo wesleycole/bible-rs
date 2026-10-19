@@ -363,7 +363,7 @@ pub fn import_with_progress(path: &Path, opts: &ImportOptions, progress: &Arc<Pr
         id: opts.id.clone().unwrap_or_else(|| slug(&abbrev)),
         abbrev,
         name,
-        license: "Imported by you for personal use; not distributed with bible-rs".into(),
+        license: "Imported by you for personal use; not distributed with linger".into(),
         copyright: rights,
         source: format!("{} ({})", src.label, format.name()),
         origin: Origin::Imported { format: format.name().into(), file_name: src.label.clone() },
@@ -384,7 +384,7 @@ mod tests {
     use crate::books::{BookId, VerseRef};
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("bible-rs-import-{}-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("linger-import-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

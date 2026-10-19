@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Developer tasks: fetch public-domain sources and build the bundled translations"
+description = "Developer tasks: build the bundled translations; generate the Swift bindings"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-bible-core.workspace = true
+linger-core.workspace = true
 anyhow.workspace = true
 sha2 = "0.10"
+uniffi = { workspace = true, features = ["cli"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }

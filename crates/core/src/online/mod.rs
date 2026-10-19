@@ -137,7 +137,7 @@ pub fn http_agent() -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
-        .user_agent(concat!("bible-rs/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("linger/", env!("CARGO_PKG_VERSION")))
         .build();
     config.into()
 }
@@ -652,7 +652,7 @@ pub(crate) mod tests {
 
     #[test]
     fn disk_cache_enforces_verse_and_half_book_limits() {
-        let dir = std::env::temp_dir().join(format!("bible-rs-cache-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("linger-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cache = DiskCache::open(&dir.join("cache.sqlite")).unwrap();
         let p = policy(100, BookShare::Half);
@@ -712,7 +712,7 @@ pub(crate) mod tests {
 
     #[test]
     fn daily_budget_counts_across_sessions_and_stops_at_the_limit() {
-        let dir = std::env::temp_dir().join(format!("bible-rs-budget-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("linger-budget-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("requests");

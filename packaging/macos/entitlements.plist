@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Hardened-runtime entitlements for bible-rs. It needs none:
+  Hardened-runtime entitlements for linger. It needs none:
   - API keys live in the login Keychain through the legacy SecKeychain API (keyring's
     "keychain" store). That needs no keychain-access-groups entitlement and no provisioning
     profile. Each item's access list names the app's designated requirement (bundle ID and

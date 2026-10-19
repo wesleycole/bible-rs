@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds a downloadable macOS release of bible-rs into dist/ with one command:
+# Builds a downloadable macOS release of linger into dist/ with one command:
 #
-#   bible-rs.app                        universal (arm64 + x86_64), Developer ID signed, stapled
-#   bible-rs-<version>-universal.dmg    drag-to-Applications disk image, signed, stapled
-#   bible-rs-universal.dmg              the same DMG under the name the website links to
-#   bible-rs-<version>-universal.zip    the app alone, for direct downloads
-#   bible-rs-<version>-SHA256SUMS.txt   checksums of the DMGs and the zip
+#   Linger.app                        universal (arm64 + x86_64), Developer ID signed, stapled
+#   linger-<version>-universal.dmg    drag-to-Applications disk image, signed, stapled
+#   linger-universal.dmg              the same DMG under the name the website links to
+#   linger-<version>-universal.zip    the app alone, for direct downloads
+#   linger-<version>-SHA256SUMS.txt   checksums of the DMGs and the zip
 #
 #   scripts/release-macos.sh                  # sign, notarize, staple: ready to publish
 #   scripts/release-macos.sh --skip-notarize  # signed, not notarized: other Macs refuse to
@@ -51,15 +51,15 @@ cd "$ROOT"
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 MIN_MACOS=11.0
-APP="dist/bible-rs.app"
-BIN="$APP/Contents/MacOS/bible-rs"
-NAME="bible-rs-${VERSION}-universal"
+APP="dist/Linger.app"
+BIN="$APP/Contents/MacOS/linger"
+NAME="linger-${VERSION}-universal"
 DMG="dist/$NAME.dmg"
-# bible-rs.vercel.app/download redirects to releases/latest/download/bible-rs-universal.dmg,
+# The website's Download link redirects to releases/latest/download/linger-universal.dmg,
 # so every release needs this unversioned copy too.
-LATEST_DMG="dist/bible-rs-universal.dmg"
+LATEST_DMG="dist/linger-universal.dmg"
 ZIP="dist/$NAME.zip"
-SUMS="dist/bible-rs-${VERSION}-SHA256SUMS.txt"
+SUMS="dist/linger-${VERSION}-SHA256SUMS.txt"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: Fabrika LLC (5S3KCRYBD2)}"
 TEAM_ID="$(sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p' <<<"$SIGN_IDENTITY")"
 NOTARY_PROFILE="${NOTARY_PROFILE:-bible-notary}"
@@ -79,7 +79,7 @@ if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then NOTARY_AUTH+=(--keychain "$NOTARY_KEYCH
 
 # --- Preflight: everything that can fail before a two-minute build -------------------------
 
-step "Preflight (bible-rs $VERSION)"
+step "Preflight (linger $VERSION)"
 if [[ -n "$(git status --porcelain 2>/dev/null)" && "${ALLOW_DIRTY:-0}" != "1" ]]; then
   die "the working tree has uncommitted changes; commit them first (or set ALLOW_DIRTY=1)"
 fi
@@ -162,9 +162,9 @@ echo "dmgbuild: $("$VENV/bin/python" -c 'import importlib.metadata as m; print(m
 
 # --- Build and check the app -----------------------------------------------------------------
 
-# bundle-macos.sh used to write an unsigned dist/bible-rs-<version>.dmg; don't leave one next
+# bundle-macos.sh used to write an unsigned dist/linger-<version>.dmg; don't leave one next
 # to the release where it could be uploaded by mistake.
-rm -rf "$APP" "$DMG" "$LATEST_DMG" "$ZIP" "$SUMS" "dist/bible-rs-${VERSION}.dmg"
+rm -rf "$APP" "$DMG" "$LATEST_DMG" "$ZIP" "$SUMS" "dist/linger-${VERSION}.dmg"
 
 step "Building the universal app"
 if [[ "$ADHOC" == "1" ]]; then
@@ -194,7 +194,7 @@ check_plist() {
   printf '%-30s %s\n' "$1" "$got"
   [[ "$got" == "$2" ]] || die "Info.plist $1 is '$got', expected '$2'"
 }
-check_plist CFBundleIdentifier dev.bible-rs.app
+check_plist CFBundleIdentifier com.wesleycole.linger.mac
 check_plist CFBundleShortVersionString "$VERSION"
 check_plist CFBundleVersion "$VERSION"
 check_plist LSMinimumSystemVersion "$MIN_MACOS"
@@ -221,10 +221,10 @@ HOME_DIR="$TMP/home"
 native="$(uname -m)"
 other=x86_64
 if [[ "$native" == "x86_64" ]]; then other=arm64; fi
-BIBLE_RS_HOME="$HOME_DIR" "$BIN" read "jn 3:16" >/dev/null || die "the signed app fails to run"
+LINGER_HOME="$HOME_DIR" "$BIN" read "jn 3:16" >/dev/null || die "the signed app fails to run"
 echo "Smoke test, $native: read jn 3:16 ok"
 if arch "-$other" /usr/bin/true 2>/dev/null; then
-  BIBLE_RS_HOME="$HOME_DIR" arch "-$other" "$BIN" read "jn 3:16" >/dev/null ||
+  LINGER_HOME="$HOME_DIR" arch "-$other" "$BIN" read "jn 3:16" >/dev/null ||
     die "the $other slice fails to run"
   echo "Smoke test, $other: read jn 3:16 ok"
 else
@@ -234,8 +234,8 @@ fi
 
 if [[ "$NOTARIZE" == "1" ]]; then
   step "Notarizing the app"
-  ditto -c -k --keepParent "$APP" "$TMP/bible-rs.zip"
-  scripts/notarize-macos.sh "$TMP/bible-rs.zip"
+  ditto -c -k --keepParent "$APP" "$TMP/linger.zip"
+  scripts/notarize-macos.sh "$TMP/linger.zip"
   xcrun stapler staple "$APP"
   xcrun stapler validate "$APP"
 fi
@@ -244,7 +244,7 @@ fi
 
 step "Building the disk image"
 "$VENV/bin/dmgbuild" -s packaging/macos/dmg-settings.py -D app="$APP" \
-  -D background=packaging/macos/dmg-background.png bible-rs "$DMG"
+  -D background=packaging/macos/dmg-background.png Linger "$DMG"
 if [[ "$ADHOC" == "0" ]]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
   codesign --verify --strict --verbose=2 "$DMG"
@@ -255,10 +255,10 @@ echo "hdiutil verify: ok"
 mkdir -p "$MOUNT"
 hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$MOUNT" "$DMG" >/dev/null
 [[ "$(readlink "$MOUNT/Applications")" == /Applications ]] || die "the DMG has no Applications link"
-ditto "$MOUNT/bible-rs.app" "$TMP/installed/bible-rs.app"
+ditto "$MOUNT/Linger.app" "$TMP/installed/Linger.app"
 hdiutil detach "$MOUNT" -quiet
-cmp -s "$BIN" "$TMP/installed/bible-rs.app/Contents/MacOS/bible-rs" || die "the DMG holds a different build"
-codesign --verify --deep --strict --verbose=2 "$TMP/installed/bible-rs.app" ||
+cmp -s "$BIN" "$TMP/installed/Linger.app/Contents/MacOS/linger" || die "the DMG holds a different build"
+codesign --verify --deep --strict --verbose=2 "$TMP/installed/Linger.app" ||
   die "the app copied out of the DMG fails strict signature checks"
 if [[ "$NOTARIZE" == "1" ]]; then
   step "Notarizing the disk image"

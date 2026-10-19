@@ -97,7 +97,7 @@ pub fn read_meta(bytes: &[u8]) -> Result<TranslationMeta> {
 }
 
 fn header(r: &mut Reader<'_>) -> Result<TranslationMeta> {
-    ensure!(r.take(4)? == MAGIC, "not a bible-rs translation file");
+    ensure!(r.take(4)? == MAGIC, "not a linger translation file");
     let version = r.u16()?;
     ensure!(version == VERSION, "unsupported translation file version {version}");
     let meta = r.bytes()?;

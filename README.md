@@ -1,7 +1,14 @@
-# bible-rs
+# Linger
 
-A very fast, native Bible reader for the Mac, written in Rust. Just the Bible — beautifully
-typeset, searchable as you type, with highlights, notes and bookmarks kept on your computer.
+A very fast, native Bible reader for macOS, Linux and iOS, written in Rust — beautifully
+typeset, searchable as you type, with highlights, notes and bookmarks kept on your device.
+
+Linger is growing into a study companion grounded in the sermons you've heard: record a sermon
+in the room, capture one playing on your computer, or import a file, and ask questions answered
+from your own sermon transcripts and the Bible. That part is in progress; everything below
+describes the reader as it works today.
+
+Linger began as a fork of [bible-rs](https://github.com/michaelshimeles/bible-rs) (MIT).
 
 ![Reading John 1 in the King James Version](docs/screenshots/reader-light.png)
 
@@ -105,7 +112,7 @@ no text, no derived index, no test fixtures. You can add them yourself in either
 Settings (⌘,) → Translations → **Import file…** / **Import folder…** (or ⌘I), or from a terminal:
 
 ```sh
-bible-rs import ~/Downloads/MyBible.zip --abbrev NASB --name "New American Standard Bible"
+linger import ~/Downloads/MyBible.zip --abbrev NASB --name "New American Standard Bible"
 ```
 
 Supported formats:
@@ -117,9 +124,9 @@ Supported formats:
 | **Zefania XML** | the `.xml` file |
 | **SWORD module** | the module `.zip`, its unpacked folder, or its `mods.d/*.conf` file. zText/RawText drivers in KJV, KJVA, NRSV or NRSVA versification; OSIS, ThML and GBF markup. **Locked modules** (e.g. purchased from a publisher) work with your unlock key: enter it in the *SWORD unlock key* field (or `--key`). |
 
-The text is converted to bible-rs's format and stored only in your data folder
-(`~/Library/Application Support/bible-rs/translations/` on macOS). Deuterocanonical books are
-skipped. Remove an import from the same settings page or with `bible-rs remove <id>`.
+The text is converted to Linger's format and stored only in your data folder
+(`~/Library/Application Support/linger/translations/` on macOS). Deuterocanonical books are
+skipped. Remove an import from the same settings page or with `linger remove <id>`.
 
 ### Online translations
 
@@ -186,7 +193,7 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 
 ## Performance
 
-Measured on the machine bible-rs was built on: a headless Ubuntu VPS (AMD EPYC 7B13, 16 vCPUs)
+Measured on the machine Linger was built on: a headless Ubuntu VPS (AMD EPYC 7B13, 16 vCPUs)
 with **no GPU** — the app runs under Xvfb with Mesa's llvmpipe software OpenGL, so window and frame
 timings are pessimistic compared with a Mac. Criterion medians (`cargo bench`); startup is the
 median of 15 launches (`scripts/bench-startup.sh`). macOS numbers from CI are [further
@@ -196,10 +203,10 @@ down](#on-macos).
 
 | | Median |
 |---|---|
-| bible-rs: launch → first frame built (chapter typeset, ready to draw) | 118 ms |
-| bible-rs: launch → first frame presented on screen | 162 ms |
+| Linger: launch → first frame built (chapter typeset, ready to draw) | 118 ms |
+| Linger: launch → first frame presented on screen | 162 ms |
 | Empty eframe window with the same options (the platform floor): built / presented | 104 ms / 146 ms |
-| **bible-rs's own cost on top of the floor** | **≈ 15 ms** |
+| **Linger's own cost on top of the floor** | **≈ 15 ms** |
 
 The first frame always contains the text. While the window and OpenGL context are created
 (~100 ms here, almost all of it software GL), the translation being read is decoded on a
@@ -264,14 +271,14 @@ the empty-window baseline measured alongside it. Medians of 10 launches:
 
 | | Metal (default) | OpenGL |
 |---|---|---|
-| bible-rs: first frame built | 237 ms | 194 ms |
-| bible-rs: first frame presented | **253 ms** | 325 ms |
+| Linger: first frame built | 237 ms | 194 ms |
+| Linger: first frame presented | **253 ms** | 325 ms |
 | Empty eframe window, same renderer: first frame presented | 268 ms | 236 ms |
 | Scrolling: frame interval (mean) | **16.8 ms — 60 fps, the display's rate** | 66.6 ms — 15 fps |
 | Scrolling: app work per frame (mean / p99) | 0.16 / 3.0 ms | 0.13 / 2.2 ms |
 
 Startup trace for the Metal build on that runner: window and Metal context ready at 207 ms, first
-frame built at 218 ms — **bible-rs's own work before the first paint is ~11 ms** (John 1 typeset
+frame built at 218 ms — **Linger's own work before the first paint is ~11 ms** (John 1 typeset
 in 4.3 ms); everything before that is the machine creating a window. OpenGL's 15 fps while
 scrolling is why macOS renders with Metal. Final numbers on real Mac hardware are still to be
 taken; `scripts/bench-startup.sh` measures them, including the empty-window floor.
@@ -290,11 +297,11 @@ scenario with `scripts/bench-sidebar.sh`:
 Reproduce with:
 
 ```sh
-cargo bench -p bible-core          # search, decoding, references, SQLite
-cargo bench -p bible-rs            # chapter typesetting
+cargo bench -p linger-core          # search, decoding, references, SQLite
+cargo bench -p linger            # chapter typesetting
 scripts/bench-startup.sh           # launch → first frame (vs. an empty window), 900-frame scroll run
 scripts/bench-sidebar.sh           # sidebar open/close: frame pacing, UI time, chapters typeset per slide
-bible-rs search "love one another" # prints the query time
+linger search "love one another" # prints the query time
 ```
 
 ## Building
@@ -302,12 +309,12 @@ bible-rs search "love one another" # prints the query time
 Requires Rust 1.95+, the minimum egui 0.36 supports.
 
 ```sh
-# Linux needs: libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev
+# Linux needs: libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev libpulse-dev
 cargo build --release
-./target/release/bible-rs
+./target/release/linger
 ```
 
-On macOS, `scripts/bundle-macos.sh` builds `dist/bible-rs.app` (`UNIVERSAL=1` for arm64 +
+On macOS, `scripts/bundle-macos.sh` builds `dist/Linger.app` (`UNIVERSAL=1` for arm64 +
 x86_64, `SIGN_IDENTITY=…` to sign). `scripts/release-macos.sh` makes the downloadable release: the
 universal app signed with a Developer ID and notarized, a disk image, a zip and their checksums
 ([RELEASING.md](RELEASING.md)). CI builds an ad-hoc signed DMG on every push and uploads it as an
@@ -320,29 +327,33 @@ Other tasks:
 | `cargo test --workspace` | core (model, format, importers, search, references, study, online with a mock server) and typesetting tests |
 | `cargo run -p xtask -- build-data` | re-download the pinned public-domain sources and regenerate `data/translations/*.bbl` |
 | `scripts/screenshots.sh` | regenerate `docs/screenshots/` under Xvfb |
-| `BIBLE_RS_HOME=/some/dir bible-rs` | use another data folder |
+| `LINGER_HOME=/some/dir linger` | use another data folder |
 
 The binary doubles as a small CLI:
 
 ```sh
-bible-rs read "jn 3:16-18" --translation web
-bible-rs search '"in the beginning"' --scope nt
-bible-rs list
-bible-rs import path/to/module.zip [--abbrev X --name "…" --key UNLOCK]
-bible-rs export --markdown -o notes.md
-bible-rs import-notes notes.json
+linger read "jn 3:16-18" --translation web
+linger search '"in the beginning"' --scope nt
+linger list
+linger import path/to/module.zip [--abbrev X --name "…" --key UNLOCK]
+linger export --markdown -o notes.md
+linger import-notes notes.json
 ```
 
 ## How it's built
 
+One repository for the shared Rust core and every app built on it:
+
 ```
-crates/core   bible-core: canonical book grid, verse-indexed model, .bbl format, USFM/OSIS/
-              Zefania/SWORD importers, search, reference parsing, SQLite study store,
-              ESV/API.Bible providers, Keychain secrets, translation library
-crates/app    bible-rs: egui app — reader (typesetting, continuous scroll), sidebar, palette,
-              panels, settings, macOS menu bar, CLI
-xtask         reproducible bundled-data build from pinned public-domain sources
-data          generated .bbl files (public domain only)
+crates/core    linger-core: canonical book grid, verse-indexed model, .bbl format, USFM/OSIS/
+               Zefania/SWORD importers, search, reference parsing, SQLite study store,
+               ESV/API.Bible providers, Keychain secrets, translation library
+crates/ffi     linger-ffi: Swift bindings to linger-core, generated with UniFFI
+apps/desktop   linger: egui app for macOS and Linux — reader (typesetting, continuous
+               scroll), sidebar, palette, panels, settings, macOS menu bar, CLI
+apps/ios       iPhone and iPad app (SwiftUI) on linger-core, in progress: apps/ios/README.md
+xtask          reproducible bundled-data build from pinned public-domain sources; uniffi-bindgen
+data           generated .bbl files (public domain only)
 ```
 
 See [DECISIONS.md](DECISIONS.md) for why egui, how typesetting and continuous scrolling work, the

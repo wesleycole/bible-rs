@@ -1,0 +1,81 @@
+[package]
+name = "linger"
+description = "A fast, native Bible reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "linger"
+path = "src/lib.rs"
+
+[[bin]]
+name = "linger"
+path = "src/main.rs"
+
+[dependencies]
+linger-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+eframe = { version = "0.36", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "wgpu",
+    "wayland",
+    "x11",
+] }
+rfd = "0.17"
+dirs = "6"
+
+# PNG encoding for shared verse images.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Recording sermons from the microphone or the computer's audio (PulseAudio or PipeWire).
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-binding = "2.30"
+libpulse-simple-binding = "2.29"
+
+# Native menu bar and window chrome (macOS only).
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSAccessibility",
+    "NSApplication",
+    "NSButton",
+    "NSControl",
+    "NSResponder",
+    "NSScreen",
+    "NSSharingService",
+    "NSToolbar",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSGeometry",
+    "NSString",
+    "NSURL",
+] }
+raw-window-handle = "0.6"
+winit = { version = "0.30", default-features = false }
+
+[build-dependencies]
+serde_json.workspace = true
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "wgpu"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "layout"
+harness = false

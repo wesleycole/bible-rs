@@ -13,9 +13,9 @@ step() {
 }
 
 # Match Linux CI and scripts/screenshots.sh. SQLite itself is bundled by rusqlite.
-packages=(build-essential pkg-config curl ca-certificates libxkbcommon-dev
+packages=(build-essential pkg-config curl ca-certificates libxkbcommon-dev libxkbcommon-x11-0 libpulse-dev
     libgl1-mesa-dev libwayland-dev libx11-dev libgl1-mesa-dri
-    xvfb xauth mesa-utils x11-utils xdotool imagemagick sqlite3)
+    xvfb xauth mesa-utils x11-utils xdotool imagemagick sqlite3 pulseaudio pulseaudio-utils)
 missing=()
 for package in "${packages[@]}"; do
     if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then

@@ -543,7 +543,7 @@ impl StudyStore {
             text: text(v),
         };
         let mut doc = ExportDoc {
-            app: "bible-rs".into(),
+            app: "linger".into(),
             format: 1,
             exported_at: rfc3339(now()),
             translation: translation.to_string(),
@@ -630,7 +630,7 @@ impl StudyStore {
         let mut md = String::new();
         let _ = writeln!(md, "# Bible study notes\n");
         let _ =
-            writeln!(md, "Exported from bible-rs on {} · verse text: {translation}\n", &rfc3339(now())[..10]);
+            writeln!(md, "Exported from linger on {} · verse text: {translation}\n", &rfc3339(now())[..10]);
         let bookmarks = if include.bookmarks { self.bookmarks() } else { Vec::new() };
         if !bookmarks.is_empty() {
             let _ = writeln!(md, "## Bookmarks\n");
@@ -694,9 +694,10 @@ impl StudyStore {
 
     /// Merges a JSON export back in (existing entries for the same verse are overwritten).
     pub fn import_json(&mut self, json: &str) -> Result<(usize, usize, usize)> {
-        let doc: ExportDoc = serde_json::from_str(json).context("not a bible-rs export")?;
-        if doc.app != "bible-rs" {
-            bail!("not a bible-rs export");
+        let doc: ExportDoc = serde_json::from_str(json).context("not a linger export")?;
+        // Exports made before the rename say "bible-rs".
+        if doc.app != "linger" && doc.app != "bible-rs" {
+            bail!("not a linger export");
         }
         let verse = |e: &ExportVerse| -> Result<VerseRef> {
             let book = BookId::from_code(&e.book).with_context(|| format!("unknown book {}", e.book))?;
@@ -991,7 +992,7 @@ mod tests {
 
     #[test]
     fn crud_and_persistence() {
-        let dir = std::env::temp_dir().join(format!("bible-rs-study-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("linger-study-{}", std::process::id()));
         let path = dir.join("study.sqlite");
         let _ = std::fs::remove_dir_all(&dir);
         {
