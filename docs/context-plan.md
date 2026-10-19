@@ -174,9 +174,18 @@ makes it a `note` the user chose to keep.
   must finish within 2 minutes. A two-hour service is about 44 MB, which needs 3 Mbit/s of upload, more
   than church Wi-Fi or a phone signal reliably gives. So audio is encoded as **ADTS AAC** in
   5-minute parts (about 1.8 MB each) and each part is uploaded as soon as it closes, through the
-  outbox. ADTS streams join by concatenation. When recording ends, a Node action joins the parts into
-  one file for AssemblyAI and for playback, then deletes the parts. Uploading while recording also
-  means most of the sermon is already safe if the phone dies.
+  outbox. ADTS streams join by concatenation. Uploading while recording also means most of the
+  sermon is already safe if the phone dies.
+- **Play back M4A, not ADTS.** When recording ends, a Node action joins the parts and remuxes them
+  (without re-encoding) into one M4A with its index at the front, using a pure-JavaScript MP4
+  muxer. That file goes to AssemblyAI and to playback, and the parts are deleted. ADTS has no index,
+  so players estimate its timeline from the bitrate. In a test, AVPlayer gave a 259-second ADTS file
+  a duration of 238 seconds, about 8% short. A transcript timestamp an hour into a sermon would then
+  land minutes from the sentence it belongs to. The same audio as M4A reported its exact duration.
+- **Seeking streams from Convex.** File links answer `Range` requests with `206` and the exact bytes
+  (tested on Convex Cloud), so AVPlayer and `<audio>` seek without downloading the whole sermon.
+  Suffix ranges (`bytes=-N`) returned a `500` in the same test. Players use explicit ranges for
+  M4A, but the playback tests should cover it.
 - **Transcription.** A Convex workflow:
   1. Reserves the duration against the plan, as `beginSermon` does now.
   2. Gives AssemblyAI the file's `ctx.storage.getUrl` URL, with the same settings as
@@ -324,8 +333,11 @@ margin uses.
   defensible case, so:
   - nothing in one user's library is ever visible to another, or to any shared index;
   - marking encourages excerpts ("circle what matters"), not scanning whole books;
-  - extraction and Ask go through the Gateway with zero data retention.
-- Before launch, ask a lawyer to confirm this reading for book photos and sermon audio.
+  - **every model call is zero-retention and never used for training:** Claude through the
+    Gateway with ZDR for Ask, extraction and digests, and AssemblyAI with its job deleted when the
+    transcript is stored (as now). Confirm AssemblyAI's no-training terms in writing.
+- ZDR settles what the vendors keep. It doesn't settle copyright. Before launch, ask a lawyer to
+  confirm this reading for book photos and sermon audio.
 
 ## External sources
 
@@ -424,10 +436,12 @@ Sync was a Pro feature in the backend plan. It can't be now, since the library i
 
 ### Phase A: the library in Convex
 
-1. `auth.config.ts`: Clerk's Convex integration for session tokens (`applicationID: "convex"`), and
-   a `customJwt` provider for the desktop's OAuth access tokens. Decode a real access token first,
-   to set `applicationID` from its `aud` and to check that `sub` is the Clerk user id. Then the
-   `userQuery` / `userMutation` helpers and `canRead` / `canWrite`.
+1. `auth.config.ts`: one `customJwt` provider with the Clerk instance's issuer and JWKS, and no
+   `applicationID`. It accepts both the session tokens from iOS and the web and the desktop's OAuth
+   access tokens. Both carry the same issuer and the Clerk user id as `sub`, so the same person gets
+   the same `tokenIdentifier` on every device. The proxy's `Auth.ts` already relies on the same
+   claims. Convex doesn't check `aud` without `applicationID`, and doesn't reject the `at+jwt`
+   header (tested). Then the `userQuery` / `userMutation` helpers and `canRead` / `canWrite`.
 2. The schema above. Seed the canonical grid from `cargo xtask contract`.
 3. Sermons on Convex storage: parts uploaded through upload URLs, the join action, and the
    AssemblyAI step and webhook as a `@convex-dev/workflow` workflow (actions are never retried on
@@ -499,9 +513,9 @@ sermon recorded on the iPhone with three slides is cited with its slides.
 
 | Question | Who | Blocks |
 |---|---|---|
-| What `aud` and `sub` are on Clerk's OAuth access tokens, so `customJwt` can accept them (fallback: the OIDC `id_token`) | Decode a real token | Phase A |
-| Does Convex Cloud answer `Range` requests on file URLs? The open-source backend does, which audio seeking needs | `curl -H "Range: bytes=0-1023"` against the deployment | Phase A playback |
+| Does a real token from the Mac app's sign-in get the same `tokenIdentifier` in Convex as one from iOS? Tested with tokens of the same shape, not yet with Clerk's | Sign in on both against a dev deployment | Phase A |
 | Convex's docs give actions both a 10- and a 30-minute limit; design to 10 | Convex support | Nothing, if designed to 10 |
+| Does AssemblyAI commit in writing to no training on customer audio? | AssemblyAI | Release |
 | Is a user's own photo of a copyrighted book, sent to Claude for their private study, acceptable to rely on? | Lawyer | Release |
 | Are vectors needed, and which embedding model? | Phase B eval | Phase B |
 | Haiku or Sonnet for slides and printed pages | Phase C eval | Phase C |
