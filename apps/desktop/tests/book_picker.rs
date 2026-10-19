@@ -1,17 +1,20 @@
-//! The book picker: its grids keep the menu insets with cells edge to edge like menu rows, the
-//! book and chapter being read are selected, and the keyboard alone can choose a chapter.
+//! The book picker: one scrolling list of books that opens on the book being read with its
+//! chapters beneath it, keeps the menu insets with rows edge to edge, filters as you type and lets
+//! the keyboard alone choose a chapter.
 
 use eframe::egui::{self, Key};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use linger::actions::Action;
 use linger::book_picker;
-use linger::menu::{ITEM_HEIGHT, PADDING_X, PADDING_Y};
-use linger::theme::{self, Theme, menu as tokens};
+use linger::menu::{ITEM_HEIGHT, PADDING_X};
+use linger::theme::{self, Theme};
 use linger_core::books::{BookId, ChapterIdx};
 
 const JOHN: BookId = BookId(42);
-const EPHESIANS: BookId = BookId(48);
+const LUKE: BookId = BookId(41);
+const PSALMS: BookId = BookId::PSALMS;
+const JUDE: BookId = BookId(64);
 
 /// A button standing in for the toolbar's location button, opening the picker on John 1, with the
 /// picker open.
@@ -22,7 +25,7 @@ fn open() -> Harness<'static, Vec<Action>> {
 /// The same in a window of `size`.
 fn open_in(size: egui::Vec2) -> Harness<'static, Vec<Action>> {
     let here = ChapterIdx::new(JOHN, 1).unwrap();
-    let mut harness = Harness::builder().with_size(size).build_ui_state(
+    let mut harness = Harness::builder().with_size(size).with_pixels_per_point(2.0).build_ui_state(
         move |ui, actions: &mut Vec<Action>| {
             let anchor = ui.button("John 1");
             book_picker::show(&anchor, Theme::Light.palette(), None, here, actions);
@@ -38,6 +41,28 @@ fn open_in(size: egui::Vec2) -> Harness<'static, Vec<Action>> {
     harness
 }
 
+fn area(harness: &Harness<'_, Vec<Action>>) -> egui::Rect {
+    harness.ctx.memory(|m| m.area_rect(egui::Id::new("book-picker"))).expect("the picker is open")
+}
+
+fn press(harness: &mut Harness<'_, Vec<Action>>, keys: &[Key]) {
+    for key in keys {
+        harness.key_press(*key);
+        harness.run();
+    }
+}
+
+fn type_text(harness: &mut Harness<'_, Vec<Action>>, text: &str) {
+    harness.event(egui::Event::Text(text.into()));
+    harness.run();
+}
+
+fn jumped_to(harness: &Harness<'_, Vec<Action>>, book: BookId, chapter: u8) {
+    let chapter = ChapterIdx::new(book, chapter).unwrap();
+    assert_eq!(*harness.state(), vec![Action::Jump { chapter, verse: None, flash: false }]);
+    assert!(!book_picker::is_open(&harness.ctx), "choosing a chapter closes the picker");
+}
+
 fn near(a: f32, b: f32, what: &str) {
     assert!((a - b).abs() < 0.01, "{what}: {a} ≠ {b}");
 }
@@ -48,87 +73,107 @@ fn selected(harness: &Harness<'_, Vec<Action>>, label: &str) -> bool {
 }
 
 #[test]
-fn books_sit_in_the_menu_insets_with_the_current_one_selected() {
+fn it_opens_on_the_book_being_read_with_its_chapters_beneath() {
     let harness = open();
-    let area = harness.ctx.memory(|m| m.area_rect(egui::Id::new("book-picker"))).expect("the picker is open");
+    let area = area(&harness);
     let edge = area.shrink(Theme::Light.palette().shadows.popover.ring_width);
     let rect = |label: &str| harness.get_by_label(label).rect();
-    let (genesis, exodus, joshua, judges) = (rect("Genesis"), rect("Exodus"), rect("Joshua"), rect("Judges"));
-    let (malachi, matthew, revelation) = (rect("Malachi"), rect("Matthew"), rect("Revelation"));
+    let (luke, john, acts) = (rect("Luke"), rect("John"), rect("Acts"));
+    let (one, two, eight, twenty_one) = (rect("1"), rect("2"), rect("8"), rect("21"));
 
-    // The cells' highlights keep the menu's padding.
-    near(genesis.left() - edge.left(), PADDING_X, "left inset");
-    near(genesis.top() - edge.top(), PADDING_Y, "top inset");
-    near(edge.right() - joshua.right(), PADDING_X, "right inset");
-    near(edge.bottom() - revelation.bottom(), PADDING_Y, "bottom inset");
-    // Rows of the menu's height, edge to edge across and down, as menu rows are.
-    near(genesis.height(), ITEM_HEIGHT, "row height");
-    near(exodus.left(), genesis.right(), "columns abut");
-    near(judges.top(), genesis.bottom(), "rows abut");
-    near(judges.left(), genesis.left(), "column aligned");
-    // One grid: the New Testament carries on in Malachi's row, with no gutter or header.
-    near(matthew.left(), malachi.right(), "testaments continue");
-    near(matthew.top(), malachi.top(), "testaments share a row");
-    near(revelation.right(), joshua.right(), "the last row is full");
-
-    assert!(selected(&harness, "John"), "the book being read is selected");
-    assert!(!selected(&harness, "Genesis"));
+    near(edge.width(), book_picker::WIDTH, "picker width");
+    let list = area.bottom() - harness.get_by_label("Mark").rect().top();
+    assert!(list > book_picker::LIST_HEIGHT - ITEM_HEIGHT, "the list at its full height: {list}");
+    // John is scrolled into view, its rows the menu's, inset like menu rows.
+    assert!(john.top() >= area.top() && john.bottom() <= area.bottom(), "John in view: {john:?} in {area:?}");
+    near(john.left() - edge.left(), PADDING_X, "left inset");
+    near(edge.right() - john.right(), PADDING_X, "right inset");
+    near(john.height(), ITEM_HEIGHT, "row height");
+    near(john.top(), luke.bottom(), "rows abut");
+    // Its 21 chapters, seven to a row, sit between John and Acts.
+    near(one.top(), john.bottom(), "chapters under the book");
+    near(one.left(), john.left(), "chapters from the row's edge");
+    near(two.left(), one.right(), "chapters abut");
+    near(one.width(), john.width() / 7.0, "seven to a row");
+    near(eight.top(), one.bottom(), "the second row");
+    near(eight.left(), one.left(), "chapter columns aligned");
+    assert!(acts.top() > twenty_one.bottom(), "Acts follows the chapters");
+    assert!(harness.query_by_label("22").is_none());
+    // Only the open book shows chapters.
+    assert!(selected(&harness, "John") && selected(&harness, "1"), "John 1 is selected");
+    assert!(!selected(&harness, "Luke") && !selected(&harness, "2"));
 }
 
 #[test]
-fn the_books_fit_the_narrowest_window() {
-    // The window's minimum width.
-    let harness = open_in(egui::vec2(620.0, 700.0));
-    let area = harness.ctx.memory(|m| m.area_rect(egui::Id::new("book-picker"))).expect("the picker is open");
-    assert!(area.left() >= 0.0 && area.right() <= 620.0, "the picker fits the window: {area:?}");
-    let (genesis, exodus) = (harness.get_by_label("Genesis").rect(), harness.get_by_label("Exodus").rect());
-    // The cells narrow but keep the text inset before each name and a gap after the longest.
-    let longest = harness.ctx.fonts_mut(|f| {
-        f.layout_no_wrap("Lamentations".into(), theme::text::UI.font(), egui::Color32::WHITE).size().x
-    });
-    assert!(genesis.width() >= longest + tokens::ITEM_PADDING, "{} < {longest} + inset", genesis.width());
-    near(exodus.left(), genesis.right(), "columns abut");
+fn the_list_shortens_to_fit_a_short_window() {
+    let harness = open_in(egui::vec2(800.0, 420.0));
+    let area = area(&harness);
+    assert!(area.bottom() <= 420.0, "the picker fits the window: {area:?}");
+    let john = harness.get_by_label("John").rect();
+    assert!(john.top() >= area.top() && john.bottom() <= area.bottom(), "John in view: {john:?} in {area:?}");
 }
 
 #[test]
-fn the_keyboard_chooses_a_book_and_a_chapter() {
+fn the_keyboard_moves_through_books_and_chapters() {
     let mut harness = open();
-    // From John: right to Acts, down to Philippians, left to Ephesians, return for its chapters.
-    for key in [Key::ArrowRight, Key::ArrowDown, Key::ArrowLeft, Key::Enter] {
-        harness.key_press(key);
-        harness.run();
-    }
-    assert!(harness.query_by_label("Genesis").is_none(), "the chapters replace the books");
-    assert!(!selected(&harness, "1"), "John is not the book being read here");
-    // Backspace goes back to the books, return on the highlighted book (Ephesians) returns.
-    harness.key_press(Key::Backspace);
-    harness.run();
-    assert!(harness.query_by_label("Genesis").is_some(), "back on the books");
-    harness.key_press(Key::Enter);
-    harness.run();
-    // The highlight starts on chapter 1: right to 2, return.
-    for key in [Key::ArrowRight, Key::Enter] {
-        harness.key_press(key);
-        harness.run();
-    }
-    let chapter = ChapterIdx::new(EPHESIANS, 2).unwrap();
-    assert_eq!(*harness.state(), vec![Action::Jump { chapter, verse: None, flash: false }]);
-    assert!(!book_picker::is_open(&harness.ctx), "choosing a chapter closes the picker");
+    // From John 1: down a row to 8, right to 9, return.
+    press(&mut harness, &[Key::ArrowDown, Key::ArrowRight, Key::Enter]);
+    jumped_to(&harness, JOHN, 9);
+
+    let mut harness = open();
+    // Up out of the chapters to John, up to Luke, right opens it (closing John), right into its
+    // first chapter, down a row to 8.
+    press(&mut harness, &[Key::ArrowUp, Key::ArrowUp, Key::ArrowRight]);
+    assert!(harness.query_by_label("24").is_some(), "Luke's chapters show");
+    assert_eq!(harness.query_all_by_label("1").count(), 1, "John's chapters closed");
+    assert!(!selected(&harness, "1"), "the chapter 1 showing is Luke's");
+    press(&mut harness, &[Key::ArrowRight, Key::ArrowDown, Key::Enter]);
+    jumped_to(&harness, LUKE, 8);
 }
 
 #[test]
-fn the_current_chapter_is_selected_and_escape_closes() {
+fn typing_filters_the_books() {
+    let mut harness = open();
+    type_text(&mut harness, "rev");
+    assert!(harness.query_by_label("Revelation").is_some());
+    assert!(harness.query_by_label("Genesis").is_none() && harness.query_by_label("John").is_none());
+    // Backspace deletes; with the filter empty again it's back on John.
+    press(&mut harness, &[Key::Backspace, Key::Backspace, Key::Backspace]);
+    assert!(harness.query_by_label("Genesis").is_some() && harness.query_by_label("21").is_some());
+
+    // A reference lands on its chapter.
+    type_text(&mut harness, "ps 23");
+    press(&mut harness, &[Key::Enter]);
+    jumped_to(&harness, PSALMS, 23);
+
+    // A book of one chapter goes straight there.
+    let mut harness = open();
+    type_text(&mut harness, "jude");
+    press(&mut harness, &[Key::Enter]);
+    jumped_to(&harness, JUDE, 1);
+}
+
+#[test]
+fn clicking_a_book_opens_and_closes_it_and_escape_closes() {
     let mut harness = open();
     harness.get_by_label("John").click();
     harness.run();
-    assert!(selected(&harness, "1"), "John 1 is the chapter being read");
-    assert!(!selected(&harness, "2"));
-    assert!(harness.state().is_empty(), "a book with chapters opens them rather than jumping");
+    assert!(harness.query_by_label("21").is_none(), "clicking the open book closes it");
+    harness.get_by_label("Luke").click();
+    harness.run();
+    assert!(harness.query_by_label("24").is_some(), "clicking a book opens it");
+    assert!(harness.state().is_empty(), "a book with chapters opens rather than jumping");
+    harness.get_by_label("24").click();
+    harness.run();
+    jumped_to(&harness, LUKE, 24);
+
+    let mut harness = open();
+    type_text(&mut harness, "gen");
     harness.key_press(Key::Escape);
     harness.run();
     assert!(!book_picker::is_open(&harness.ctx));
-    // It opens on the books again.
+    // It opens on the book being read again, unfiltered.
     harness.get_by_label("John 1").click();
     harness.run();
-    assert!(harness.query_by_label("Genesis").is_some());
+    assert!(harness.query_by_label("Genesis").is_some() && harness.query_by_label("21").is_some());
 }

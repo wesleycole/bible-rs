@@ -305,14 +305,20 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   checkboxes, section headers and separators all start 10 pt inside the highlight. egui's menus
   (the translation switcher, select fields, page menus) and the hand-painted verse and More
   menus use the same tokens; popovers with fields or controls (text settings, New Note) keep
-  egui's popup frame. The book picker is a grid of menu cells in the menu frame: all 66 books in
-  canonical order, six to a row (eleven full rows), with no testament headers or gutter, since
-  two side-by-side testaments of unequal length left a ragged block. Its 28 pt cells sit edge to
-  edge, as wide as the longest name (narrower in a 620 pt window), with names in the text column;
-  the book and chapter being read are selected. Arrow keys move the same highlight as the pointer, return
-  chooses and backspace goes back to the books. The reader's single-key shortcuts wait while the
-  picker is open, so escape closes it and the arrows stay in the grid; the copy chords still
-  copy.
+  egui's popup frame. The book picker is one scrolling list in the menu frame, 320 pt wide and
+  up to 460 pt tall (shorter in a short window): the books in canonical order under Old and New Testament
+  headers, and the open book's chapters seven to a row beneath its row, an accordion with one
+  book open at a time. It opens on the book being read, expanded and scrolled into view with two
+  books above it. Side-by-side testament grids (and then one 6-column grid) were tried first; a
+  list reads in one direction, keeps full names and goes from book to chapter without swapping
+  views. A filter at the top takes typing directly, not through a focused text field, so the
+  copy chords keep reaching the reader; it reads what's typed as the palette reads references,
+  so "1 co" narrows to the books and "ps 23" opens Psalms on chapter 23. Rows and cells are menu
+  cells, the book and chapter being read selected. The arrows move the same highlight as the
+  pointer (up and down by row through books and chapter rows, left and right along chapters and
+  in and out of a book), return opens a book or chooses a chapter, and backspace deletes from
+  the filter. The reader's single-key shortcuts wait while the picker is open, so escape closes
+  it and the arrows stay in the list.
 - **Empty and error states share one widget and one axis.** Notes, Bookmarks, Highlights,
   History, finished plans, the offline error and a search that found nothing all draw
   `pages::Empty`. Each sits optically centred in the space it fills, with 45 % of the leftover
