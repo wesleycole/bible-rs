@@ -35,6 +35,26 @@ jobs:
       - name: Startup and scrolling under Xvfb (software OpenGL)
         run: RUNS=5 scripts/bench-startup.sh
 
+  server:
+    name: Server · typecheck and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
   macos:
     name: macOS · build, tests, universal app and DMG
     runs-on: macos-latest
