@@ -344,6 +344,22 @@ pub fn plus(p: &Painter, r: Rect, c: Color32) {
     g.line(&[(4.25, 10.0), (15.75, 10.0)]);
 }
 
+/// A square open at its top right, with a pen writing into it (new conversation).
+pub fn compose(p: &Painter, r: Rect, c: Color32) {
+    let g = Grid::new(p, r, c);
+    g.line(&[
+        (9.25, 3.75),
+        (5.25, 3.75),
+        (3.75, 5.25),
+        (3.75, 14.75),
+        (5.25, 16.25),
+        (14.75, 16.25),
+        (16.25, 14.75),
+        (16.25, 10.75),
+    ]);
+    g.line(&[(8.75, 11.25), (8.75, 9.25), (14.25, 3.75), (16.25, 5.75), (10.75, 11.25), (8.75, 11.25)]);
+}
+
 /// Two quotation marks (copy with reference).
 pub fn quote(p: &Painter, r: Rect, c: Color32) {
     let g = Grid::new(p, r, c);

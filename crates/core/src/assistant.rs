@@ -93,6 +93,20 @@ impl Conversation {
         Self::default()
     }
 
+    /// The history as JSON, to save and carry on from later ([`Conversation::from_json`]).
+    pub fn to_json(&self) -> String {
+        Value::Array(self.messages.clone()).to_string()
+    }
+
+    /// A saved history; anything unreadable starts afresh.
+    pub fn from_json(s: &str) -> Self {
+        let messages = match serde_json::from_str(s) {
+            Ok(Value::Array(m)) => m,
+            _ => Vec::new(),
+        };
+        Self { messages }
+    }
+
     /// Asks `question` and runs the tool loop until Claude is done, reporting progress to
     /// `on_event`. Returns the answer: all of its text, citations included.
     pub fn ask(

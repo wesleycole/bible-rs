@@ -37,15 +37,20 @@ const COMPOSER_INSET: f32 = 12.0;
 /// A white card on the page: the panel's hairline ring, with a wider, softer drop shadow than the
 /// sidebar's so it lifts off a page of the same colour.
 pub fn paint_card(painter: &egui::Painter, p: &Palette, r: Rect) {
-    let lift = theme::Elevation {
+    let lift = card_lift(p);
+    painter.add(lift.drop_shape(r, CARD_RADIUS));
+    painter.rect_filled(r, CARD_RADIUS, p.surface);
+    lift.paint_ring(painter, r, CARD_RADIUS);
+}
+
+/// The card's shadow and ring.
+pub fn card_lift(p: &Palette) -> theme::Elevation {
+    theme::Elevation {
         y: 4.0,
         blur: 20.0,
         color: p.shadows.popover.color.gamma_multiply(0.85),
         ..p.shadows.panel
-    };
-    painter.add(lift.drop_shape(r, CARD_RADIUS));
-    painter.rect_filled(r, CARD_RADIUS, p.surface);
-    lift.paint_ring(painter, r, CARD_RADIUS);
+    }
 }
 
 #[derive(Default)]
@@ -66,6 +71,11 @@ pub struct AskPanel {
     context_off: bool,
     focus: bool,
     stick_to_bottom: bool,
+    /// The saved conversation this continues (Recents), its title, and whether an answer has
+    /// arrived since it was last saved.
+    chat: Option<i64>,
+    title: Option<String>,
+    unsaved: bool,
 }
 
 /// What the panel needs from the app each frame.
@@ -85,6 +95,36 @@ enum Update {
 impl AskPanel {
     pub fn new() -> Self {
         Self { focus: true, config: assistant::Config::from_env(), ..Default::default() }
+    }
+
+    /// A saved conversation, to carry on from where it was left.
+    pub fn open(saved: linger_core::study::SavedChat) -> Self {
+        Self {
+            messages: saved.messages,
+            conversation: Arc::new(Mutex::new(Conversation::from_json(&saved.api))),
+            chat: Some(saved.id),
+            title: Some(saved.title),
+            stick_to_bottom: true,
+            ..Self::new()
+        }
+    }
+
+    /// The saved conversation shown, if it has been saved.
+    pub fn chat(&self) -> Option<i64> {
+        self.chat
+    }
+
+    /// Saves the conversation if an answer has arrived since it was last saved: as a new chat in
+    /// Recents, titled with its first question, or over the one it continues.
+    pub fn save(&mut self, study: &mut linger_core::study::StudyStore) -> anyhow::Result<()> {
+        if !std::mem::take(&mut self.unsaved) {
+            return Ok(());
+        }
+        let first = self.messages.iter().find(|m| m.role == Role::User).map_or("", |m| m.text.as_str());
+        let title = self.title.get_or_insert_with(|| title_for(first)).clone();
+        let api = self.conversation.lock().unwrap_or_else(|e| e.into_inner()).to_json();
+        self.chat = Some(study.save_chat(self.chat, &title, &self.messages, &api)?);
+        Ok(())
     }
 
     /// Focus the question field next frame.
@@ -114,6 +154,7 @@ impl AskPanel {
                 Update::Event(Event::Thinking) => self.status = Some("Thinking".into()),
                 Update::Done(m) => {
                     self.messages.push(m);
+                    self.unsaved = true;
                     self.pending = None;
                     self.streaming.clear();
                     self.status = None;
@@ -184,6 +225,8 @@ impl AskPanel {
             {
                 self.messages.clear();
                 self.conversation = Arc::default();
+                self.chat = None;
+                self.title = None;
                 self.focus = true;
             }
         }
@@ -371,6 +414,17 @@ impl AskPanel {
             })
             .expect("spawn ask thread");
     }
+}
+
+/// A conversation's title: its first question's first line, cut at a word to about 60 characters.
+fn title_for(question: &str) -> String {
+    let line = question.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("New conversation");
+    if line.chars().count() <= 60 {
+        return line.to_string();
+    }
+    let cut: String = line.chars().take(60).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', ';', ':', '.', ' ']))
 }
 
 /// "Reading John 3", "Reading John 3 · verse 14 selected", "… · verses 14–16 selected".

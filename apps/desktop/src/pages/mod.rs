@@ -1,13 +1,12 @@
-//! Pages that take the reader's place in the main area (the design's Flows frames): the
-//! translation library and the study collections. The sidebar's rows open them; the toolbar
-//! then holds back/forward and a field that filters the page.
+//! Pages that take the reader's place in the main area (the design's Flows frames): the study
+//! collections, history and reading plans. The sidebar's rows open them; the toolbar then holds
+//! the way back to the reader and a field that filters the page.
 
 pub mod bookmarks;
 pub mod highlights;
 pub mod history;
 pub mod notes;
 pub mod plans;
-pub mod translations;
 
 use eframe::egui::{self, Color32, FontId, Painter, Rect, ScrollArea, Ui, pos2, vec2};
 
@@ -23,7 +22,6 @@ use crate::widgets::{css_baseline, galley_baseline, line, paint_on_baseline};
 pub enum Page {
     #[default]
     Reader,
-    Translations,
     Bookmarks,
     Highlights,
     Notes,
@@ -36,7 +34,6 @@ impl Page {
     pub fn placeholder(self) -> &'static str {
         match self {
             Page::Reader => "Search",
-            Page::Translations => "Filter translations",
             Page::Bookmarks => "Search bookmarks",
             Page::Highlights => "Search highlights",
             Page::Notes => "Search notes",
@@ -48,7 +45,6 @@ impl Page {
     pub fn from_name(name: &str) -> Option<Page> {
         Some(match name {
             "reader" => Page::Reader,
-            "translations" => Page::Translations,
             "bookmarks" => Page::Bookmarks,
             "highlights" => Page::Highlights,
             "notes" => Page::Notes,
@@ -75,7 +71,6 @@ pub struct PageEnv<'a> {
 pub struct Pages {
     pub page: Page,
     pub query: String,
-    pub translations: translations::State,
     pub bookmarks: bookmarks::State,
     pub highlights: highlights::State,
     pub notes: notes::State,
@@ -117,7 +112,6 @@ impl Pages {
                 let top = ui.max_rect().top() + env.toolbar + TOP;
                 let content = Rect::from_min_size(pos2(left, top), vec2(width - 2.0 * SIDE, 0.0));
                 let bottom = match self.page {
-                    Page::Translations => self.translations.show(ui, content, env, actions),
                     Page::Bookmarks => self.bookmarks.show(ui, content, env, actions),
                     Page::Highlights => self.highlights.show(ui, content, env, actions),
                     Page::History => self.history.show(ui, content, env, actions),

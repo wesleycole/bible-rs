@@ -228,6 +228,8 @@ pub struct BibleApp {
     sidebar_motion: crate::motion::Spring,
     sidebar_shown: f32,
     sidebar_extent: f32,
+    /// The floating sidebar's card this frame, whose shadow reaches past its panel.
+    sidebar_card: Option<egui::Rect>,
     /// The previous frame's time (egui seconds), and the clock motion runs on: frame time, except
     /// that one frame advances it by at most [`BibleApp::motion_step`]. A frame that comes late,
     /// say while a ProMotion panel wakes from its idle refresh rate, then delays a slide by a
@@ -366,6 +368,7 @@ impl BibleApp {
             sidebar_motion: crate::motion::Spring::new(if settings.sidebar_open { 1.0 } else { 0.0 }),
             sidebar_shown: if settings.sidebar_open { 1.0 } else { 0.0 },
             sidebar_extent: 0.0,
+            sidebar_card: None,
             last_frame_time: 0.0,
             motion_clock: 0.0,
             motion_step: 1.5 / 60.0,
@@ -671,7 +674,13 @@ impl BibleApp {
                 }
             }
             Action::RemoveParallel(id) => {
-                self.settings.parallel.retain(|p| *p != id);
+                if self.columns().len() <= 2 {
+                    // The last parallel column: back to one translation, keeping the pairing for
+                    // the next time (an empty list would pair with another translation instead).
+                    self.settings.parallel_on = false;
+                } else {
+                    self.settings.parallel.retain(|p| *p != id);
+                }
             }
             Action::Highlight(color) => {
                 let refs = self.reader.selected_refs();
@@ -772,6 +781,28 @@ impl BibleApp {
                     self.panel = None;
                 }
             }
+            Action::OpenChat(_) | Action::NewChat if self.ask.as_ref().is_some_and(|a| a.waiting()) => {
+                self.toast(ctx, "Wait for the answer to finish first");
+            }
+            Action::OpenChat(id) => match self.study.chat(id) {
+                Some(saved) => {
+                    self.ask = Some(crate::ask_panel::AskPanel::open(saved));
+                    self.panel = None;
+                }
+                None => self.toast(ctx, "Couldn't open that conversation"),
+            },
+            Action::NewChat => {
+                self.ask = Some(crate::ask_panel::AskPanel::new());
+                self.panel = None;
+            }
+            Action::DeleteChat(id) => match self.study.delete_chat(id) {
+                Ok(()) => {
+                    if self.ask.as_ref().is_some_and(|a| a.chat() == Some(id) && !a.waiting()) {
+                        self.ask = Some(crate::ask_panel::AskPanel::new());
+                    }
+                }
+                Err(e) => self.toast(ctx, format!("Couldn't delete the conversation: {e:#}")),
+            },
             Action::AskAboutSelection => {
                 if self.reader.selection.is_none() {
                     let v = self.selection_or_location()[0];
@@ -845,9 +876,6 @@ impl BibleApp {
                         self.settings.translation = linger_core::bundled::DEFAULT_ID.into();
                     }
                     self.settings.parallel.retain(|x| *x != id);
-                    if self.pages.translations.selected.as_deref() == Some(id.as_str()) {
-                        self.pages.translations.selected = None;
-                    }
                     self.toast(ctx, format!("Removed {id}"));
                 }
                 Err(e) => self.toast(ctx, format!("{e:#}")),
@@ -1036,7 +1064,6 @@ impl BibleApp {
                     actions.push(Action::OpenPage(page));
                 }
             }
-            "pick" => self.pages.translations.selected = Some(arg.to_string()),
             "plans-tab" => self.pages.plans.set_tab(arg),
             // `plan-day:<plan>@<day>`: a plan's day view.
             "plan-day" => {
@@ -1095,14 +1122,13 @@ impl BibleApp {
         }
     }
 
-    /// Adds an import to the library, reads it, and selects it on the library page.
+    /// Adds an import to the library and reads it.
     fn install_import(&mut self, ctx: &egui::Context, imported: linger_core::import::Imported) {
         let name = imported.translation.meta.name.clone();
         let verses = imported.translation.verse_count();
         match self.library.install(imported) {
             Ok(id) => {
                 self.toast(ctx, format!("Imported {name} ({verses} verses)"));
-                self.pages.translations.selected = Some(id.clone());
                 self.settings.translation = id;
                 self.reader.invalidate();
             }
@@ -1296,6 +1322,8 @@ impl BibleApp {
         if material > 0.0 {
             ui.painter().rect_filled(bar, 0.0, p.toolbar.gamma_multiply(material));
         }
+        // Over the reader, the bands under the toolbar and its material: only the buttons above.
+        self.sidebar_shadow(ui);
         let cy = bar.center().y;
         let mut items = Vec::new();
 
@@ -1339,13 +1367,13 @@ impl BibleApp {
             return;
         }
 
-        // Trailing: view tools, then the search field. A compact window folds both into one
-        // capsule, Search and More (frame 34), and shows the narrower field while searching.
-        // Judged at the width the bar is heading for, so a sliding sidebar switches it at once
-        // rather than halfway.
+        // Trailing: one capsule, Search and More (frame 34), which holds the view tools (parallel,
+        // text, Ask); while searching, the field in its place, narrower in a compact window.
+        // Compactness is judged at the width the bar is heading for, so a sliding sidebar
+        // switches it at once rather than halfway.
         let compact = bar.width() + extent * (open - self.sidebar_motion.target()) < COMPACT_TOOLBAR;
         let focus_field = self.sidebar.take_focus();
-        let show_field = !compact || focus_field || self.sidebar.searching() || self.sidebar.field_focused;
+        let show_field = focus_field || self.sidebar.searching() || self.sidebar.field_focused;
         let trailing_left;
         // What the text popover hangs from, and whether clicking it toggles the popover.
         let mut text_anchor: Option<(egui::Response, bool)> = None;
@@ -1355,42 +1383,7 @@ impl BibleApp {
                 egui::pos2(bar.right() - TRAILING_INSET - w, cy - CAPSULE_HEIGHT / 2.0),
                 vec2(w, CAPSULE_HEIGHT),
             );
-            trailing_left = if compact {
-                search.left()
-            } else {
-                let tools = [
-                    CapsuleButton {
-                        tooltip: "Parallel translations (⌘⇧P)",
-                        enabled: true,
-                        on: self.settings.parallel_on,
-                        icon: crate::icons::columns,
-                    },
-                    CapsuleButton {
-                        tooltip: "Text & layout (⌘T)",
-                        enabled: true,
-                        on: false,
-                        icon: crate::icons::text_size,
-                    },
-                    CapsuleButton {
-                        tooltip: "Ask (⌘J)",
-                        enabled: true,
-                        on: self.ask.is_some(),
-                        icon: crate::icons::sparkle,
-                    },
-                ];
-                let tools_left = search.left() - GROUP_GAP - 3.0 * BUTTON_WIDTH;
-                let (tools_rect, resp) =
-                    widgets::button_capsule(ui, p, tools_left, cy, BUTTON_WIDTH, false, &tools);
-                if resp[0].clicked() {
-                    actions.push(Action::ToggleParallel);
-                }
-                if resp[2].clicked() {
-                    actions.push(Action::ToggleAsk);
-                }
-                text_anchor = Some((resp[1].clone(), true));
-                items.push(tools_rect);
-                tools_rect.left()
-            };
+            trailing_left = search.left();
             let field_id = Id::new("toolbar-search");
             let (field, cleared) =
                 widgets::search_field(ui, search, p, &mut self.sidebar.query, "Search", field_id);
@@ -1634,9 +1627,26 @@ impl BibleApp {
         };
         let line = top + 34.0 + 16.0 - 0.5;
         ui.painter().hline(first.0 - pad..=last.0 + last.1 + pad, line, Stroke::new(1.0, p.separator));
-        for (i, (x, _w)) in self.reader.columns_x.clone().into_iter().enumerate() {
+        for (i, (x, w)) in self.reader.columns_x.clone().into_iter().enumerate() {
             let Some(id) = cols.get(i) else { break };
             let Some(meta) = self.library.get(id).map(|e| e.meta.clone()) else { continue };
+            if i > 0 {
+                // Close: a parallel column's × at its right edge, centred on the head's two lines.
+                let b = egui::Rect::from_center_size(egui::pos2(x + w - 12.0, top + 17.0), vec2(24.0, 24.0));
+                let close = ui.interact(b, Id::new(("column-close", i)), Sense::click());
+                if let Some(fill) = widgets::hover_fill(ui, &close, p, false) {
+                    ui.painter().circle_filled(b.center(), 12.0, fill);
+                }
+                let ink = if close.hovered() { p.ink } else { p.ink_3 };
+                crate::icons::close(
+                    ui.painter(),
+                    egui::Rect::from_center_size(b.center(), vec2(14.0, 14.0)),
+                    ink,
+                );
+                if close.on_hover_text(format!("Close {}", meta.abbrev)).clicked() {
+                    actions.push(Action::RemoveParallel(id.clone()));
+                }
+            }
             let font = theme::text::UI_STRONG.font();
             let g = ui.painter().layout_no_wrap(meta.abbrev.clone(), font, p.ink);
             let pick = egui::Rect::from_min_size(egui::pos2(x, top), vec2(g.size().x + 4.0 + 12.0, 16.0));
@@ -1724,6 +1734,19 @@ impl BibleApp {
         ui.painter().galley(egui::pos2(x, cy - hint.size().y / 2.0), hint, p.ink_3);
         #[cfg(target_os = "macos")]
         self.toolbar_items.push(r);
+    }
+
+    /// The part of the floating sidebar's shadow and ring right of its card, which the sidebar's
+    /// panel clips: painted with the toolbar, over everything that fills the main area.
+    fn sidebar_shadow(&self, ui: &Ui) {
+        let Some(card) = self.sidebar_card else { return };
+        let p = self.settings.theme.palette();
+        let beside =
+            egui::Rect::from_min_max(egui::pos2(card.right(), card.top() - 64.0), ui.clip_rect().max);
+        let painter = ui.painter().with_clip_rect(beside.intersect(ui.clip_rect()));
+        let lift = crate::ask_panel::card_lift(p);
+        painter.add(lift.drop_shape(card, crate::ask_panel::CARD_RADIUS));
+        lift.paint_ring(&painter, card, crate::ask_panel::CARD_RADIUS);
     }
 
     /// On a page, a capsule back to the chapter being read ("‹ John 3"), starting at `left`.
@@ -2451,6 +2474,7 @@ impl eframe::App for BibleApp {
         // The sidebar slides in from the window's edge at its full width, so nothing in it is laid
         // out again, while the main area beside it narrows; a spring drives both.
         let open = self.sidebar_open_fraction(&ctx, frame);
+        self.sidebar_card = None;
         if open > 0.0 {
             // A floating source list, full height: the traffic lights and the sidebar toggle sit
             // in its header.
@@ -2480,9 +2504,11 @@ impl eframe::App for BibleApp {
                             Stroke::new(1.0, p.separator),
                         );
                     } else {
-                        let radius = theme::radius::LG;
-                        p.shadows.panel.paint(ui.painter(), panel, radius);
-                        ui.painter().rect_filled(panel, radius, p.sidebar);
+                        // Floating: the same card as Ask's. Its panel clips at the card's right
+                        // edge, so the shadow on that side is painted over the reader
+                        // (`sidebar_shadow`).
+                        crate::ask_panel::paint_card(ui.painter(), p, panel);
+                        self.sidebar_card = Some(panel);
                     }
                     // The toggle in its header is the toolbar's (see `sidebar_toggle`), which follows
                     // the panel's edge.
@@ -2499,17 +2525,9 @@ impl eframe::App for BibleApp {
                         translation: &self.settings.translation,
                         theme: self.settings.theme,
                         location: self.reader.location,
-                        // The current place first, then where the reader came from.
-                        recent: std::iter::once(self.reader.location)
-                            .chain(self.history.recent().copied())
-                            .fold(Vec::new(), |mut v, here| {
-                                if !v.iter().any(|(c, _): &(ChapterIdx, u8)| *c == here.0) {
-                                    v.push(here);
-                                }
-                                v
-                            }),
                         selection: self.reader.selected_refs().first().copied(),
                         page: self.pages.page,
+                        chat: self.ask.as_ref().and_then(|a| a.chat()),
                     };
                     self.sidebar.show(&mut child, &env, &mut self.settings.whole_words, &mut actions);
                 });
@@ -2644,12 +2662,16 @@ impl eframe::App for BibleApp {
                     self.panel = None;
                 }
             } else if let Some(ask) = &mut self.ask {
+                // Full height, inset like the floating sidebar: the toolbar ends beside it.
+                let inset = theme::metrics::SIDEBAR_INSET;
                 let r = egui::Rect::from_min_max(
-                    egui::pos2(reader_rect.right(), full.top() + self.chrome.height),
-                    egui::pos2(
-                        full.right() - theme::metrics::SIDEBAR_INSET,
-                        full.bottom() - theme::metrics::SIDEBAR_INSET,
-                    ),
+                    egui::pos2(reader_rect.right(), full.top() + inset),
+                    egui::pos2(full.right() - inset, full.bottom() - inset),
+                );
+                // Its top is in the title bar, which mustn't drag the window from under it.
+                #[cfg(target_os = "macos")]
+                self.toolbar_items.push(
+                    r.intersect(egui::Rect::from_min_size(full.min, vec2(full.width(), self.chrome.height))),
                 );
                 crate::ask_panel::paint_card(ui.painter(), p, r);
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
@@ -2661,8 +2683,14 @@ impl eframe::App for BibleApp {
                     selection: self.reader.selection,
                     data_dir: &self.data_dir,
                 };
-                if ask.show(&mut child, p, &env, &mut actions) {
+                let close = ask.show(&mut child, p, &env, &mut actions);
+                // After each answer, into Recents.
+                let saved = ask.save(&mut self.study);
+                if close {
                     self.ask = None;
+                }
+                if let Err(e) = saved {
+                    self.toast(&ctx, format!("Couldn't save the conversation: {e:#}"));
                 }
             }
             let material = ctx.animate_bool_with_time(
@@ -2673,7 +2701,13 @@ impl eframe::App for BibleApp {
             if self.focus {
                 self.focus_chrome(ui, full, &mut actions);
             } else {
-                self.toolbar(ui, full, material, &mut actions);
+                // Beside the Ask card, the toolbar spans only the reader.
+                let bar = if self.ask.is_some() && self.panel.is_none() {
+                    egui::Rect::from_min_max(full.min, egui::pos2(reader_rect.right(), full.bottom()))
+                } else {
+                    full
+                };
+                self.toolbar(ui, bar, material, &mut actions);
             }
             if first {
                 crate::trace(self.startup.t0, "toolbar laid out");

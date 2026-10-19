@@ -62,7 +62,7 @@ Linger began as a fork of [bible-rs](https://github.com/michaelshimeles/bible-rs
 
 **Navigation**
 - ⌘K palette: references with fuzzy book names and typos, recent places, translations, commands.
-- Book/chapter picker in the toolbar and the sidebar (⌘B).
+- Book/chapter picker in the toolbar.
 - Back/forward history (⌘[ ⌘], ⌥← ⌥→), previous/next chapter (← →).
 
 **Search** (⌘F)

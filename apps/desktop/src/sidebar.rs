@@ -1,7 +1,7 @@
-//! Left sidebar: a floating source list (study collections, then the books with a chapter grid)
-//! that turns into search results while a search is active.
+//! Left sidebar: a floating source list (study collections, history, reading plans, then Recents:
+//! the saved Ask conversations) that turns into search results while a search is active. Books
+//! are chosen from the toolbar's picker and translations in Settings.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,11 +25,7 @@ const ROW_PAD: f32 = 8.0;
 const ICON_LANE: f32 = 16.0;
 const GAP: f32 = 8.0;
 /// Book rows indent their labels to line up with the labels of icon rows.
-const BOOK_INDENT: f32 = 32.0;
 /// Chapter chips: 24 pt circles, 8 pt apart, seven to a row, indented 24 pt.
-const CHIP: f32 = 24.0;
-const CHIP_GAP: f32 = 8.0;
-const CHIP_INDENT: f32 = 24.0;
 /// An open collection lists its most recent items, then "Show all".
 const RECENT_ITEMS: usize = 5;
 
@@ -51,22 +47,19 @@ pub struct SidebarEnv<'a> {
     pub translation: &'a str,
     pub theme: Theme,
     pub location: (ChapterIdx, u8),
-    /// Recently visited places, newest first.
-    pub recent: Vec<(ChapterIdx, u8)>,
     /// The verse selected in the reader (its list item shows as selected).
     pub selection: Option<VerseRef>,
-    /// The page in the main area: its row is selected, and the books follow the reader only
-    /// while it is shown.
+    /// The page in the main area: its row is selected.
     pub page: crate::pages::Page,
+    /// The saved conversation open in Ask: its row in Recents is selected.
+    pub chat: Option<i64>,
 }
 
 pub struct Sidebar {
-    /// Which testaments are expanded (OT, NT), and which of those the reader's position opened
-    /// (rather than a click): moving to the other testament closes those again.
-    testaments: [bool; 2],
-    auto_opened: [bool; 2],
-    /// The book whose chapter grid is open.
-    expanded: Option<BookId>,
+    /// Recents (saved Ask conversations): shown or folded, and the list as of the study store's
+    /// generation.
+    recents_open: bool,
+    chats: (u64, Vec<linger_core::study::ChatSummary>),
     /// Which study collections are expanded, and the one last opened (drawn selected).
     study_open: [bool; 3],
     study_selected: Option<StudyKind>,
@@ -74,12 +67,6 @@ pub struct Sidebar {
     study_all: [bool; 3],
     /// Highlights shown: all, or one colour.
     highlight_filter: Option<HighlightColor>,
-    /// Type-to-filter: the filter field replaces the study rows and recent places appear.
-    filtering: bool,
-    filter: String,
-    filter_focus: bool,
-    /// Frames left to hold the source list at its top (scrolls already under way finish first).
-    scroll_top: u8,
     pub query: String,
     /// Whether the toolbar's search field has focus (arrow keys then move through results).
     pub field_focused: bool,
@@ -97,10 +84,6 @@ pub struct Sidebar {
     elapsed: Duration,
     selected: usize,
     scroll_to_selected: bool,
-    /// The book last revealed (testament opened, scrolled into view) in the source list.
-    revealed: Option<BookId>,
-    /// Chapters with highlights or notes, keyed by the study store's generation.
-    activity: (u64, HashSet<ChapterIdx>),
     /// For a search that found nothing: a spelling that finds verses (query, count, first verse).
     suggestion: Option<(String, usize, u32)>,
 }
@@ -108,17 +91,12 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(_tab: SidebarTab) -> Self {
         Self {
-            testaments: [false, false],
-            auto_opened: [false, false],
-            expanded: None,
+            recents_open: true,
+            chats: (0, Vec::new()),
             study_open: [false; 3],
             study_selected: None,
             study_all: [false; 3],
             highlight_filter: None,
-            filtering: false,
-            filter: String::new(),
-            filter_focus: false,
-            scroll_top: 0,
             query: String::new(),
             field_focused: false,
             focus: false,
@@ -132,8 +110,6 @@ impl Sidebar {
             elapsed: Duration::ZERO,
             selected: 0,
             scroll_to_selected: false,
-            revealed: None,
-            activity: (0, HashSet::new()),
             suggestion: None,
         }
     }
@@ -150,8 +126,93 @@ impl Sidebar {
         std::mem::take(&mut self.focus)
     }
 
-    /// Expands a study collection by name (`bookmarks`, `highlights`, `notes`), or starts
-    /// filtering books (`filter`).
+    /// Recents: the Ask conversations, newest first, under a header that folds them and starts a
+    /// new one.
+    fn recents(&mut self, ui: &mut Ui, env: &SidebarEnv<'_>, actions: &mut Vec<Action>) {
+        let p = env.theme.palette();
+        if self.chats.0 != env.study.generation() {
+            self.chats = (env.study.generation(), env.study.chats());
+        }
+        // The header: "Recents" and a chevron fold the list; the pen starts a conversation. The
+        // chevron and pen show only while the pointer is over the header.
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
+        let cy = rect.top() + 16.0 + 14.0;
+        let hover = ui.rect_contains_pointer(Rect::from_min_max(pos2(rect.left(), cy - 16.0), rect.max));
+        let label = ui.painter().layout_no_wrap("Recents".into(), text::CAPTION.font(), p.ink_3);
+        let chevron = Rect::from_center_size(
+            pos2(rect.left() + ROW_PAD + label.size().x + 4.0 + 7.0, cy),
+            vec2(14.0, 14.0),
+        );
+        let fold = Rect::from_min_max(pos2(rect.left(), cy - 14.0), pos2(chevron.right() + 6.0, cy + 14.0));
+        let fold_resp = ui.interact(fold, ui.id().with("recents-fold"), Sense::click());
+        let ink = if fold_resp.hovered() { p.ink_2 } else { p.ink_3 };
+        ui.painter().galley(pos2(rect.left() + ROW_PAD, cy - label.size().y / 2.0), label, ink);
+        if hover {
+            if self.recents_open {
+                crate::icons::chevron_down(ui.painter(), chevron, ink);
+            } else {
+                crate::icons::disclosure(ui.painter(), chevron, ink);
+            }
+        }
+        if fold_resp.clicked() {
+            self.recents_open = !self.recents_open;
+        }
+        if hover {
+            let b = Rect::from_center_size(pos2(rect.right() - ROW_PAD - 6.0, cy), vec2(28.0, 28.0));
+            let resp = ui.interact(b, ui.id().with("recents-new"), Sense::click());
+            if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
+                ui.painter().rect_filled(b, theme::radius::SM, fill);
+            }
+            let icon = Rect::from_center_size(b.center(), vec2(18.0, 18.0));
+            crate::icons::compose(ui.painter(), icon, if resp.hovered() { p.ink } else { p.ink_2 });
+            if resp.on_hover_text("New conversation").clicked() {
+                actions.push(Action::NewChat);
+            }
+        }
+        if !self.recents_open {
+            return;
+        }
+        if self.chats.1.is_empty() {
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
+            ui.painter().text(
+                pos2(r.left() + ROW_PAD, r.center().y),
+                Align2::LEFT_CENTER,
+                "Conversations with Ask show here",
+                text::SMALL.font(),
+                p.ink_3,
+            );
+            return;
+        }
+        for chat in &self.chats.1 {
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+            let selected = env.chat == Some(chat.id);
+            if selected {
+                ui.painter().rect_filled(rect, theme::radius::SM, p.accent_soft);
+            } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
+                ui.painter().rect_filled(rect, theme::radius::SM, fill);
+            }
+            // One line, cut with an ellipsis.
+            let (font, color) =
+                if selected { (text::UI_STRONG.font(), p.accent) } else { (text::UI.font(), p.ink) };
+            let mut job = egui::text::LayoutJob::single_section(
+                chat.title.clone(),
+                egui::TextFormat { font_id: font, color, ..Default::default() },
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 2.0 * ROW_PAD);
+            let g = ui.painter().layout_job(job);
+            ui.painter().galley(pos2(rect.left() + ROW_PAD, rect.center().y - g.size().y / 2.0), g, color);
+            if resp.clicked() && !selected {
+                actions.push(Action::OpenChat(chat.id));
+            }
+            resp.context_menu(|ui| {
+                if ui.button("Delete Conversation").clicked() {
+                    actions.push(Action::DeleteChat(chat.id));
+                    ui.close();
+                }
+            });
+        }
+    }
+
     /// Narrows the search to a testament (`ot`, `nt`) or the whole Bible.
     pub fn set_scope(&mut self, name: &str) {
         self.scope = match name {
@@ -161,15 +222,12 @@ impl Sidebar {
         };
     }
 
+    /// Expands a study collection by name (`bookmarks`, `highlights`, `notes`).
     pub fn open_study(&mut self, name: &str) {
         let kind = match name {
             "bookmarks" => StudyKind::Bookmarks,
             "highlights" => StudyKind::Highlights,
             "notes" => StudyKind::Notes,
-            "filter" => {
-                self.start_filter(String::new());
-                return;
-            }
             _ => return,
         };
         self.toggle_study(kind);
@@ -183,13 +241,6 @@ impl Sidebar {
         } else {
             StudyKind::ALL.iter().zip(self.study_open).rev().find(|(_, o)| *o).map(|(k, _)| *k)
         };
-    }
-
-    fn start_filter(&mut self, text: String) {
-        self.filtering = true;
-        self.filter = text;
-        self.filter_focus = true;
-        self.scroll_top = 3;
     }
 
     pub fn invalidate_search(&mut self) {
@@ -224,287 +275,107 @@ impl Sidebar {
         if self.searching() {
             self.search(ui, env.library, env.translation, whole_words, env.theme, env.location, actions);
         } else {
-            // Typing over the list (with nothing else taking keys) starts filtering the books.
-            if !self.filtering && ui.ui_contains_pointer() && !ui.ctx().egui_wants_keyboard_input() {
-                let typed: String = ui.input(|i| {
-                    i.events
-                        .iter()
-                        .filter_map(|e| match e {
-                            egui::Event::Text(t) if i.modifiers.is_none() || i.modifiers.shift_only() => {
-                                Some(t.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect()
-                });
-                if typed.chars().any(char::is_alphanumeric) {
-                    self.start_filter(typed);
-                }
-            }
             self.source_list(ui, env, actions);
         }
     }
 
+    /// The source list: the study collections and pages. Books are chosen from the toolbar's
+    /// picker, translations in Settings.
     fn source_list(&mut self, ui: &mut Ui, env: &SidebarEnv<'_>, actions: &mut Vec<Action>) {
         let p = env.theme.palette();
         let study = env.study;
-        let meta = env.library.get(env.translation).map(|e| e.meta.clone());
-        let abbrev = meta.as_ref().map(|m| m.abbrev.clone()).unwrap_or_default();
-        let current_book = env.location.0.book();
-        let reading = env.page == crate::pages::Page::Reader;
-        if !reading {
-            // No reader to follow: the testaments it opened close, and reopen on return.
-            for t in 0..2 {
-                if self.auto_opened[t] {
-                    self.testaments[t] = false;
-                    self.auto_opened[t] = false;
-                }
-            }
-            self.revealed = None;
-        }
-        let reveal = reading && self.revealed != Some(current_book);
-        if reveal {
-            self.revealed = Some(current_book);
-            let t = usize::from(current_book >= FIRST_NT_BOOK);
-            if !self.testaments[t] {
-                self.testaments[t] = true;
-                self.auto_opened[t] = true;
-            }
-            if self.auto_opened[1 - t] {
-                self.testaments[1 - t] = false;
-                self.auto_opened[1 - t] = false;
-            }
-            self.expanded = Some(current_book);
-        }
-        if self.activity.0 != study.generation() {
-            let mut set = HashSet::new();
-            set.extend(study.highlights().into_iter().map(|(v, _)| v.chapter_idx()));
-            set.extend(study.notes().into_iter().map(|(v, _)| v.chapter_idx()));
-            self.activity = (study.generation(), set);
-        }
-        let book_name =
-            |b: BookId| meta.as_ref().map(|m| m.book_short(b).to_string()).unwrap_or_else(|| b.name().into());
-        let filter = self.filter.trim().to_lowercase();
-        let matches = |b: BookId| filter.is_empty() || book_name(b).to_lowercase().contains(&filter);
         let (nh, nn, nb) = study.counts();
-        let mut list = ScrollArea::vertical().auto_shrink(false).id_salt("source-list");
-        if self.scroll_top > 0 {
-            self.scroll_top -= 1;
-            list = list.vertical_scroll_offset(0.0);
-        }
-        list.show(ui, |ui| {
+        ScrollArea::vertical().auto_shrink(false).id_salt("source-list").show(ui, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 8 }).show(
                 ui,
                 |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    if self.filtering {
-                        if filter_field(ui, p, &mut self.filter, std::mem::take(&mut self.filter_focus)) {
-                            self.filtering = false;
-                            self.filter.clear();
-                        }
-                        if !env.recent.is_empty() {
-                            section(ui, p, "Recent", true);
-                            let ref_name = |b: BookId| {
-                                meta.as_ref()
-                                    .map(|m| m.ref_name(b).to_string())
-                                    .unwrap_or_else(|| b.ref_name().into())
-                            };
-                            for (i, (c, v)) in env.recent.iter().take(3).enumerate() {
-                                // Places are chapters, except a verse selected where the reader is now.
-                                let verse = env.selection.filter(|s| i == 0 && s.chapter_idx() == *c);
-                                let label = match verse {
-                                    Some(s) => format!("{} {}:{}", ref_name(c.book()), c.chapter(), s.verse),
-                                    None => format!("{} {}", ref_name(c.book()), c.chapter()),
-                                };
-                                let r = row(
-                                    ui,
-                                    p,
-                                    &Row {
-                                        icon: Some(crate::icons::clock),
-                                        icon_color: Some(p.ink_3),
-                                        label: &label,
-                                        trailing: Some(abbrev.clone()),
-                                        ..Row::default()
-                                    },
-                                );
-                                if r.clicked() {
-                                    actions.push(Action::Jump {
-                                        chapter: *c,
-                                        verse: Some(*v),
-                                        flash: *v > 1,
-                                    });
-                                }
-                            }
-                        }
-                    } else {
-                        section(ui, p, "Study", true);
-                        use crate::pages::Page;
-                        for (i, (kind, label, n, icon, page)) in [
-                            (
-                                StudyKind::Bookmarks,
-                                "Bookmarks",
-                                nb,
-                                icon_bookmark as IconFn,
-                                Some(Page::Bookmarks),
-                            ),
-                            (
-                                StudyKind::Highlights,
-                                "Highlights",
-                                nh,
-                                crate::icons::highlighter,
-                                Some(Page::Highlights),
-                            ),
-                            (StudyKind::Notes, "Notes", nn, crate::icons::note, Some(Page::Notes)),
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            let open = self.study_open[i];
-                            // Rows open their page; the chevron (shown on hover, or while open)
-                            // lists the most recent items in place.
-                            let next =
-                                Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ROW_HEIGHT));
-                            let hovered = ui.rect_contains_pointer(next);
-                            let selected = match page {
-                                Some(pg) => env.page == pg,
-                                None => self.study_selected == Some(kind),
-                            };
-                            let r = row(
-                                ui,
-                                p,
-                                &Row {
-                                    icon: Some(icon),
-                                    label,
-                                    count: (n > 0).then(|| n.to_string()),
-                                    disclosure: (hovered || open).then_some(open),
-                                    selected,
-                                    ..Row::default()
-                                },
-                            );
-                            let on_chevron = r
-                                .interact_pointer_pos()
-                                .is_some_and(|pos| pos.x > r.rect.right() - ROW_PAD - ICON_LANE - 4.0);
-                            if r.clicked() {
-                                match page {
-                                    Some(pg) if !on_chevron => actions.push(Action::OpenPage(pg)),
-                                    _ => self.toggle_study(kind),
-                                }
-                            }
-                            if open {
-                                self.study_items(ui, env, kind, actions);
-                            }
-                        }
-                    }
-
-                    if !self.filtering {
+                    section(ui, p, "Study", true);
+                    use crate::pages::Page;
+                    for (i, (kind, label, n, icon, page)) in [
+                        (
+                            StudyKind::Bookmarks,
+                            "Bookmarks",
+                            nb,
+                            icon_bookmark as IconFn,
+                            Some(Page::Bookmarks),
+                        ),
+                        (
+                            StudyKind::Highlights,
+                            "Highlights",
+                            nh,
+                            crate::icons::highlighter,
+                            Some(Page::Highlights),
+                        ),
+                        (StudyKind::Notes, "Notes", nn, crate::icons::note, Some(Page::Notes)),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let open = self.study_open[i];
+                        // Rows open their page; the chevron (shown on hover, or while open)
+                        // lists the most recent items in place.
+                        let next =
+                            Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ROW_HEIGHT));
+                        let hovered = ui.rect_contains_pointer(next);
+                        let selected = match page {
+                            Some(pg) => env.page == pg,
+                            None => self.study_selected == Some(kind),
+                        };
                         let r = row(
                             ui,
                             p,
                             &Row {
-                                icon: Some(crate::icons::history),
-                                label: "History",
-                                selected: env.page == crate::pages::Page::History,
-                                ..Row::default()
-                            },
-                        );
-                        if r.clicked() {
-                            actions.push(Action::OpenPage(crate::pages::Page::History));
-                        }
-                        let active = study.plans().iter().filter(|p| p.finished.is_none()).count();
-                        let r = row(
-                            ui,
-                            p,
-                            &Row {
-                                icon: Some(crate::icons::checklist),
-                                label: "Reading Plans",
-                                count: (active > 0).then(|| active.to_string()),
-                                selected: env.page == crate::pages::Page::Plans,
-                                ..Row::default()
-                            },
-                        );
-                        if r.clicked() {
-                            actions.push(Action::OpenPage(crate::pages::Page::Plans));
-                        }
-                        section(ui, p, "Library", false);
-                        let selected = env.page == crate::pages::Page::Translations;
-                        let r = row(
-                            ui,
-                            p,
-                            &Row {
-                                icon: Some(crate::icons::globe),
-                                label: "Translations",
-                                count: Some(env.library.entries().len().to_string()),
+                                icon: Some(icon),
+                                label,
+                                count: (n > 0).then(|| n.to_string()),
+                                disclosure: (hovered || open).then_some(open),
                                 selected,
                                 ..Row::default()
                             },
                         );
+                        let on_chevron = r
+                            .interact_pointer_pos()
+                            .is_some_and(|pos| pos.x > r.rect.right() - ROW_PAD - ICON_LANE - 4.0);
                         if r.clicked() {
-                            actions.push(Action::OpenPage(crate::pages::Page::Translations));
+                            match page {
+                                Some(pg) if !on_chevron => actions.push(Action::OpenPage(pg)),
+                                _ => self.toggle_study(kind),
+                            }
+                        }
+                        if open {
+                            self.study_items(ui, env, kind, actions);
                         }
                     }
-
-                    section(ui, p, "Books", false);
-                    for (t, (label, range)) in
-                        [("Old Testament", 0..FIRST_NT_BOOK.0), ("New Testament", FIRST_NT_BOOK.0..66)]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        let books: Vec<BookId> = range.clone().map(BookId).filter(|b| matches(*b)).collect();
-                        if books.is_empty() {
-                            continue;
-                        }
-                        let open = self.testaments[t] || !filter.is_empty();
-                        let r = row(
-                            ui,
-                            p,
-                            &Row {
-                                icon: Some(crate::icons::book),
-                                label,
-                                count: Some(books.len().to_string()),
-                                disclosure: Some(open),
-                                ..Row::default()
-                            },
-                        );
-                        if r.clicked() {
-                            self.testaments[t] = !open;
-                            self.auto_opened[t] = false;
-                        }
-                        if !open {
-                            continue;
-                        }
-                        for b in books {
-                            let name = book_name(b);
-                            let here = b == current_book && reading;
-                            let resp = row(
-                                ui,
-                                p,
-                                &Row {
-                                    label: &name,
-                                    indent: BOOK_INDENT - ROW_PAD,
-                                    count: here.then(|| b.chapters().to_string()),
-                                    selected: here,
-                                    ..Row::default()
-                                },
-                            );
-                            if here && reveal && !self.filtering {
-                                resp.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
-                            }
-                            if resp.clicked() {
-                                if b.chapters() == 1 {
-                                    actions.push(Action::Jump {
-                                        chapter: b.first_chapter(),
-                                        verse: None,
-                                        flash: false,
-                                    });
-                                } else {
-                                    self.expanded = if self.expanded == Some(b) { None } else { Some(b) };
-                                }
-                            }
-                            if self.expanded == Some(b) && b.chapters() > 1 {
-                                chapter_grid(ui, p, b, env.location.0, &self.activity.1, actions);
-                            }
-                        }
+                    let r = row(
+                        ui,
+                        p,
+                        &Row {
+                            icon: Some(crate::icons::history),
+                            label: "History",
+                            selected: env.page == crate::pages::Page::History,
+                            ..Row::default()
+                        },
+                    );
+                    if r.clicked() {
+                        actions.push(Action::OpenPage(crate::pages::Page::History));
                     }
+                    let active = study.plans().iter().filter(|p| p.finished.is_none()).count();
+                    let r = row(
+                        ui,
+                        p,
+                        &Row {
+                            icon: Some(crate::icons::checklist),
+                            label: "Reading Plans",
+                            count: (active > 0).then(|| active.to_string()),
+                            selected: env.page == crate::pages::Page::Plans,
+                            ..Row::default()
+                        },
+                    );
+                    if r.clicked() {
+                        actions.push(Action::OpenPage(crate::pages::Page::Plans));
+                    }
+                    self.recents(ui, env, actions);
                 },
             );
         });
@@ -1166,53 +1037,6 @@ pub(crate) fn list_item(ui: &mut Ui, p: &Palette, item: &ListItem) -> Response {
     resp
 }
 
-/// The type-to-filter field at the top of the source list. Returns `true` when filtering ends
-/// (Escape, or leaving the field empty).
-fn filter_field(ui: &mut Ui, p: &Palette, value: &mut String, focus: bool) -> bool {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
-    let field = Rect::from_min_size(rect.min, vec2(rect.width(), 28.0));
-    let id = egui::Id::new("filter-books");
-    let focused = ui.memory(|m| m.has_focus(id));
-    if focused {
-        ui.painter().rect_filled(field.expand(3.0), 11.0, p.focus);
-        ui.painter().rect_filled(field, 8.0, p.field);
-        ui.painter().rect_stroke(field, 8.0, egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
-    } else {
-        ui.painter().rect_filled(field, 8.0, p.fill);
-    }
-    let glass = Rect::from_min_size(pos2(field.left() + 10.0, field.center().y - 7.0), vec2(14.0, 14.0));
-    crate::icons::search(ui.painter(), glass, p.ink_3);
-    let edit_rect = Rect::from_min_max(
-        pos2(glass.right() + 6.0, field.top()),
-        pos2(field.right() - 10.0, field.bottom()),
-    );
-    // A child UI, so the text edit doesn't move this one's cursor (the row is already allocated).
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect));
-    let resp = child.add_sized(
-        edit_rect.size(),
-        egui::TextEdit::singleline(value)
-            .id(id)
-            .hint_text("Filter books")
-            .font(text::UI.font())
-            .frame(egui::Frame::NONE)
-            .margin(egui::Margin::ZERO)
-            .vertical_align(Align::Center)
-            .desired_width(edit_rect.width()),
-    );
-    if focus {
-        resp.request_focus();
-        // Keep what was typed to start filtering, with the cursor after it.
-        let end = egui::text::CCursor::new(value.chars().count());
-        let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
-        state.store(ui.ctx(), id);
-    }
-    let escape = resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape));
-    // Leaving the field empty ends filtering, but not when the window itself loses focus.
-    let left = resp.lost_focus() && ui.input(|i| i.focused);
-    escape || (left && value.trim().is_empty())
-}
-
 /// Highlight colour chips: "All", then one swatch per colour (`ds-02`).
 fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
@@ -1267,53 +1091,6 @@ fn section(ui: &mut Ui, p: &Palette, label: &str, first: bool) {
         text::CAPTION.font(),
         p.ink_3,
     );
-}
-
-/// The open book's chapters: 24 pt chips, the current one solid accent; a dot marks chapters
-/// with highlights or notes.
-fn chapter_grid(
-    ui: &mut Ui,
-    p: &Palette,
-    book: BookId,
-    current: ChapterIdx,
-    activity: &HashSet<ChapterIdx>,
-    actions: &mut Vec<Action>,
-) {
-    let n = book.chapters() as usize;
-    let cols = 7;
-    let rows = n.div_ceil(cols);
-    let h = 8.0 + rows as f32 * CHIP + (rows.saturating_sub(1)) as f32 * 4.0 + 8.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    for i in 0..n {
-        let (r, c) = (i / cols, i % cols);
-        let chip = Rect::from_min_size(
-            pos2(
-                rect.left() + CHIP_INDENT + c as f32 * (CHIP + CHIP_GAP),
-                rect.top() + 8.0 + r as f32 * (CHIP + 4.0),
-            ),
-            vec2(CHIP, CHIP),
-        );
-        let idx = ChapterIdx::new(book, (i + 1) as u8).unwrap();
-        let resp = ui.interact(chip, ui.id().with(("chapter", book.0, i)), Sense::click());
-        let here = idx == current;
-        if here {
-            ui.painter().circle_filled(chip.center(), CHIP / 2.0, p.accent);
-        } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
-            ui.painter().circle_filled(chip.center(), CHIP / 2.0, fill);
-        }
-        let (font, color) = if here {
-            (theme::ui_semibold(text::SMALL.size), p.on_accent)
-        } else {
-            (text::SMALL.font(), p.ink_2)
-        };
-        ui.painter().text(chip.center(), Align2::CENTER_CENTER, (i + 1).to_string(), font, color);
-        if !here && activity.contains(&idx) {
-            ui.painter().circle_filled(pos2(chip.center().x, chip.bottom() + 1.0), 2.0, p.accent);
-        }
-        if resp.clicked() {
-            actions.push(Action::Jump { chapter: idx, verse: None, flash: false });
-        }
-    }
 }
 
 fn group(n: usize) -> String {

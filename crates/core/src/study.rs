@@ -1,4 +1,5 @@
-//! Local study data: highlights, notes, bookmarks and settings, in one SQLite file.
+//! Local study data: highlights, notes, bookmarks, settings and Ask conversations, in one SQLite
+//! file.
 //!
 //! Everything is keyed by canonical verse reference (not by translation), so a highlight made
 //! while reading the KJV shows up in the WEB too. The tables are mirrored in memory — they hold
@@ -101,7 +102,29 @@ CREATE TABLE IF NOT EXISTS plans(
 CREATE TABLE IF NOT EXISTS plan_reads(
     plan TEXT NOT NULL, day INTEGER NOT NULL, passage INTEGER NOT NULL, at INTEGER NOT NULL,
     PRIMARY KEY(plan, day, passage));
+CREATE TABLE IF NOT EXISTS chats(
+    id INTEGER PRIMARY KEY, title TEXT NOT NULL, created INTEGER NOT NULL,
+    updated INTEGER NOT NULL, messages TEXT NOT NULL, api TEXT NOT NULL, seq INTEGER NOT NULL);
 ";
+
+/// An Ask conversation as Recents lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSummary {
+    pub id: i64,
+    pub title: String,
+    /// Unix seconds of the last answer.
+    pub updated: i64,
+}
+
+/// A saved Ask conversation: what the panel shows, and the API's own history (JSON, see
+/// [`assistant::Conversation`](crate::assistant::Conversation)) to carry on from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedChat {
+    pub id: i64,
+    pub title: String,
+    pub messages: Vec<crate::chat::Message>,
+    pub api: String,
+}
 
 /// A stretch of reading one chapter: when it started, for how long, and how far it got.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,6 +456,68 @@ impl StudyStore {
     /// Forgets reading history from `since` on (all of it for 0).
     pub fn clear_reading(&self, since: i64) -> Result<()> {
         self.conn.execute("DELETE FROM reading WHERE started >= ?1", [since])?;
+        Ok(())
+    }
+
+    /// Saved conversations, most recently answered first.
+    pub fn chats(&self) -> Vec<ChatSummary> {
+        let Ok(mut st) = self.conn.prepare_cached("SELECT id, title, updated FROM chats ORDER BY seq DESC")
+        else {
+            return Vec::new();
+        };
+        st.query_map([], |r| Ok(ChatSummary { id: r.get(0)?, title: r.get(1)?, updated: r.get(2)? }))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn chat(&self, id: i64) -> Option<SavedChat> {
+        let (title, messages, api): (String, String, String) = self
+            .conn
+            .query_row("SELECT title, messages, api FROM chats WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()
+            .ok()??;
+        Some(SavedChat { id, title, messages: serde_json::from_str(&messages).ok()?, api })
+    }
+
+    /// Saves a conversation, as a new one (`id` None) or over the one it continues. Returns its id.
+    pub fn save_chat(
+        &mut self,
+        id: Option<i64>,
+        title: &str,
+        messages: &[crate::chat::Message],
+        api: &str,
+    ) -> Result<i64> {
+        let messages = serde_json::to_string(messages)?;
+        let at = now();
+        // Order of saving, which the second-resolution times can't settle.
+        let seq: i64 = self.conn.query_row("SELECT IFNULL(MAX(seq), 0) + 1 FROM chats", [], |r| r.get(0))?;
+        let id = match id {
+            // One deleted while its answer was coming is saved again, as a new one.
+            Some(id)
+                if self.conn.execute(
+                    "UPDATE chats SET title = ?2, updated = ?3, messages = ?4, api = ?5, seq = ?6 WHERE id = ?1",
+                    params![id, title, at, messages, api, seq],
+                )? > 0 =>
+            {
+                id
+            }
+            _ => {
+                self.conn.execute(
+                    "INSERT INTO chats(title, created, updated, messages, api, seq) VALUES(?1, ?2, ?2, ?3, ?4, ?5)",
+                    params![title, at, messages, api, seq],
+                )?;
+                self.conn.last_insert_rowid()
+            }
+        };
+        self.generation += 1;
+        Ok(id)
+    }
+
+    pub fn delete_chat(&mut self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM chats WHERE id = ?1", [id])?;
+        self.generation += 1;
         Ok(())
     }
 
@@ -929,6 +1014,32 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let doy = (153 * mp + 2) / 5 + d as i64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+    use crate::chat::Message;
+
+    #[test]
+    fn chats_save_continue_list_and_delete() {
+        let mut s = StudyStore::open_in_memory().unwrap();
+        let first =
+            s.save_chat(None, "Who was Nicodemus?", &[Message::user("Who was Nicodemus?")], "[1]").unwrap();
+        let second = s.save_chat(None, "Born again", &[Message::user("Born again?")], "[2]").unwrap();
+        assert_ne!(first, second);
+        // Continuing the first moves it to the top and keeps its id.
+        let messages = [Message::user("Who was Nicodemus?"), Message::assistant("A Pharisee {{John 3:1}}.")];
+        assert_eq!(s.save_chat(Some(first), "Who was Nicodemus?", &messages, "[1,2]").unwrap(), first);
+        let ids: Vec<i64> = s.chats().iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![first, second]);
+        let saved = s.chat(first).unwrap();
+        assert_eq!(saved.messages, messages);
+        assert_eq!(saved.api, "[1,2]");
+        s.delete_chat(first).unwrap();
+        assert!(s.chat(first).is_none());
+        assert_eq!(s.chats().len(), 1);
+    }
 }
 
 #[cfg(test)]

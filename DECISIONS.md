@@ -220,7 +220,10 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   previous one above it.
 - **Floating source list.** The sidebar is a 256 pt panel inset 8 pt from the window's edges,
   holding the traffic lights and its own toggle in its header, then Study (bookmarks, highlights,
-  notes, expandable in place) and Books (testaments → books → a chapter grid with activity dots).
+  notes, expandable in place), History, Reading Plans and Recents (saved Ask conversations, kept
+  in the study database with the API's own history so a reopened one carries on). Books are
+  picked from the toolbar and translations managed in Settings, so neither is repeated in the
+  sidebar.
   Search moved to the toolbar's field; while it has a query the sidebar shows the results.
 - **First launch** opens a 960 × 680 window with the onboarding steps (translation, then theme and
   reading size); finishing them grows it to the reader's 1280 × 800. Settings saved before

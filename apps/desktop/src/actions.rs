@@ -75,6 +75,10 @@ pub enum Action {
     Compare,
     /// Open or close the Ask panel (⌘J).
     ToggleAsk,
+    /// Ask, with a conversation from Recents to carry on, or a new one.
+    OpenChat(i64),
+    NewChat,
+    DeleteChat(i64),
     /// Open Ask with the selected verses as its context.
     AskAboutSelection,
     ClearSelection,
