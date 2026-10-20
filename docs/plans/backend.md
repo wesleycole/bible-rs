@@ -178,8 +178,12 @@ submission.
   3. On the callback the app checks `state` and posts `code` and `code_verifier` to `/oauth/token`.
      It gets a **JWT access token** (one day) and a **refresh token** (Clerk's don't expire; revoked
      on sign-out).
-  4. The refresh token goes in the Keychain (`secrets.rs`; a 0600 file on Linux). The access token
-     stays in memory and refreshes on a 401 or shortly before it expires.
+  4. The refresh token and the access token with its expiry go in the Keychain as one item
+     (`secrets.rs`; a 0600 file on Linux), so a start inside the access token's life makes no
+     grant; a grant happens only within a minute of expiry or after a 401, and its answer is
+     written before the new token is used, because Clerk rotates the refresh token on every grant
+     and a process killed in between would otherwise leave a dead one. The UI and sync threads
+     share one session, which holds one grant at a time.
 
 ### Verification
 

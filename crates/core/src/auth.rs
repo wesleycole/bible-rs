@@ -2,8 +2,12 @@
 //!
 //! The desktop app uses Clerk as an OAuth 2.0 provider: a public client with PKCE (S256), the
 //! system browser, and a loopback redirect (`http://127.0.0.1:<port>/callback`, RFC 8252). The
-//! refresh token goes into the OS credential store ([`SecretStore`]); the short-lived access token
-//! stays in memory and is refreshed shortly before it expires, or once after the proxy answers 401.
+//! refresh token and the current access token, with its expiry, are kept together as one item in
+//! the OS credential store ([`SecretStore`]), so a process that starts inside the access token's
+//! life makes no token request at all. A grant happens only shortly before the token expires, or
+//! once after the proxy answers 401, and its answer is stored before the new token is used: Clerk
+//! rotates the refresh token on every grant, so a process killed between a grant and that write
+//! would leave a dead one behind.
 //!
 //! Requests ask a [`TokenSource`] for the bearer token, so the same client code works with a
 //! signed-in [`OAuthSession`] or, in development, a pasted [`StaticToken`].
@@ -11,10 +15,10 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::secrets::SecretStore;
@@ -25,7 +29,8 @@ pub const CLERK_URL: &str = "https://elegant-mink-67.clerk.accounts.dev";
 /// The "Linger Desktop" OAuth application's client id (public: PKCE, no secret).
 pub const CLIENT_ID: &str = "XDg0tXKW3CgO9rJy";
 pub const SCOPES: &str = "openid profile email offline_access";
-/// Where the refresh token is kept.
+/// Where the session is kept: a JSON [`Saved`], or (written before access tokens were kept) the
+/// bare refresh token.
 pub const REFRESH_KEY: &str = "clerk-refresh-token";
 /// A token pasted in from Settings in development builds.
 pub const DEV_TOKEN_KEY: &str = "dev-clerk-token";
@@ -390,6 +395,34 @@ pub fn sign_out(store: &SecretStore) -> Result<()> {
     revoked
 }
 
+/// The session as stored: both tokens in one item, so a write can't leave one without the other.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Saved {
+    refresh: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    access: Option<String>,
+    /// When `access` expires, Unix seconds.
+    #[serde(default)]
+    exp: u64,
+}
+
+impl Saved {
+    fn load(store: &SecretStore) -> Option<Self> {
+        let raw = store.get(REFRESH_KEY)?;
+        Some(serde_json::from_str(&raw).unwrap_or(Saved { refresh: raw, access: None, exp: 0 }))
+    }
+
+    /// The access token, if it has longer than [`EARLY`] left, with when to stop using it.
+    fn access(&self) -> Option<(String, Instant)> {
+        let left = Duration::from_secs(self.exp).checked_sub(unix_now())?.checked_sub(EARLY)?;
+        Some((self.access.clone()?, Instant::now() + left))
+    }
+}
+
+fn unix_now() -> Duration {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default()
+}
+
 /// A signed-in account: refreshes its access token as needed.
 pub struct OAuthSession {
     cfg: OAuthConfig,
@@ -421,21 +454,31 @@ impl OAuthSession {
         Some(Self { cfg, store, access: Mutex::new(None) })
     }
 
+    /// Stores a grant's answer, refresh and access token in one write, before the token is used.
     fn keep(&self, tokens: Tokens) -> Result<String> {
-        if let Some(r) = &tokens.refresh_token {
-            self.store.set(REFRESH_KEY, r)?;
-        }
-        let life = Duration::from_secs(tokens.expires_in.unwrap_or(3600));
-        let until = Instant::now() + life.saturating_sub(EARLY);
-        *self.access.lock().unwrap_or_else(|e| e.into_inner()) = Some((tokens.access_token.clone(), until));
+        self.keep_in(&mut self.access.lock().unwrap_or_else(|e| e.into_inner()), tokens)
+    }
+
+    fn keep_in(&self, access: &mut Option<(String, Instant)>, tokens: Tokens) -> Result<String> {
+        let refresh = match tokens.refresh_token {
+            Some(r) => r,
+            None => Saved::load(&self.store).context("sign in to Linger")?.refresh,
+        };
+        let life = tokens
+            .expires_in
+            .or_else(|| expires_at(&tokens.access_token).map(|exp| exp.saturating_sub(unix_now().as_secs())));
+        let exp = unix_now().as_secs() + life.unwrap_or(3600);
+        let saved = Saved { refresh, access: Some(tokens.access_token.clone()), exp };
+        self.store.set(REFRESH_KEY, &serde_json::to_string(&saved)?)?;
+        *access = saved.access();
         Ok(tokens.access_token)
     }
 
     /// Revokes the refresh token and forgets it. The local sign-out happens even if Clerk can't
     /// be reached.
     pub fn sign_out(&self) -> Result<()> {
-        let revoked = match self.store.get(REFRESH_KEY) {
-            Some(r) => revoke(&self.cfg, &r),
+        let revoked = match Saved::load(&self.store) {
+            Some(s) => revoke(&self.cfg, &s.refresh),
             None => Ok(()),
         };
         self.store.delete(REFRESH_KEY)?;
@@ -446,18 +489,32 @@ impl OAuthSession {
 
 impl TokenSource for OAuthSession {
     fn token(&self) -> Result<String> {
-        if let Some((t, until)) = &*self.access.lock().unwrap_or_else(|e| e.into_inner())
+        let mut access = self.access.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((t, until)) = &*access
             && Instant::now() < *until
         {
             return Ok(t.clone());
         }
-        self.refresh()
+        // A token stored by an earlier run, or by another process since, is used as it is.
+        if let Some((t, until)) = Saved::load(&self.store).and_then(|s| s.access()) {
+            *access = Some((t.clone(), until));
+            return Ok(t);
+        }
+        self.grant(&mut access)
     }
 
     fn refresh(&self) -> Result<String> {
-        let refresh = self.store.get(REFRESH_KEY).context("sign in to Linger")?;
-        let tokens = refresh_tokens(&self.cfg, &refresh)?;
-        self.keep(tokens)
+        self.grant(&mut self.access.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+impl OAuthSession {
+    /// Trades the stored refresh token for new tokens. The caller holds the access lock, so the
+    /// threads sharing this session (the UI and sync) never run two grants at once.
+    fn grant(&self, access: &mut Option<(String, Instant)>) -> Result<String> {
+        let saved = Saved::load(&self.store).context("sign in to Linger")?;
+        let tokens = refresh_tokens(&self.cfg, &saved.refresh)?;
+        self.keep_in(access, tokens)
     }
 }
 
@@ -617,7 +674,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(session.token().unwrap(), "at-1");
-        assert_eq!(store.get(REFRESH_KEY).as_deref(), Some("rt-1"));
+        assert_eq!(Saved::load(&store).unwrap().refresh, "rt-1");
         {
             let seen = seen.lock().unwrap();
             let (path, form) = &seen[0];
@@ -631,7 +688,7 @@ mod tests {
         // A 401 from the proxy refreshes; the rotated refresh token replaces the old one, and a
         // restored session (next launch) uses it.
         assert_eq!(session.refresh().unwrap(), "at-2");
-        assert_eq!(store.get(REFRESH_KEY).as_deref(), Some("rt-2"));
+        assert_eq!(Saved::load(&store).unwrap().refresh, "rt-2");
         let restored = OAuthSession::restore(cfg.clone(), store.clone()).unwrap();
         assert!(restored.refresh().unwrap_err().to_string().contains("no such grant"));
 
@@ -642,6 +699,45 @@ mod tests {
         let (path, form) = seen.last().unwrap();
         assert_eq!(path, "/oauth/token/revoke");
         assert_eq!(query_value(form, "token").as_deref(), Some("rt-2"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Each start of the app or the CLI is a new session restored from the store.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_start_within_the_tokens_life_makes_no_grant_and_one_after_it_makes_one() {
+        let (cfg, seen) = mock_clerk(|_, form| match query_value(form, "refresh_token").as_deref() {
+            Some("rt-1") => {
+                (200, r#"{"access_token":"at-2","refresh_token":"rt-2","expires_in":3600}"#.into())
+            }
+            _ => (400, r#"{"error":"invalid_grant"}"#.into()),
+        });
+        let dir = std::env::temp_dir().join(format!("linger-auth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SecretStore::new(&dir);
+        let save = |access: &str, exp: u64| {
+            let saved = Saved { refresh: "rt-1".into(), access: Some(access.into()), exp };
+            store.set(REFRESH_KEY, &serde_json::to_string(&saved).unwrap()).unwrap();
+        };
+        let start = || OAuthSession::restore(cfg.clone(), store.clone()).unwrap();
+        let now = unix_now().as_secs();
+
+        save("at-1", now + 3600);
+        assert_eq!(start().token().unwrap(), "at-1");
+        assert_eq!(start().token().unwrap(), "at-1");
+        assert!(seen.lock().unwrap().is_empty(), "no grant inside the token's life");
+
+        // Inside EARLY of expiry: one grant, stored, and the next start uses what it stored.
+        save("at-1", now + 30);
+        assert_eq!(start().token().unwrap(), "at-2");
+        assert_eq!(start().token().unwrap(), "at-2");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(Saved::load(&store).unwrap().refresh, "rt-2");
+
+        // A store written before access tokens were kept holds the bare refresh token.
+        store.set(REFRESH_KEY, "rt-1").unwrap();
+        assert_eq!(start().token().unwrap(), "at-2");
+        assert_eq!(seen.lock().unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
