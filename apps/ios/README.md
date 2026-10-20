@@ -1,8 +1,10 @@
 # Linger for iOS
 
-A SwiftUI app for iPhone and iPad on the same Rust core as the desktop app. It is at the
-proof-of-concept stage: it reads any bundled translation chapter by chapter and goes to a typed
-reference ("jn 3", "ps 23"). Sermon recording comes next.
+A SwiftUI app for iPhone and iPad on the same Rust core as the desktop app. It signs in
+through Clerk (development instance) and reads any bundled translation chapter by chapter, with a
+typed reference jump ("jn 3", "ps 23"). Study data and sync land next (M3a,
+[docs/plans/m3-ios-app.md](../../docs/plans/m3-ios-app.md)); Config.swift says where it signs in
+and syncs.
 
 ```
 apps/ios/
@@ -50,5 +52,5 @@ Run `scripts/build-ios-core.sh` again after changing `crates/core` or `crates/ff
 - Sermon recording (AVFoundation, background audio, microphone permission) and transcription.
 - API keys for online translations are stored in a file in the app's sandbox; on iOS they should
   move to the Keychain, as on macOS (`crates/core/src/secrets.rs`).
-- Highlights, notes and bookmarks (`StudyStore`) aren't exposed to Swift yet.
+- The app doesn't use `Study` and `LibrarySync` from the bindings yet.
 - Simulator builds for Intel Macs (an `x86_64-apple-ios` slice).

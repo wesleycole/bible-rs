@@ -9,6 +9,9 @@ options:
 packages:
   LingerCore:
     path: LingerCore
+  Clerk:
+    url: https://github.com/clerk/clerk-ios
+    from: 1.6.1
 targets:
   Linger:
     type: application
@@ -16,6 +19,16 @@ targets:
     sources: [Linger]
     dependencies:
       - package: LingerCore
+      - package: Clerk
+        product: ClerkKit
+      - package: Clerk
+        product: ClerkKitUI
+    entitlements:
+      path: Linger/Linger.entitlements
+      properties:
+        # Passkeys: Clerk's Frontend API is the relying party (clerk.trylinger.com from the cut-over).
+        com.apple.developer.associated-domains:
+          - webcredentials:elegant-mink-67.clerk.accounts.dev
     settings:
       base:
         PRODUCT_NAME: Linger
