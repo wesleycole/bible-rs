@@ -240,6 +240,23 @@ fn a_refused_change_shows_the_error_and_retry_sends_it() {
     assert_eq!(server.bookmark(VerseId::from(verse(1, 1))).unwrap().1, "x");
 }
 
+#[test]
+fn a_feed_the_server_refused_resumes_without_retry() {
+    let server = FakeServer::new();
+    let (mut a, mut b) = (Device::new("a14"), Device::new("b14"));
+    a.start(&server);
+    b.start(&server);
+    a.settle(&server);
+    b.settle(&server);
+    server.fail_feed("Server Error");
+    let sync = b.sync.as_ref().unwrap();
+    eventually(|| sync.status() == SyncStatus::Error("Server Error".into()));
+    a.store.set_highlight(verse(4, 7), Some(HighlightColor::Blue)).unwrap();
+    a.settle(&server);
+    b.settle(&server);
+    assert_eq!(b.store.highlight(verse(4, 7)), Some(HighlightColor::Blue));
+}
+
 /// study.sqlite as every release before M1 wrote it.
 fn old_file(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -15,8 +15,9 @@ on-device transcription (M5), reading position, plan and profile sync (M6).
 
 These gate M1's release, because they can't be fixed once users have libraries:
 
-1. **The production Clerk instance and `linger.app`.** Register `linger.app` and create the production
-   instance for the "Linger" application on `auth.linger.app`, with Apple, Google and email. A new
+1. **The production Clerk instance and `trylinger.com`.** Register `trylinger.com` and create the production
+   instance for the "Linger" application on `trylinger.com` (Frontend API `https://clerk.trylinger.com`;
+   the user chose `trylinger.com`, not `linger.app`), with Apple, Google and email. A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
@@ -72,8 +73,10 @@ These gate M1's release, because they can't be fixed once users have libraries:
    reading time from `Clock`. Purging is a `Purge` service (`lib/purge.ts`: an account's next step,
    the tombstone sweep, the orphaned-blob sweep) whose steps are Effect functions, not one
    `Effect.promise` around an imperative body. A denial is still returned as the `Denial` value the
-   proxy maps, not thrown. Still plain, and next: `entitlements.upsert`, `webhooks.*`,
-   `users.setStripeCustomer` / `billingProfile`, `maintenance.*` and `admin.*`.
+   proxy maps, not thrown. Every Convex function is on them now (`entitlements`, `webhooks`,
+   `users`, `maintenance` and `admin` too, with `effectInternalQuery` / `effectInternalAction` for
+   the operator's report and the crons that call the proxy), reading time from `Clock`; a server
+   test fails if a file outside `convex/lib` builds a function from Convex's own constructors.
 3. **The generated schema.** `crates/core/src/records.rs` defines every synced record and `VerseId`;
    `cargo xtask schema` writes `server/shared/records.ts` (an Effect `Schema` and a Convex validator
    per record), `server/convex/lib/canon.json` (verses per chapter), the cache's column list and core's
@@ -172,6 +175,9 @@ These gate M1's release, because they can't be fixed once users have libraries:
    Built for highlights and bookmarks (pass 1, October 20). The engine sends nothing until the
    feed has caught up once, so a device pulls before it uploads. The outbox goes strictly in
    order: a refused change holds the ones behind it, and the footer shows its error with Retry.
+   A feed the server answers with an error is subscribed again on the same backoff, so a passing
+   server failure mends itself rather than waiting for Retry or a restart; the error reads text
+   first, with Convex's request id after it ("Server Error (request 398131bce453f0af)").
    The `convex` crate reconnects on its own and never errors a subscription for want of a network,
    so "offline" comes from its `WebSocketState` channel (`Backend::connected`), and the engine
    backs off as a whole while offline rather than per change. The cache keeps tombstones (a
@@ -236,6 +242,11 @@ library consent sheet.
    sign-in before reading (`sign_in_required`).
 2. **Sync status** in the sidebar footer: a quiet "Synced", "3 changes waiting" when offline, and the error
    with Retry when something is refused.
+   Another device's edit reaches the `StudyStore` within a few ms of the feed page (traced: the
+   engine's `on_change`, then `refresh`, 1–2 ms apart). While the window is fully covered, macOS
+   reports it occluded and eframe runs only `logic`, which refreshes the store and keeps a 250 ms
+   tick so the first frame after it's uncovered paints; nothing draws while covered, so a window
+   capture of a covered window shows its last frame.
 3. **Notes** (`note_popover.rs`, `pages/notes.rs`): the popover edits the verse's own note item; the notes
    page lists note items, and a note carries every anchor `find_all` finds. "Edited on another device"
    when the feed replaces the open note, and a conflict copy shown beside the note it collided with.
@@ -302,6 +313,10 @@ measured offsets fall either side of ±0.5 s.
 - **Generated schema:** the drift test; a record added in Rust without regenerating fails CI; a value
   the Convex validator accepts is one the Effect `Schema` decodes, checked by property test over the
   generated pairs.
+  Built (`test/records.test.ts`): 300 values per record, generated from each Convex validator's own
+  description with a seeded generator. Departure: numbers are generated as integers, because Convex
+  has no integer type and every record number is one; a float would pass Convex and fail `Schema.Int`,
+  which only server code could write, and it writes integers.
 - **Core:** migrations from a copy of a real `study.sqlite`, including the verse-key rewrite; the
   outbox survives a restart and drains in order against `FakeBackend`; a feed page that replaces a
   record bumps `generation`; a conflict answer removes the outbox entry; `find_all` on prose with
@@ -313,6 +328,13 @@ measured offsets fall either side of ±0.5 s.
   Convex's execution time for `highlights.set` so the Effect overhead is watched.
 
 ## Done when
+
+Status (October 20, after the Effect conversion): the second, third and fourth hold; the first holds
+in the core (sync tests, both provers) and needs a timing with the window uncovered; for the fifth,
+offline reading, notes and Recents work, and start-up isn't yet compared with sync on. Still open
+from Tests: the desktop test of two `StudyStore`s against a local Convex backend, the 1,000-client
+load test, CI recording `highlights.set`'s execution time, and the start-up comparison. Parked: the
+production Clerk instance, production Convex and the proxy, waiting on `trylinger.com`'s DNS.
 
 - A note written on one Mac appears on another within a second, and survives editing on both while one
   is offline: the later edit wins, the earlier one is kept as a conflict copy, and the open editor says

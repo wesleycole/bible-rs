@@ -2,7 +2,7 @@
 
 Status: not started. Depends on: M2, and M6 for handoff. Design: [library.md](library.md#web-reader-and-ask).
 
-**Goal.** Sign in at `app.linger.app` in any modern browser, read the Bible, edit notes and highlights,
+**Goal.** Sign in at `app.trylinger.com` in any modern browser, read the Bible, edit notes and highlights,
 and ask questions over your library. No recording or capture on the web.
 
 ## Spike first: linger-core on WebAssembly
@@ -26,7 +26,7 @@ Two days, before any UI:
 
 - **Stack:** Vite, React and TypeScript; `ConvexProviderWithClerk`; Clerk's React SDK; the wasm package.
   React renders and holds no logic.
-  Deployed as its own Vercel project; `app.linger.app` from M9, a Vercel URL before.
+  Deployed as its own Vercel project; `app.trylinger.com` from M9, a Vercel URL before.
 - **Data:** the bundled translations and Ask data fetched on first use from the web project's static
   files and kept in Cache Storage, versioned by content hash.
 - **Reader:** chapter view in HTML and CSS with Literata, the same light, sepia and dark themes, verse

@@ -178,6 +178,8 @@ pub fn start(data_dir: &Path, backend: Box<dyn Backend>, tokens: Arc<dyn TokenSo
         offline: None,
         offline_until: None,
         offline_attempts: 0,
+        feed_retry: None,
+        feed_attempts: 0,
         connected: true,
         feed_error: None,
         clock_known: false,
@@ -303,6 +305,10 @@ struct Engine {
     /// While offline, no change is tried before this; it backs off with each failed attempt.
     offline_until: Option<Instant>,
     offline_attempts: u32,
+    /// The feed answered with an error: when to subscribe again, so a transient server failure
+    /// mends itself instead of waiting for Retry or a restart.
+    feed_retry: Option<Instant>,
+    feed_attempts: u32,
     connected: bool,
     feed_error: Option<String>,
     /// The clock offset was measured on this connection; changes wait for it, since they carry
@@ -370,6 +376,11 @@ impl Engine {
             if self.token_due.is_some_and(|due| Instant::now() >= due) {
                 self.authenticate();
             }
+            if self.feed_retry.is_some_and(|at| Instant::now() >= at) {
+                self.feed_retry = None;
+                let after = self.subscribed;
+                self.subscribe(after);
+            }
             self.publish();
             self.backend.park(self.timeout());
         }
@@ -419,7 +430,11 @@ impl Engine {
                 }
             }
             Event::Feed(_, Err(CallError::Offline(m))) => self.offline = Some(m),
-            Event::Feed(_, Err(CallError::Refused(m))) => self.feed_error = Some(m),
+            Event::Feed(_, Err(CallError::Refused(m))) => {
+                self.feed_error = Some(m);
+                self.feed_attempts += 1;
+                self.feed_retry = Some(Instant::now() + backoff(self.feed_attempts as i64));
+            }
             Event::Kick => {}
             Event::Retry => {
                 let _ = cache::retry_all(&self.conn);
@@ -460,6 +475,7 @@ impl Engine {
         }
         match serde_json::from_value::<Changes>(value)? {
             Changes::Page { records, seq, .. } => {
+                self.feed_attempts = 0;
                 if cache::apply_page(&mut self.conn, &records, seq)? > 0 {
                     self.data_changed = true;
                     self.fetch_due = true;
@@ -641,6 +657,9 @@ impl Engine {
         if let Some(due) = self.token_due {
             t = t.min(due.saturating_duration_since(Instant::now()));
         }
+        if let Some(at) = self.feed_retry {
+            t = t.min(at.saturating_duration_since(Instant::now()));
+        }
         t
     }
 
@@ -776,6 +795,15 @@ impl FakeServer {
         s.items.retain(|_, i| i.deleted_at.is_none());
         s.chats.retain(|_, c| c.deleted_at.is_none());
         s.deliver_all();
+    }
+
+    /// Every subscription ends with the server's error `m`, as a Convex query that throws does:
+    /// nothing more arrives on it.
+    pub fn fail_feed(&self, m: &str) {
+        let subscribers = std::mem::take(&mut self.lock().subscribers);
+        for (_, _, sink) in subscribers {
+            sink(Err(CallError::Refused(m.into())));
+        }
     }
 
     /// The scripted feed: delivers `result` to every subscription as is.
@@ -1404,9 +1432,28 @@ mod convex_backend {
     fn result(r: FunctionResult) -> Result<Value, CallError> {
         match r {
             FunctionResult::Value(v) => Ok(to_json(v)),
-            FunctionResult::ErrorMessage(m) => Err(CallError::Refused(m)),
+            FunctionResult::ErrorMessage(m) => Err(CallError::Refused(request_id_last(&m))),
             FunctionResult::ConvexError(e) => Err(CallError::Refused(e.message)),
         }
+    }
+
+    /// Convex puts "[Request ID: …]" before a server error's text; the person reads the text, so
+    /// the id goes after it, for a bug report.
+    pub(crate) fn request_id_last(m: &str) -> String {
+        match m.strip_prefix("[Request ID: ").and_then(|r| r.split_once("] ")) {
+            Some((id, text)) => format!("{text} (request {id})"),
+            None => m.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn a_server_error_reads_text_first() {
+        assert_eq!(
+            request_id_last("[Request ID: 398131bce453f0af] Server Error"),
+            "Server Error (request 398131bce453f0af)"
+        );
+        assert_eq!(request_id_last("Sign in to use your library."), "Sign in to use your library.");
     }
 
     /// Convex numbers are floats; whole ones become JSON integers, as the records' `u64`s expect.

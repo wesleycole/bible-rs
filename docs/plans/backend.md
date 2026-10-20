@@ -67,7 +67,7 @@ signed-in user can't turn Linger's account into a general-purpose Claude endpoin
 | `cargo xtask eval-ask` | Missing: M2 | |
 | Sentry, OTLP traces, spend alerts | Missing: M9 | |
 | `ASWebAuthenticationSession` on macOS (loopback works today) | Missing: M6 | `auth.rs` `TODO(macOS)` |
-| Production Clerk instance, `linger.app` domain | Missing: **M1, before any library data exists** | |
+| Production Clerk instance, `trylinger.com` domain | Missing: **M1, before any library data exists** | |
 
 ## Licensing shapes the product
 
@@ -159,7 +159,7 @@ submission.
 
 - **Application:** "Linger", separate from other apps, so users, branding and sign-in methods don't
   mix. It runs on Clerk's development instance (`elegant-mink-67.clerk.accounts.dev`) today. **M1
-  creates the production instance and the `linger.app` domain before any library data exists**: a new
+  creates the production instance and the `trylinger.com` domain before any library data exists**: a new
   instance gives every user a new `sub`, which would orphan their library. Accounts already on the
   development instance (testers) are remapped once by email with an admin script.
 - **Sign-in methods:** Sign in with Apple, Google and email code; passkeys if the plan allows them.
@@ -174,7 +174,7 @@ submission.
   2. The app generates `code_verifier`, `code_challenge` (S256) and `state`, and opens Clerk's
      `/oauth/authorize`. Today the redirect is a loopback listener on `127.0.0.1` on every platform;
      M6 moves macOS to `ASWebAuthenticationSession` with an Associated Domains callback
-     (`https://auth.linger.app/oauth/callback`, macOS 14.4+) and a `linger://oauth/callback` fallback.
+     (`https://auth.trylinger.com/oauth/callback`, macOS 14.4+) and a `linger://oauth/callback` fallback.
   3. On the callback the app checks `state` and posts `code` and `code_verifier` to `/oauth/token`.
      It gets a **JWT access token** (one day) and a **refresh token** (Clerk's don't expire; revoked
      on sign-out).
@@ -362,7 +362,7 @@ Authorization: Bearer <Clerk token>
    the Anthropic `error` event the client already handles.
 
 **CORS (M8):** the web app calls the proxy from the browser, so the proxy allows the web origin
-(`https://app.linger.app`, plus preview origins in development) on every route the web uses: `/v1/ask`,
+(`https://app.trylinger.com`, plus preview origins in development) on every route the web uses: `/v1/ask`,
 `/v1/me`, `/v1/billing/stripe/checkout`, `/v1/billing/stripe/portal` and `DELETE /v1/account`.
 
 ### Model routing and switching
@@ -585,7 +585,7 @@ privacy labels and consent sheets follow it.
 
 | | Production | Development |
 |---|---|---|
-| Vercel | `linger-api` (`https://linger-api.vercel.app`; `api.linger.app` from M9), deployed with the Vercel CLI | `pnpm dev` on `127.0.0.1:3000`; preview deployments |
+| Vercel | `linger-api` (`https://linger-api.vercel.app`; `api.trylinger.com` from M9), deployed with the Vercel CLI | `pnpm dev` on `127.0.0.1:3000`; preview deployments |
 | Clerk | the production instance, from M1 | development instance |
 | Convex | project `linger`, deployment `expert-rabbit-665` | a dev deployment per developer (`npx convex dev`), or the anonymous local backend |
 | Stripe | live | test |

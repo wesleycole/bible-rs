@@ -2335,8 +2335,7 @@ pub(crate) mod cache {
         tx.execute(
             &format!(
                 "INSERT INTO {table}(verse, {column}, created, updated, seq, deleted) VALUES(?1, ?2, ?3, ?7, ?4, ?5)
-                 ON CONFLICT(verse) DO UPDATE SET {column} = CASE WHEN excluded.deleted = 1 THEN {column}
-                     ELSE excluded.{column} END,
+                 ON CONFLICT(verse) DO UPDATE SET {column} = excluded.{column},
                    created = CASE WHEN ?6 IS NOT NULL OR deleted = 1 THEN excluded.created ELSE created END,
                    updated = excluded.updated, seq = excluded.seq, deleted = excluded.deleted",
                 table = kind.table()

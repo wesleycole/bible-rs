@@ -152,7 +152,11 @@ impl Onboarding {
             cx,
             top + 204.0,
             24.0,
-            "Just the Bible — fast, beautifully typeset, and kept on this Mac.",
+            if cfg!(target_os = "macos") {
+                "Just the Bible — fast, beautifully typeset, and kept on this Mac."
+            } else {
+                "Just the Bible — fast, beautifully typeset, and kept on this computer."
+            },
             theme::ui_font(15.0),
             p.ink_2,
             0.0,

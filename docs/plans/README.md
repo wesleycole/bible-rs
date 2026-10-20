@@ -31,7 +31,7 @@ on top of them.
 
 | | Milestone | Delivers | Depends on |
 |---|---|---|---|
-| M1 | [The library foundation](m1-library-foundation.md) | The production Clerk instance and `linger.app` first; Effect inside Convex, the record schema generated from Rust, the sync engine in core behind `LibraryBackend`, the desktop on it, migration of notes, highlights, bookmarks and Recents | |
+| M1 | [The library foundation](m1-library-foundation.md) | The production Clerk instance and `trylinger.com` first; Effect inside Convex, the record schema generated from Rust, the sync engine in core behind `LibraryBackend`, the desktop on it, migration of notes, highlights, bookmarks and Recents | |
 | M1b | [Sermons on Convex](m1b-sermons-on-convex.md) | One AAC encoder and one M4A muxer in core, parts for crash safety, the transcription workflow in Convex, recordings migrated, Pro audio kept, Vercel Blob gone | M1 |
 | M2 | [Search and Ask over the library](m2-search-and-ask.md) | Chunks, the digest step and its anchors, `library.search`, contract `ask/5`, citations, the reader's library marks, export, `cargo xtask eval-ask` | M1, M1b |
 | M3 | [The iOS app](m3-ios-app.md) | Sign-in, sync, the reader with notes and highlights, Ask, Recents, StoreKit, account deletion | M1, M2 |
@@ -40,7 +40,7 @@ on top of them.
 | M6 | [The Mac as a capture device, and handoff](m6-mac-capture-and-handoff.md) | Continuity Camera, drag-and-drop, marks on the Mac, reading position and plan sync, `ASWebAuthenticationSession` | M4 |
 | M7 | [Outside sources](m7-outside-sources.md) | Public-domain commentaries, reference works and confessions in shared tables; contract `ask/6` | M2 |
 | M8 | [Web](m8-web.md) | The reader and Ask in the browser, on `linger-core` compiled to wasm | M2 (and M6 for handoff) |
-| M9 | [Launch](m9-launch.md) | `api.` and `app.linger.app`, observability, legal answers, privacy page, App Store, Mac and web releases | all |
+| M9 | [Launch](m9-launch.md) | `api.` and `app.trylinger.com`, observability, legal answers, privacy page, App Store, Mac and web releases | all |
 
 M7 and M8 can run alongside M3–M6. Each milestone ships to `main` and to users as it lands. The one
 exception is book-page capture (M4 on iOS, M6 on the Mac), which stays out of public builds behind a

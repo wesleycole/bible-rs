@@ -68,7 +68,7 @@ translations), and that the app launches to text as fast as now.
 ## project.yml
 
 - Capabilities: Sign in with Apple, Keychain sharing (for Clerk), In-App Purchase, and Associated Domains
-  for `auth.linger.app` (which exists from M1) if Clerk's iOS SDK needs it.
+  for `auth.trylinger.com` (which exists from M1) if Clerk's iOS SDK needs it.
 - Usage descriptions arrive with the features that need them (camera and photo library in M4,
   microphone in M5).
 - The deployment target stays iOS 17; SpeechTranscriber (M5) is used only on iOS 26 and later.

@@ -7,10 +7,10 @@ download, and on the web, with the legal, privacy and operational work done.
 
 ## Accounts and domains
 
-- **`linger.app`** (registered in M1, with `auth.linger.app` for Clerk): add `api.linger.app` for the proxy,
-  `app.linger.app` for the web, and the marketing site and privacy page.
+- **`trylinger.com`** (registered in M1, with `auth.trylinger.com` for Clerk): add `api.trylinger.com` for the proxy,
+  `app.trylinger.com` for the web, and the marketing site and privacy page.
 - **Clerk** already runs on its production instance (M1). Add passkeys if the plan allows them, and point
-  `API_URL` (`api.rs`), the iOS and web configs at `api.linger.app`.
+  `API_URL` (`api.rs`), the iOS and web configs at `api.trylinger.com`.
 - **Convex:** confirm the production deployment's region and plan, and set usage alerts.
 - **Vercel:** connect `linger-api` to Git so `main` deploys, and add the web project.
 
@@ -40,7 +40,7 @@ download, and on the web, with the legal, privacy and operational work done.
   recording consent and the subscription terms; screenshots of the reader, Ask and capture.
 - **macOS:** a notarized release with `scripts/release-macos.sh`, the new entitlements (camera access is
   not needed for Continuity Camera), and release notes.
-- **Web:** `app.linger.app` live, linked from the site.
+- **Web:** `app.trylinger.com` live, linked from the site.
 - **README and screenshots** describe the library, not "in progress".
 
 ## After launch

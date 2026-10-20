@@ -39,7 +39,7 @@ and ask about it; move between devices and pick up where you were.
 ## Sign-in on macOS
 
 Move the desktop's OAuth redirect to `ASWebAuthenticationSession` (`objc2-authentication-services`) with
-the Associated Domains callback `https://auth.linger.app/oauth/callback` (the domain exists from M1) on
+the Associated Domains callback `https://auth.trylinger.com/oauth/callback` (the domain exists from M1) on
 macOS 14.4 and later, and the `linger://oauth/callback` custom scheme before that
 ([backend.md](backend.md#clerk)). Linux keeps the loopback redirect.
 
