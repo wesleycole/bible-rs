@@ -3,18 +3,23 @@ import XCTest
 /// Signs in through Clerk's own sheet on the development instance as its existing test user, whose
 /// email code is 424242 without any mail sent (server/scripts/clerk-test-token.ts signs in the
 /// same user), and lands in the reader. Starts signed out: on a simulator that has passed it
-/// before, run `xcrun simctl keychain <device> reset` first.
+/// before, run `xcrun simctl keychain <device> reset` (or `erase`) first.
 final class SignInTests: XCTestCase {
     func testSigningInOpensTheReader() {
         let app = XCUIApplication()
         app.launch()
         app.buttons["Sign in"].tap()
 
-        let email = app.textFields["clerk.auth.start.identifier"]
+        // Until it has focus, an empty field shows only as its label, so match the identifier on any
+        // element; once focused it is a text field, holding the address Clerk remembers, if any.
+        let address = "amp+clerk_test@example.com"
+        let email = app.descendants(matching: .any)["clerk.auth.start.identifier"].firstMatch
         XCTAssertTrue(email.waitForExistence(timeout: 15), "Clerk's sign-in sheet didn't open")
-        // Clerk fills in the last address used on this device: select it all, so typing replaces it.
-        email.tap(withNumberOfTaps: 3, numberOfTouches: 1)
-        email.typeText("amp+clerk_test@example.com")
+        email.tap()
+        let remembered = (app.textFields["clerk.auth.start.identifier"].value as? String) ?? ""
+        if remembered != address {
+            app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: remembered.count) + address)
+        }
         app.buttons["clerk.auth.start.continue"].tap()
 
         // The development instance offers this user's password first; take the email code.
