@@ -260,6 +260,14 @@ pub struct BibleApp {
     settings_ui: Option<SettingsUi>,
     /// The Linger account (Ask and cloud transcripts need one).
     pub account: crate::account::Account,
+    /// The library's sync engine, running while signed in, from the second frame on; and the flag
+    /// it sets when the cache changed, for `StudyStore::refresh`.
+    pub sync: Option<linger_core::sync::SyncHandle>,
+    sync_dirty: Arc<std::sync::atomic::AtomicBool>,
+    /// Why the engine couldn't start, if it couldn't (shown in the sidebar footer).
+    sync_error: Option<String>,
+    /// Screenshots: the footer's status without an engine (`sync:` demo step).
+    demo_sync: Option<linger_core::sync::SyncStatus>,
     shortcuts_open: bool,
     shortcuts_overlay: crate::shortcuts_overlay::ShortcutsOverlay,
     /// The compact toolbar's More menu: open it next frame (demo), and its keyboard item.
@@ -411,6 +419,10 @@ impl BibleApp {
             ask_shown: 0.0,
             ask_leaving: None,
             account,
+            sync: None,
+            sync_dirty: Arc::default(),
+            sync_error: None,
+            demo_sync: None,
             settings_ui: None,
             shortcuts_open: false,
             shortcuts_overlay: Default::default(),
@@ -1101,7 +1113,17 @@ impl BibleApp {
             }
             Action::SignIn => self.account.sign_in(),
             Action::CancelSignIn => self.account.cancel_sign_in(),
-            Action::SignOut => self.account.sign_out(),
+            Action::SignOut => {
+                // Changes the library hasn't received yet go first (`library_sync` finishes).
+                self.account.leaving = Some(self.study.pending_changes());
+            }
+            Action::SignOutNow => self.finish_sign_out(ctx),
+            Action::RetrySync => {
+                self.sync_error = None;
+                if let Some(sync) = &self.sync {
+                    sync.retry();
+                }
+            }
             Action::RefreshAccount => self.account.refresh(),
             Action::Upgrade { yearly } => self.account.upgrade(yearly),
             Action::ManageSubscription => self.account.manage(),
@@ -1277,6 +1299,21 @@ impl BibleApp {
                     ),
                     _ => self.account.demo(me("free"), None, None),
                 }
+            }
+            // `sync:<synced|syncing|offline|error>`: the sidebar footer in that state, without a
+            // server; `sync:leaving` is Settings › Account waiting to sign out.
+            "sync" => {
+                use linger_core::sync::SyncStatus;
+                self.demo_sync = Some(match arg {
+                    "syncing" => SyncStatus::Syncing(2),
+                    "offline" => SyncStatus::Offline(3),
+                    "error" => SyncStatus::Error("Your library is full. Free up space or upgrade.".into()),
+                    "leaving" => {
+                        self.account.leaving = Some(3);
+                        SyncStatus::Syncing(3)
+                    }
+                    _ => SyncStatus::Synced,
+                });
             }
             // `sign-in[:<waiting|error>]`: the sign-in screen, signed out.
             "sign-in" => {
@@ -2506,6 +2543,64 @@ fn translation_menu(ui: &mut Ui, library: &Library, settings: &Settings, actions
 }
 
 impl BibleApp {
+    /// Starts the sync engine once the first frame is up and the account is signed in, stops it
+    /// when it isn't, picks up what it wrote, and finishes a sign-out once the outbox is empty.
+    fn library_sync(&mut self, ctx: &egui::Context) {
+        use linger_core::sync::{self, ConvexBackend};
+        use std::sync::atomic::Ordering;
+        let tokens = self.account.api().map(|a| a.tokens());
+        match (&self.sync, tokens) {
+            (None, Some(tokens)) if self.sync_error.is_none() && !crate::offscreen() => {
+                let started = ConvexBackend::new(&linger_core::api::convex_url())
+                    .and_then(|b| sync::start(&self.data_dir, Box::new(b), tokens));
+                match started {
+                    Ok(handle) => {
+                        let (ctx, dirty) = (ctx.clone(), self.sync_dirty.clone());
+                        handle.on_change(move || {
+                            dirty.store(true, Ordering::Relaxed);
+                            ctx.request_repaint();
+                        });
+                        self.study.on_outbox(handle.notifier());
+                        self.sync = Some(handle);
+                    }
+                    Err(e) => self.sync_error = Some(format!("Couldn't start syncing: {e:#}")),
+                }
+            }
+            (Some(_), None) => {
+                // The session ended: stop, keeping the cache and anything still waiting.
+                self.sync = None;
+                self.study.on_outbox(|| {});
+            }
+            _ => {}
+        }
+        if self.sync_dirty.swap(false, Ordering::Relaxed) {
+            match self.study.refresh() {
+                Ok(true) => ctx.request_repaint(),
+                Ok(false) => {}
+                Err(e) => self.sync_error = Some(format!("{e:#}")),
+            }
+        }
+        if self.account.leaving.is_some() && self.demo_sync.is_none() {
+            let waiting = self.study.pending_changes();
+            if waiting == 0 || self.sync.is_none() {
+                self.finish_sign_out(ctx);
+            } else {
+                self.account.leaving = Some(waiting);
+            }
+        }
+    }
+
+    /// Signs out and forgets the library's cache, so nothing of the account stays on this Mac.
+    fn finish_sign_out(&mut self, ctx: &egui::Context) {
+        self.sync = None;
+        self.sync_error = None;
+        self.study.on_outbox(|| {});
+        if let Err(e) = self.study.clear_library() {
+            self.toast(ctx, format!("Couldn't clear the library from this Mac: {e:#}"));
+        }
+        self.account.sign_out();
+    }
+
     /// The end of every frame: window drag areas, actions, persistence and startup bookkeeping.
     fn end_frame(
         &mut self,
@@ -2583,6 +2678,7 @@ impl BibleApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+        self.library_sync(ctx);
         if let Some(sp) = &mut self.scroll_probe {
             if self.startup.frames > 3 {
                 sp.frames.push(frame_start.elapsed().as_secs_f64() * 1000.0);
@@ -2749,7 +2845,22 @@ impl eframe::App for BibleApp {
                     }
                     // The toggle in its header is the toolbar's (see `sidebar_toggle`), which follows
                     // the panel's edge.
-                    let content = egui::Rect::from_min_max(panel.min + vec2(0.0, SIDEBAR_HEADER), panel.max);
+                    let mut content =
+                        egui::Rect::from_min_max(panel.min + vec2(0.0, SIDEBAR_HEADER), panel.max);
+                    let status = self.sync.as_ref().map(|s| s.status()).or(self.demo_sync.clone());
+                    let status = match (&self.sync_error, &status) {
+                        (Some(e), _) => Some(Err(e.as_str())),
+                        (None, Some(s)) => Some(Ok(s)),
+                        (None, None) => None,
+                    };
+                    if let Some(status) = status {
+                        let footer = egui::Rect::from_min_max(
+                            egui::pos2(content.left(), content.bottom() - crate::sidebar::FOOTER),
+                            content.max,
+                        );
+                        content.max.y = footer.top();
+                        crate::sidebar::sync_footer(ui, p, footer, status, &mut actions);
+                    }
                     let mut child = ui.new_child(
                         egui::UiBuilder::new()
                             .max_rect(content)

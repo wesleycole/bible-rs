@@ -11,7 +11,8 @@
 //! linger record [--source mic|system] [--seconds N]   (Enter stops)
 //! linger ask "what does born of water mean?" [--at "jn 3:5"] [--translation kjv] [--deep]
 //! linger transcribe [<recording-id>]   (the latest untranscribed recording by default)
-//! linger signin | signout | account    (Linger's account, for Ask and cloud transcripts)
+//! linger signin | signout [--force] | account    (Linger's account, for Ask and cloud transcripts)
+//! linger sync [--wait] [--timeout 120]   (sends local changes, pulls the library; prints the cursor)
 //! linger sermons
 //! linger sermon <recording-id> [--title "…"] [--preacher "…"] [--from "…"]   (shows or sets details)
 //! ```
@@ -63,7 +64,8 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         "ask" => ask(rest, data_dir),
         "transcribe" => transcribe(rest, data_dir),
         "signin" => signin(data_dir),
-        "signout" => signout(data_dir),
+        "signout" => signout(rest, data_dir),
+        "sync" => sync(rest, data_dir),
         "account" => account(data_dir),
         "sermons" => sermons(data_dir),
         "sermon" => sermon(rest, data_dir),
@@ -77,7 +79,7 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
                 include_str!("cli.rs")
                     .lines()
                     .skip(3)
-                    .take(15)
+                    .take(16)
                     .map(|l| l.trim_start_matches("//! "))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -349,12 +351,45 @@ fn signin(data_dir: &Path) -> Result<()> {
     account(data_dir)
 }
 
-fn signout(data_dir: &Path) -> Result<()> {
+/// Signs out and forgets the library's cache; refuses while changes are waiting, unless `--force`.
+fn signout(rest: &[String], data_dir: &Path) -> Result<()> {
+    let mut study = StudyStore::open(&data_dir.join("study.sqlite"))?;
+    let waiting = study.pending_changes();
+    if waiting > 0 && !rest.iter().any(|a| a == "--force") {
+        bail!(
+            "{waiting} changes haven't reached your library yet; run `linger sync --wait` first, or \
+             `linger signout --force` to lose them"
+        );
+    }
+    study.clear_library()?;
     let store = linger_core::secrets::SecretStore::new(data_dir);
     if let Err(e) = linger_core::auth::sign_out(&store) {
         eprintln!("Signed out on this device ({e:#}).");
     } else {
         eprintln!("Signed out.");
+    }
+    Ok(())
+}
+
+/// Sends what is waiting and pulls the library, then prints the feed's cursor. `--wait` is the
+/// only mode: it returns once the outbox is empty and the feed is caught up, or fails at the
+/// timeout with the engine's status.
+fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
+    use linger_core::sync::{self, ConvexBackend};
+    let store = linger_core::secrets::SecretStore::new(data_dir);
+    let tokens = linger_core::auth::saved(&store).context("not signed in; run `linger signin`")?;
+    let url = linger_core::api::convex_url();
+    let handle = sync::start(data_dir, Box::new(ConvexBackend::new(&url)?), tokens)?;
+    let secs =
+        flag(rest, "--timeout").map(|s| s.parse()).transpose().context("--timeout <seconds>")?.unwrap_or(120);
+    let cursor = handle
+        .wait_idle(std::time::Duration::from_secs(secs))
+        .map_err(|status| anyhow::anyhow!("not synced after {secs} s: {status:?}"))?;
+    let study = StudyStore::open(&data_dir.join("study.sqlite"))?;
+    let (h, _, b) = study.counts();
+    println!("synced with {url}: cursor {cursor}, {h} highlights, {b} bookmarks");
+    for c in study.conflicts() {
+        println!("conflict on {} {}: kept {} over this device's {}", c.kind, c.verse, c.theirs, c.mine);
     }
     Ok(())
 }

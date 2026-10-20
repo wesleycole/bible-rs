@@ -15,7 +15,8 @@ name = "linger"
 path = "src/main.rs"
 
 [dependencies]
-linger-core.workspace = true
+# The library syncs through Convex (docs/plans/library.md, "The sync engine").
+linger-core = { workspace = true, features = ["convex"] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

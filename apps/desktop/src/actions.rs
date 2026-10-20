@@ -119,6 +119,10 @@ pub enum Action {
     SignIn,
     CancelSignIn,
     SignOut,
+    /// Sign out without waiting for changes the library hasn't received (they are lost).
+    SignOutNow,
+    /// Try the library's waiting changes again (the sidebar footer's Retry).
+    RetrySync,
     RefreshAccount,
     Upgrade {
         yearly: bool,

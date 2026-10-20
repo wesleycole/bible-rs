@@ -24,6 +24,8 @@ pub struct Account {
     /// Checkout or the portal is open in the browser: look again when the window has focus back.
     awaiting_browser: bool,
     was_focused: bool,
+    /// Signing out, waiting for this many changes to reach the library first.
+    pub leaving: Option<usize>,
     /// Calls in flight; results of an abandoned sign-in (an older `attempt`) are dropped.
     pending: usize,
     attempt: u64,
@@ -53,6 +55,7 @@ impl Account {
             error: None,
             awaiting_browser: false,
             was_focused: true,
+            leaving: None,
             pending: 0,
             attempt: 0,
             tx,
@@ -102,6 +105,7 @@ impl Account {
     }
 
     pub fn sign_out(&mut self) {
+        self.leaving = None;
         self.api = None;
         self.me = None;
         self.error = None;

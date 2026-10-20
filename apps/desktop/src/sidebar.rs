@@ -13,6 +13,7 @@ use linger_core::books::{BookId, ChapterIdx, FIRST_NT_BOOK, VerseRef};
 use linger_core::library::Library;
 use linger_core::search::{Query, Scope};
 use linger_core::study::{HighlightColor, StudyStore};
+use linger_core::sync::SyncStatus;
 
 use crate::actions::{Action, ExportKind, SidebarTab};
 use crate::theme::{self, Palette, Theme, text};
@@ -1080,6 +1081,54 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
 
 /// A section header: 11 pt semibold tertiary text, 8 pt below the previous row (16 for later
 /// sections).
+/// The sidebar footer's height, when the library syncs.
+pub const FOOTER: f32 = 32.0;
+
+/// The sidebar footer: the library's sync status. Quiet when synced, the count waiting when
+/// offline, and the error with Retry when something was refused.
+pub fn sync_footer(
+    ui: &mut Ui,
+    p: &Palette,
+    rect: Rect,
+    status: Result<&SyncStatus, &str>,
+    actions: &mut Vec<Action>,
+) {
+    let waiting = |n: usize| format!("{n} change{} waiting", if n == 1 { "" } else { "s" });
+    let (label, color, retry) = match status {
+        Ok(SyncStatus::Synced) => ("Synced".to_string(), p.ink_3, false),
+        Ok(SyncStatus::Syncing(0)) => ("Syncing…".to_string(), p.ink_3, false),
+        Ok(SyncStatus::Syncing(n)) => (format!("Syncing · {}", waiting(*n)), p.ink_3, false),
+        Ok(SyncStatus::Offline(0)) => ("Offline".to_string(), p.ink_3, false),
+        Ok(SyncStatus::Offline(n)) => (format!("Offline · {}", waiting(*n)), p.ink_2, false),
+        Ok(SyncStatus::SignedOut) => return,
+        Ok(SyncStatus::Error(e)) => (e.clone(), p.danger, true),
+        Err(e) => (e.to_string(), p.danger, true),
+    };
+    let painter = ui.painter_at(rect);
+    painter.hline(rect.x_range().shrink(LIST_INSET), rect.top() + 0.5, egui::Stroke::new(1.0, p.separator));
+    let (left, mut right, cy) =
+        (rect.left() + LIST_INSET + ROW_PAD, rect.right() - LIST_INSET - ROW_PAD, rect.center().y);
+    // Both laid out the same way, so they share a baseline.
+    let line = |text: &str, color, width: f32| {
+        painter.layout_job(wrapped(text, text::CAPTION.font(), 16.0, color, width, 1))
+    };
+    if retry {
+        let galley = line("Retry", p.accent, f32::INFINITY);
+        let w = galley.size().x;
+        let hit = Rect::from_min_max(pos2(right - w - 4.0, rect.top()), pos2(right + 4.0, rect.bottom()));
+        let resp = ui
+            .interact(hit, ui.id().with("sync-retry"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        painter.galley(pos2(right - w, cy - galley.size().y / 2.0), galley, p.accent);
+        if resp.clicked() {
+            actions.push(Action::RetrySync);
+        }
+        right -= w + GAP;
+    }
+    let galley = line(&label, color, (right - left).max(0.0));
+    painter.galley(pos2(left, cy - galley.size().y / 2.0), galley, color);
+}
+
 fn section(ui: &mut Ui, p: &Palette, label: &str, first: bool) {
     let (top, h) = if first { (8.0, 28.0) } else { (16.0, 36.0) };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());

@@ -566,10 +566,22 @@ impl SettingsUi {
             },
             Some(_) => "Linger Free".into(),
         };
+        // Signing out waits for changes the library hasn't received, or goes now if asked.
+        let (plan, sign_out, action) = match account.leaving {
+            Some(n) => (
+                format!(
+                    "Sending {n} change{} to your library before signing out…",
+                    if n == 1 { "" } else { "s" }
+                ),
+                "Sign Out Anyway",
+                Action::SignOutNow,
+            ),
+            None => (plan, "Sign Out", Action::SignOut),
+        };
         rows_card(ui, p, &[56.0], |ui, _, r| {
             let (right, cy) = (r.right() - 16.0, r.center().y);
             row_label(ui, p, r, who, Some(&plan));
-            let (b, resp) = Button::new(Kind::Secondary, "Sign Out").small().show_right(
+            let (b, resp) = Button::new(Kind::Secondary, sign_out).small().show_right(
                 ui,
                 p,
                 right,
@@ -577,7 +589,7 @@ impl SettingsUi {
                 ui.id().with("sign-out"),
             );
             if resp.clicked() {
-                actions.push(Action::SignOut);
+                actions.push(action.clone());
             }
             if let Some(m) = me {
                 let (label, kind) = if m.is_pro() {
