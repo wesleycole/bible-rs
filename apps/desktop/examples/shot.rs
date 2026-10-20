@@ -38,7 +38,12 @@ fn main() {
         .and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))
         .unwrap_or((1280.0, 800.0));
     if std::env::var_os("LINGER_OFFSCREEN").is_none() {
-        eprintln!("set LINGER_OFFSCREEN=1 (and LINGER_BACKGROUND=1) so the app lays out as in a window");
+        // Offscreen is what lays the app out as in a window, and what keeps a render from
+        // starting a real sync engine (against production, without LINGER_CONVEX_URL).
+        // Keep this ahead of any thread and of initialize(): the app reads offscreen() to decide
+        // whether to start sync, so anything built above this line would start the real engine.
+        // SAFETY: no other thread has started yet.
+        unsafe { std::env::set_var("LINGER_OFFSCREEN", "1") };
     }
     // Online text that arrives bumps the counter, so the reader lays its chapters out again.
     let online = online_counter();
