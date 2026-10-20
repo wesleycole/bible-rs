@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { PAGE_RECORDS } from "../convex/library/sync.js"
 import { api } from "../convex/_generated/api.js"
 import { makeConvex, type TestConvex } from "./harness.js"
 
@@ -83,30 +84,91 @@ describe("library.highlights (Effect inside Convex)", () => {
     const colour = await errorOf(ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "mauve" } as never))
     expect(colour.type).toBe("invalid_request")
   })
+})
 
-  it("spike: the Effect handler costs about what the plain one does", async () => {
+describe("library.bookmarks", () => {
+  it("keeps the server's copy when the writer's baseSeq is stale", async () => {
     const t = await makeConvex()
     const ann = as(t, "user_ann")
-    const time = async (run: (i: number) => Promise<unknown>) => {
-      const samples: Array<number> = []
-      for (let i = 0; i < 150; i++) {
-        const start = performance.now()
-        await run(i)
-        samples.push(performance.now() - start)
-      }
-      samples.sort((a, b) => a - b)
-      return { median: samples[75]!, p95: samples[142]! }
+    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "Gospel" })).toEqual({ result: "ok", seq: 1 })
+    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "The gospel", baseSeq: 1 })).toEqual({ result: "ok", seq: 2 })
+    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: null, baseSeq: 1 })).toEqual({
+      result: "conflict",
+      seq: 2,
+      label: "The gospel"
+    })
+    const rows = await t.run((ctx) => ctx.db.query("bookmarks").collect())
+    expect(rows.map((r) => [r.verse, r.seq, r.label, r.deletedAt])).toEqual([[JOHN_3_16, 2, "The gospel", undefined]])
+  })
+})
+
+describe("library.sync.changes", () => {
+  type Page = Extract<Awaited<ReturnType<typeof pull>>, { records: unknown }>
+  const pull = (t: TestConvex, subject: string, after: number) => as(t, subject).query(api.library.sync.changes, { after })
+  const page = async (t: TestConvex, subject: string, after: number): Promise<Page> => {
+    const p = await pull(t, subject, after)
+    if (!("records" in p)) throw new Error(`expected a page, got ${JSON.stringify(p)}`)
+    return p
+  }
+
+  it("pages every type by seq without skipping, tombstones included, and never leaks ids", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    // More writes than one page holds, alternating types so a page boundary falls between them.
+    const verses = Array.from({ length: 260 }, (_, i) => 40_001_001 + i % 25 + Math.floor(i / 25) * 1_000)
+    for (const verse of verses) {
+      await ann.mutation(api.library.highlights.set, { verse, color: "yellow" })
+      await ann.mutation(api.library.bookmarks.set, { verse, label: `v${verse}` })
     }
-    // Warm both paths, then alternate so neither gets the colder JIT.
-    await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "yellow" })
-    await ann.mutation(api.library.spike.setPlain, { verse: JOHN_3_16, color: "yellow" })
-    const effect = await time((i) => ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: i % 2 ? "green" : "blue" }))
-    const plain = await time((i) => ann.mutation(api.library.spike.setPlain, { verse: JOHN_3_16, color: i % 2 ? "green" : "blue" }))
-    const effect2 = await time((i) => ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: i % 2 ? "green" : "blue" }))
-    console.log(
-      `highlights.set in convex-test: Effect ${effect.median.toFixed(2)} ms median (p95 ${effect.p95.toFixed(2)}), ` +
-        `plain ${plain.median.toFixed(2)} ms (p95 ${plain.p95.toFixed(2)}), Effect again ${effect2.median.toFixed(2)} ms`
-    )
-    expect(Math.min(effect.median, effect2.median)).toBeLessThan(plain.median + 2)
+    // An edit and a delete move two early records to the end.
+    await ann.mutation(api.library.highlights.set, { verse: verses[0]!, color: "blue" })
+    await ann.mutation(api.library.bookmarks.set, { verse: verses[1]!, label: null })
+    const total = verses.length * 2 + 2
+
+    const first = await page(t, "user_ann", 0)
+    expect(first.records).toHaveLength(PAGE_RECORDS)
+    expect(first.seq).toBe(first.records.at(-1)!.seq)
+    const second = await page(t, "user_ann", first.seq)
+    const third = await page(t, "user_ann", second.seq)
+    expect(third).toMatchObject({ records: [], seq: second.seq })
+
+    const all = [...first.records, ...second.records]
+    const seqs = all.map((r) => r.seq)
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b))
+    expect(new Set(seqs).size).toBe(seqs.length)
+    // Each record appears once, at its latest seq: 520 records, the last two being the edit and the tombstone.
+    expect(all).toHaveLength(verses.length * 2)
+    expect(second.seq).toBe(total)
+    expect(all.at(-2)).toEqual({ type: "highlight", uid: `h-${verses[0]}`, seq: total - 1, verse: verses[0], color: "blue" })
+    expect(all.at(-1)).toMatchObject({ type: "bookmark", uid: `b-${verses[1]}`, seq: total, verse: verses[1], deletedAt: expect.any(Number) })
+    for (const r of all) {
+      const allowed = r.type === "highlight" ? ["type", "uid", "seq", "deletedAt", "verse", "color"] : ["type", "uid", "seq", "deletedAt", "verse", "label"]
+      expect(Object.keys(r).filter((k) => !allowed.includes(k))).toEqual([])
+    }
+    expect(first.serverTime).toBeGreaterThan(0)
+  })
+
+  it("tells a cursor older than the purged tombstones to resync, but not a device starting from 0", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    for (let i = 0; i < 5; i++) await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16 + i, color: "green" })
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("userLibrary").first())!
+      await ctx.db.patch(row._id, { purgedThrough: 3 })
+    })
+    expect(await pull(t, "user_ann", 2)).toEqual({ resync: true })
+    expect((await page(t, "user_ann", 3)).records.map((r) => r.seq)).toEqual([4, 5])
+    expect((await page(t, "user_ann", 0)).records).toHaveLength(5)
+  })
+
+  it("never shows one user's records to another", async () => {
+    const t = await makeConvex()
+    await as(t, "user_ann").mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "yellow" })
+    await as(t, "user_ann").mutation(api.library.bookmarks.set, { verse: ROMANS_8_28, label: "" })
+    // Bob has no library yet, then one of his own.
+    expect(await page(t, "user_bob", 0)).toMatchObject({ records: [], seq: 0 })
+    await as(t, "user_bob").mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "mine" })
+    expect((await page(t, "user_bob", 0)).records).toEqual([{ type: "bookmark", uid: "b-42003016", seq: 1, verse: JOHN_3_16, label: "mine" }])
+    expect((await page(t, "user_ann", 0)).records.map((r) => r.type)).toEqual(["highlight", "bookmark"])
   })
 })

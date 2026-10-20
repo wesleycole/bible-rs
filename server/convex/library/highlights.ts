@@ -6,7 +6,8 @@ import { Effect, Schema } from "effect"
 import type { InvalidRequest } from "../../shared/Errors.js"
 import { Highlight } from "../../shared/records.js"
 import { effectMutation, effectQuery } from "../lib/effect.js"
-import { Sequence } from "../lib/sequence.js"
+import { setPerVerse } from "../lib/perVerse.js"
+import type { Sequence } from "../lib/sequence.js"
 import { CurrentUser, MutationCtx, QueryCtx } from "../lib/services.js"
 import { checkVerse } from "../lib/verses.js"
 
@@ -31,31 +32,23 @@ export const set = effectMutation({
     const verse = yield* checkVerse(args.verse)
     const ctx = yield* MutationCtx
     const { userId } = yield* CurrentUser
-    const sequence = yield* Sequence
-    const existing = yield* Effect.promise(() =>
-      ctx.db.query("highlights").withIndex("by_user_verse", (q) => q.eq("userId", userId).eq("verse", verse)).unique()
-    )
-    if (existing && args.baseSeq !== undefined && existing.seq > args.baseSeq) {
-      return { result: "conflict", seq: existing.seq, color: existing.deletedAt === undefined ? existing.color : null }
-    }
-    if (!existing && args.color === null) return { result: "ok", seq: 0 }
-    const seq = yield* sequence.next
-    const color = args.color
-    yield* Effect.promise(async () => {
-      if (existing) {
-        await ctx.db.patch(existing._id, color === null ? { seq, deletedAt: Date.now() } : { seq, color, deletedAt: undefined })
-      } else if (color !== null) {
-        await ctx.db.insert("highlights", { userId, uid: highlightUid(verse), seq, verse, color })
-      }
-    })
-    return { result: "ok", seq }
+    const result = yield* setPerVerse({
+      find: Effect.promise(async () => {
+        const row = await ctx.db.query("highlights").withIndex("by_user_verse", (q) => q.eq("userId", userId).eq("verse", verse)).unique()
+        return row && { id: row._id, seq: row.seq, value: row.deletedAt === undefined ? row.color : null }
+      }),
+      insert: (seq, color: Highlight["color"]) => Effect.promise(() => ctx.db.insert("highlights", { userId, uid: highlightUid(verse), seq, verse, color })),
+      update: (id, seq, color, deletedAt) =>
+        Effect.promise(() => ctx.db.patch(id, color === null ? { seq, deletedAt } : { seq, color, deletedAt: undefined }))
+    }, args.color, args.baseSeq)
+    return result.result === "conflict" ? { result: "conflict", seq: result.seq, color: result.value } : result
   })
 })
 
 /** The user's highlights, without tombstones. */
 export const list = effectQuery({
   args: Schema.Struct({}),
-  empty: [] as Array<Highlight>,
+  empty: () => Effect.succeed<Array<Highlight>>([]),
   handler: Effect.fn("highlights.list")(function*() {
     const ctx = yield* QueryCtx
     const { userId } = yield* CurrentUser

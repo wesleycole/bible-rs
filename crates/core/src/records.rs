@@ -90,6 +90,42 @@ pub struct Bookmark {
     pub label: String,
 }
 
+/// One record in the change feed, of any synced type, tagged with that type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum FeedRecord {
+    Highlight(Highlight),
+    Bookmark(Bookmark),
+}
+
+impl FeedRecord {
+    pub fn seq(&self) -> u64 {
+        match self {
+            FeedRecord::Highlight(r) => r.seq,
+            FeedRecord::Bookmark(r) => r.seq,
+        }
+    }
+}
+
+/// What `library/sync.changes({ after })` answers: the next page of the feed, or `resync` when
+/// `after` is older than the tombstones the server still keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+pub enum Changes {
+    Page {
+        /// Every record with `seq > after`, tombstones included, in `seq` order.
+        records: Vec<FeedRecord>,
+        /// The highest `seq` in `records`, or `after` when there are none: the next cursor.
+        seq: u64,
+        /// The server's clock when the page was read, in milliseconds.
+        server_time: u64,
+    },
+    Resync {
+        /// Always `true`: empty the cache and pull the library again from 0.
+        resync: bool,
+    },
+}
+
 /// One record type's JSON Schema, as the generators read it.
 pub struct RecordSchema {
     pub name: &'static str,
@@ -102,6 +138,8 @@ pub fn schemas() -> Vec<RecordSchema> {
     vec![
         RecordSchema { name: "Highlight", schema: generator.root_schema_for::<Highlight>().to_value() },
         RecordSchema { name: "Bookmark", schema: generator.root_schema_for::<Bookmark>().to_value() },
+        RecordSchema { name: "FeedRecord", schema: generator.root_schema_for::<FeedRecord>().to_value() },
+        RecordSchema { name: "Changes", schema: generator.root_schema_for::<Changes>().to_value() },
     ]
 }
 
@@ -126,9 +164,16 @@ pub fn records_ts() -> String {
         if let Some(description) = description(object) {
             writeln!(out, "/** {description} */").unwrap();
         }
-        let (effect, convex) = fields(object);
-        writeln!(out, "export const {}Fields = {{\n{convex}}}\n", record.name).unwrap();
-        writeln!(out, "export const {0} = Schema.Struct({{\n{effect}}})\n", record.name).unwrap();
+        if object.contains_key("properties") {
+            let (effect, convex) = fields(object);
+            writeln!(out, "export const {}Fields = {{\n{convex}}}\n", record.name).unwrap();
+            writeln!(out, "export const {0} = Schema.Struct({{\n{effect}}})\n", record.name).unwrap();
+        } else {
+            // A union (a tagged enum or an untagged one): one schema and one validator.
+            let (effect, convex) = render(object);
+            writeln!(out, "export const {}Validator = {convex}\n", record.name).unwrap();
+            writeln!(out, "export const {} = {effect}\n", record.name).unwrap();
+        }
         writeln!(out, "export type {0} = typeof {0}[\"Type\"]\n", record.name).unwrap();
     }
     out
@@ -174,7 +219,10 @@ fn fields(object: &Map<String, Value>) -> (String, String) {
 
 /// One schema as an Effect schema expression and a Convex validator expression.
 fn render(schema: &Map<String, Value>) -> (String, String) {
-    assert!(!schema.contains_key("$ref"), "subschemas are inlined; a $ref means the generator settings changed");
+    assert!(
+        !schema.contains_key("$ref"),
+        "subschemas are inlined; a $ref means the generator settings changed"
+    );
     if let Some(literals) = schema.get("enum").and_then(Value::as_array) {
         let quoted: Vec<String> = literals.iter().map(|l| serde_json::to_string(l).unwrap()).collect();
         return if let [one] = quoted.as_slice() {
@@ -184,7 +232,11 @@ fn render(schema: &Map<String, Value>) -> (String, String) {
             (format!("Schema.Literals([{}])", quoted.join(", ")), format!("v.union({})", convex.join(", ")))
         };
     }
-    if let Some(members) = schema.get("anyOf").and_then(Value::as_array) {
+    if let Some(literal) = schema.get("const") {
+        let quoted = serde_json::to_string(literal).unwrap();
+        return (format!("Schema.Literal({quoted})"), format!("v.literal({quoted})"));
+    }
+    if let Some(members) = schema.get("anyOf").or_else(|| schema.get("oneOf")).and_then(Value::as_array) {
         let (nulls, rest): (Vec<&Value>, Vec<&Value>) = members.iter().partition(|m| m["type"] == "null");
         let rendered: Vec<(String, String)> = rest.iter().map(|m| render(m.as_object().unwrap())).collect();
         let (e, c) = if let [one] = rendered.as_slice() {
@@ -199,7 +251,8 @@ fn render(schema: &Map<String, Value>) -> (String, String) {
     let (kind, nullable_type) = match schema.get("type") {
         Some(Value::String(s)) => (s.as_str(), false),
         Some(Value::Array(kinds)) => {
-            let non_null: Vec<&str> = kinds.iter().filter_map(Value::as_str).filter(|k| *k != "null").collect();
+            let non_null: Vec<&str> =
+                kinds.iter().filter_map(Value::as_str).filter(|k| *k != "null").collect();
             let [one] = non_null.as_slice() else { panic!("a union of types {kinds:?} isn't supported") };
             (*one, non_null.len() < kinds.len())
         }
@@ -218,7 +271,10 @@ fn render(schema: &Map<String, Value>) -> (String, String) {
         "object" => {
             let (e, c) = fields(schema);
             let indent = |s: &str| s.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n");
-            (format!("Schema.Struct({{\n{}\n  }})", indent(&e)), format!("v.object({{\n{}\n  }})", indent(&c)))
+            (
+                format!("Schema.Struct({{\n{}\n  }})", indent(&e)),
+                format!("v.object({{\n{}\n  }})", indent(&c)),
+            )
         }
         other => panic!("unsupported schema type {other}"),
     };
@@ -256,9 +312,8 @@ pub fn canon_json() -> String {
     let mut out = String::from("{\n  \"books\": [\n");
     for (i, book) in BOOKS.iter().enumerate() {
         let id = BookId::new(i).unwrap();
-        let verses: Vec<String> = (1..=book.chapters)
-            .map(|c| ChapterIdx::new(id, c).unwrap().kjv_verses().to_string())
-            .collect();
+        let verses: Vec<String> =
+            (1..=book.chapters).map(|c| ChapterIdx::new(id, c).unwrap().kjv_verses().to_string()).collect();
         let comma = if i + 1 < BOOKS.len() { "," } else { "" };
         writeln!(
             out,
@@ -312,7 +367,7 @@ mod tests {
         assert_eq!(VerseId(42_022_001).verse_ref(), None, "John has 21 chapters");
         assert_eq!(VerseId(42_003_037).verse_ref(), None, "John 3 has 36 verses");
         assert_eq!(VerseId(66_001_001).verse_ref(), None, "there is no 67th book");
-        assert!(VerseId(0 * 1_000_000 + 1_000 + 1).is_valid());
+        assert!(VerseId(1_001).is_valid(), "Genesis 1:1");
         assert_eq!(VerseId(99_999_999).to_string(), "#99999999");
     }
 
@@ -336,10 +391,18 @@ mod tests {
     }
 
     #[test]
-    fn every_schema_is_inlined_and_an_object() {
+    fn every_schema_is_inlined_and_every_record_is_an_object() {
         for record in schemas() {
             let text = record.schema.to_string();
             assert!(!text.contains("$ref"), "{} has a $ref: {text}", record.name);
+            if record.schema.get("properties").is_none() {
+                assert!(
+                    record.schema.get("oneOf").or(record.schema.get("anyOf")).is_some(),
+                    "{}",
+                    record.name
+                );
+                continue;
+            }
             assert_eq!(record.schema["type"], "object", "{}", record.name);
             let required = record.schema["required"].as_array().unwrap();
             assert!(required.iter().any(|r| r == "uid") && required.iter().any(|r| r == "seq"));
@@ -351,14 +414,50 @@ mod tests {
     fn the_generated_typescript_names_every_record_both_ways() {
         let ts = records_ts();
         for record in schemas() {
-            assert!(ts.contains(&format!("export const {}Fields = {{", record.name)));
-            assert!(ts.contains(&format!("export const {} = Schema.Struct({{", record.name)));
+            if record.schema.get("properties").is_some() {
+                assert!(ts.contains(&format!("export const {}Fields = {{", record.name)));
+                assert!(ts.contains(&format!("export const {} = Schema.Struct({{", record.name)));
+            } else {
+                assert!(ts.contains(&format!("export const {}Validator = v.union(", record.name)));
+                assert!(ts.contains(&format!("export const {} = Schema.Union([", record.name)));
+            }
             assert!(ts.contains(&format!("export type {0} = typeof {0}[\"Type\"]", record.name)));
         }
         assert!(ts.contains("deletedAt: Schema.optionalKey(Schema.Int),"));
         assert!(ts.contains("deletedAt: v.optional(v.number()),"));
-        assert!(ts.contains("color: Schema.Literals([\"yellow\", \"green\", \"blue\", \"pink\", \"purple\", \"orange\"]),"));
+        assert!(ts.contains(
+            "color: Schema.Literals([\"yellow\", \"green\", \"blue\", \"pink\", \"purple\", \"orange\"]),"
+        ));
         assert!(ts.contains("color: v.union(v.literal(\"yellow\"), v.literal(\"green\"),"));
+        assert!(ts.contains("type: Schema.Literal(\"highlight\"),"));
+        assert!(ts.contains("type: v.literal(\"bookmark\"),"));
+    }
+
+    #[test]
+    fn the_feed_reads_what_sync_changes_sends() {
+        let page: Changes = serde_json::from_value(json!({
+            "records": [
+                { "type": "highlight", "uid": "h-42003016", "seq": 4, "verse": 42_003_016, "color": "pink" },
+                { "type": "bookmark", "uid": "b-1001001", "seq": 5, "deletedAt": 9, "verse": 1_001_001, "label": "" }
+            ],
+            "seq": 5,
+            "serverTime": 1_800_000_000_000u64
+        }))
+        .unwrap();
+        let Changes::Page { records, seq, server_time } = page else { panic!("a page") };
+        assert_eq!((seq, server_time), (5, 1_800_000_000_000));
+        assert_eq!(records.iter().map(FeedRecord::seq).collect::<Vec<_>>(), [4, 5]);
+        assert!(
+            matches!(&records[1], FeedRecord::Bookmark(b) if b.deleted_at == Some(9) && b.verse == VerseId(1_001_001))
+        );
+        assert_eq!(
+            serde_json::from_value::<Changes>(json!({ "resync": true })).unwrap(),
+            Changes::Resync { resync: true }
+        );
+        // An empty page is a page, not a resync.
+        let empty: Changes =
+            serde_json::from_value(json!({ "records": [], "seq": 0, "serverTime": 1 })).unwrap();
+        assert!(matches!(empty, Changes::Page { .. }));
     }
 
     #[test]
@@ -368,7 +467,8 @@ mod tests {
         assert_eq!(books.len(), 66);
         let chapters: usize = books.iter().map(|b| b["verses"].as_array().unwrap().len()).sum();
         assert_eq!(chapters, 1189);
-        let verses: u64 = books.iter().flat_map(|b| b["verses"].as_array().unwrap()).map(|v| v.as_u64().unwrap()).sum();
+        let verses: u64 =
+            books.iter().flat_map(|b| b["verses"].as_array().unwrap()).map(|v| v.as_u64().unwrap()).sum();
         assert_eq!(verses, 31_102);
         assert_eq!(books[42]["osis"], "John");
         assert_eq!(books[42]["verses"][2], 36);

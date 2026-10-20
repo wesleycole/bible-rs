@@ -22,20 +22,27 @@ These gate M1's release, because they can't be fixed once users have libraries:
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`), the proxy's `CLERK_*`
    variables and Convex's `CLERK_JWT_ISSUER`. Activate Clerk's Convex integration.
 2. **Three spikes, two days each:**
-   - **Tokens:** sign in on the Mac app and on a phone (Clerk's hosted page is enough before M3) against
-     a dev deployment, call a `whoami` query with each token through the `convex` crate, and confirm
-     one `tokenIdentifier`. Check that `set_auth_callback` refetches on reconnect and that `set_auth`
-     can swap a token before it expires.
+   - **Tokens** (done, October 19): a desktop OAuth access token and a Clerk session token for the
+     same user resolve to one `tokenIdentifier` through `library/whoami:get` and the `convex` crate;
+     `set_auth_callback` refetches on reconnect, and `set_auth` swaps a token before it expires. A
+     fixed token past `exp` leaves writes hanging, so the engine uses the callback and pushes a fresh
+     token early ([backend.md](backend.md#answered-in-m1)).
    - **Effect in Convex** (done, October 19): `highlights.set` on `convex/lib/effect.ts` beside the
      same mutation written plainly (`library/spike.ts`). In convex-test the Effect handler runs at
      0.11–0.15 ms median against 0.08 ms plain, so the overhead is under a tenth of a millisecond a
-     call; the anonymous local deployment bundles and serves the functions. Still to measure on a
-     dev deployment: the bundle size Convex reports and its own execution time, before `spike.ts` is
-     deleted. Effect is the decision; the spike sized it.
+     call; the anonymous local deployment bundles and serves the functions. On a cloud dev deployment
+     (`adorable-porcupine-835`, October 19, 87 alternating calls each from `ConvexHttpClient` with a
+     real OAuth token, timings from `npx convex logs --jsonl`): Convex's `userExecutionTime` for
+     `highlights.set` is 24.8 ms median (p95 30.8 ms) against 24.1 ms (p95 33.0 ms) plain, and
+     `executionTime` 33.9 ms median for both, so the overhead doesn't show at Convex's resolution and
+     is far inside the 1 s budget. The whole deployment bundles to 694 KB (179 KB gzipped,
+     `--debug-bundle-path`), of Convex's 32 MiB limit; Effect is one 524 KB chunk shared by every
+     module. `spike.ts` is deleted. Effect is the decision; the spike sized it.
    - **The schema generator** (done, October 19): `cargo xtask schema` end to end for `Highlight` and
      `Bookmark`: the Rust types, the generated validator fields and Effect `Schema`s, `canon.json`,
-     and the drift tests in `records.rs`. Still to add: the cache's column list, the FFI types, and
-     core's `ApiError` from the server's error list.
+     and the drift tests in `records.rs`. The change feed's `FeedRecord` (serde tag `type`) and
+     `Changes` are Rust types too, emitted as Effect `Schema.Union`s and Convex `v.union`s. Still to
+     add: the cache's column list, the FFI types, and core's `ApiError` from the server's error list.
 
 ## Convex
 

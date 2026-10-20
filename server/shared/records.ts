@@ -62,3 +62,125 @@ export const Bookmark = Schema.Struct({
 
 export type Bookmark = typeof Bookmark["Type"]
 
+/** One record in the change feed, of any synced type, tagged with that type. */
+export const FeedRecordValidator = v.union(v.object({
+    color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+    /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+    deletedAt: v.optional(v.number()),
+    /** The per-user sequence number of the write that last changed this record. */
+    seq: v.number(),
+    type: v.literal("highlight"),
+    /** The record's id, made by the client: for a highlight, derived from the verse. */
+    uid: v.string(),
+    /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+    verse: v.number(),
+  }), v.object({
+    /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+    deletedAt: v.optional(v.number()),
+    label: v.string(),
+    /** The per-user sequence number of the write that last changed this record. */
+    seq: v.number(),
+    type: v.literal("bookmark"),
+    /** The record's id, made by the client: for a bookmark, derived from the verse. */
+    uid: v.string(),
+    /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+    verse: v.number(),
+  }))
+
+export const FeedRecord = Schema.Union([Schema.Struct({
+    color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+    /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+    deletedAt: Schema.optionalKey(Schema.Int),
+    /** The per-user sequence number of the write that last changed this record. */
+    seq: Schema.Int,
+    type: Schema.Literal("highlight"),
+    /** The record's id, made by the client: for a highlight, derived from the verse. */
+    uid: Schema.String,
+    /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+    verse: Schema.Int,
+  }), Schema.Struct({
+    /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+    deletedAt: Schema.optionalKey(Schema.Int),
+    label: Schema.String,
+    /** The per-user sequence number of the write that last changed this record. */
+    seq: Schema.Int,
+    type: Schema.Literal("bookmark"),
+    /** The record's id, made by the client: for a bookmark, derived from the verse. */
+    uid: Schema.String,
+    /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+    verse: Schema.Int,
+  })])
+
+export type FeedRecord = typeof FeedRecord["Type"]
+
+/** What `library/sync.changes({ after })` answers: the next page of the feed, or `resync` when `after` is older than the tombstones the server still keeps. */
+export const ChangesValidator = v.union(v.object({
+    /** Every record with `seq > after`, tombstones included, in `seq` order. */
+    records: v.array(v.union(v.object({
+      color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }), v.object({
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      label: v.string(),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }))),
+    /** The highest `seq` in `records`, or `after` when there are none: the next cursor. */
+    seq: v.number(),
+    /** The server's clock when the page was read, in milliseconds. */
+    serverTime: v.number(),
+  }), v.object({
+    /** Always `true`: empty the cache and pull the library again from 0. */
+    resync: v.boolean(),
+  }))
+
+export const Changes = Schema.Union([Schema.Struct({
+    /** Every record with `seq > after`, tombstones included, in `seq` order. */
+    records: Schema.Array(Schema.Union([Schema.Struct({
+      color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    }), Schema.Struct({
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      label: Schema.String,
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    })])),
+    /** The highest `seq` in `records`, or `after` when there are none: the next cursor. */
+    seq: Schema.Int,
+    /** The server's clock when the page was read, in milliseconds. */
+    serverTime: Schema.Int,
+  }), Schema.Struct({
+    /** Always `true`: empty the cache and pull the library again from 0. */
+    resync: Schema.Boolean,
+  })])
+
+export type Changes = typeof Changes["Type"]
+

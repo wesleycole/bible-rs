@@ -53,12 +53,12 @@ const mutationServices = (ctx: WithUser<RawMutationCtx>) =>
 
 /**
  * A query the apps call with their Clerk token, written as an Effect. A signed-in user whose
- * `users` row doesn't exist yet (nothing has been written) gets `empty`, so a device can start
- * from the change feed without a mutation first.
+ * `users` row doesn't exist yet (nothing has been written) gets `empty(args)`, so a device can
+ * start from the change feed without a mutation first.
  */
 export const effectQuery = <S extends Args, A>(spec: {
   readonly args: S
-  readonly empty: A
+  readonly empty: (args: S["Type"]) => Effect.Effect<A>
   readonly handler: (args: S["Type"]) => Effect.Effect<A, ApiError, QueryCtx | CurrentUser>
 }) => {
   const decode = decoder(spec.args)
@@ -66,7 +66,7 @@ export const effectQuery = <S extends Args, A>(spec: {
     handler: (ctx: MaybeUser<RawQueryCtx>, raw: Record<string, unknown>) =>
       run(
         decode(raw).pipe(
-          Effect.flatMap((args) => ctx.user === null ? Effect.succeed(spec.empty) : spec.handler(args).pipe(Effect.provide(queryServices({ ...ctx, user: ctx.user }))))
+          Effect.flatMap((args) => ctx.user === null ? spec.empty(args) : spec.handler(args).pipe(Effect.provide(queryServices({ ...ctx, user: ctx.user }))))
         )
       )
   })
