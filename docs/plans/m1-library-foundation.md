@@ -25,6 +25,10 @@ These gate M1's release, because they can't be fixed once users have libraries:
    server to the production deployment `expert-rabbit-665` (`api::CONVEX_URL`, which release builds
    use) and set `CLERK_JWT_ISSUER` there before any build that signs in ships; today it has no
    functions.
+   Launch a team-signed build once over a Keychain item written by the previous release (the
+   session item changed shape in M1): macOS ties an item to the binary that wrote it, and an
+   unsigned build reading another's item hangs on an invisible Keychain prompt, so check that a
+   signed one starts signed in before shipping.
 2. **Three spikes, two days each:**
    - **Tokens** (done, October 19): a desktop OAuth access token and a Clerk session token for the
      same user resolve to one `tokenIdentifier` through `library/whoami:get` and the `convex` crate;

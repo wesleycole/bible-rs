@@ -384,9 +384,10 @@ fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
     let handle = sync::start(data_dir, Box::new(ConvexBackend::new(&url)?), tokens)?;
     let secs =
         flag(rest, "--timeout").map(|s| s.parse()).transpose().context("--timeout <seconds>")?.unwrap_or(120);
-    let cursor = handle
-        .wait_idle(std::time::Duration::from_secs(secs))
-        .map_err(|status| anyhow::anyhow!("not synced after {secs} s: {status:?}"))?;
+    let cursor = handle.wait_idle(std::time::Duration::from_secs(secs)).map_err(|status| match status {
+        sync::SyncStatus::Error(e) => anyhow::anyhow!("not synced: {e}"),
+        status => anyhow::anyhow!("not synced after {secs} s: {status:?}"),
+    })?;
     let study = StudyStore::open(&data_dir.join("study.sqlite"))?;
     let (h, _, b) = study.counts();
     println!("synced with {url}: cursor {cursor}, {h} highlights, {b} bookmarks");
