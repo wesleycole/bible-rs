@@ -12,4 +12,5 @@
 /apps/ios/LingerCore/.build
 /apps/ios/LingerCore/.swiftpm
 /apps/ios/Linger.xcodeproj
+/apps/ios/Linger/Linger.entitlements
 xcuserdata/
