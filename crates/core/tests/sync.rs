@@ -400,9 +400,20 @@ fn the_writer_holds_the_same_note_as_every_other_device_times_included() {
     let (mut a, mut b) = (Device::new("same-a"), Device::new("same-b"));
     a.start(&server);
     b.start(&server);
-    a.store.set_note(verse(3, 17), "Not to condemn").unwrap();
+    a.store.set_note(verse(3, 17), "Not to condemn (Rom 8:1; Romans 5)").unwrap();
     a.settle(&server);
     b.settle(&server);
+    // The references written in it are anchors too, beside the verse it is on.
+    let anchors: Vec<(u32, u32, String)> =
+        server.notes()[0].anchors.iter().map(|a| (a.from.0, a.to.0, format!("{:?}", a.origin))).collect();
+    assert_eq!(
+        anchors,
+        [
+            (42_003_017, 42_003_017, "User".into()),
+            (44_008_001, 44_008_001, "Typed".into()),
+            (44_005_001, 44_005_021, "Typed".into())
+        ]
+    );
 
     // An edit made offline reaches the server a second later, which stamps the edit time.
     a.stop();

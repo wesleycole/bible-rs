@@ -84,6 +84,77 @@ pub fn suggest(input: &str, limit: usize) -> Vec<Reference> {
     out
 }
 
+/// Book abbreviations that are also everyday words: they name a book before `c:v`, never before a
+/// bare number ("Is 3, …").
+const COMMON_WORDS: &[&str] = &["is", "am", "so", "ex", "le", "ho", "ma", "na", "ob", "re", "ac", "ge", "de"];
+
+/// Every reference written in prose ("see Rom 5:8", "1 John 4", "John 3:16–18"), in order, with the
+/// byte range it spans. A verse or range (`c:v`) is found after up to three words that name a book.
+/// A whole chapter needs more, because \"Job 3 times\" isn't one: a capitalized book name or
+/// abbreviation (not a typo), and nothing after the number but punctuation, the end, or \"and\"/\"or\".
+pub fn find_all(text: &str) -> Vec<(std::ops::Range<usize>, Reference)> {
+    let is_break = |c: char| c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']');
+    let mut words: Vec<(usize, &str)> = Vec::new();
+    let mut start = None;
+    for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
+        match (is_break(c), start) {
+            (true, Some(s)) => {
+                words.push((s, &text[s..i]));
+                start = None;
+            }
+            (false, None) => start = Some(i),
+            _ => {}
+        }
+    }
+    let trailing: &[char] = &[',', '.', ';', ':', '!', '?', '"', '\'', '”', '’', '—', '–', '-'];
+    let mut out: Vec<(std::ops::Range<usize>, Reference)> = Vec::new();
+    for (i, &(at, word)) in words.iter().enumerate() {
+        let number = word.trim_end_matches(trailing);
+        if !number.starts_with(|c: char| c.is_ascii_digit())
+            || !number.chars().all(|c| c.is_ascii_digit() || matches!(c, ':' | '-' | '–' | '—'))
+        {
+            continue;
+        }
+        let verse = number.contains(':');
+        let chapter_ends = number.len() < word.len()
+            || words.get(i + 1).is_none_or(|(_, next)| matches!(*next, "and" | "or" | "&"));
+        if !verse && !chapter_ends {
+            continue;
+        }
+        let taken = out.last().map_or(0, |(r, _)| r.end);
+        // The longest run of words before the number that names a book well enough: a full name
+        // or alias (needed for a whole chapter), then a clean prefix, then, for a verse, a typo.
+        let found = [1000, 800, i32::MIN].into_iter().filter(|&min| verse || min == 1000).find_map(|min| {
+            (1..=3usize).rev().find_map(|n| {
+                // A typo is only trusted in one word long enough to be a name.
+                if i < n || words[i - n].0 < taken || (min < 800 && (n > 1 || words[i - 1].1.len() < 4)) {
+                    return None;
+                }
+                let book = &words[i - n..i];
+                // Only the first word may hold digits (an ordinal), and none ends in punctuation.
+                if book.iter().skip(1).any(|(_, w)| !w.chars().all(char::is_alphabetic))
+                    || book.iter().any(|(_, w)| w.ends_with(trailing))
+                    || (!verse && !book.iter().any(|(_, w)| w.starts_with(char::is_uppercase)))
+                    || (!verse && n == 1 && COMMON_WORDS.contains(&words[i - 1].1.to_lowercase().as_str()))
+                {
+                    return None;
+                }
+                let name = book.iter().map(|(_, w)| *w).collect::<Vec<_>>().join(" ");
+                let candidate = format!("{name} {number}");
+                let r = parse(&candidate).filter(|r| {
+                    (r.verse.is_some() == verse || r.book.chapters() == 1)
+                        && r.verse.is_none_or(|v| v <= r.chapter_idx().kjv_verses())
+                })?;
+                let parts = split(&candidate)?;
+                let score = book_candidates(&parts.book_key, parts.ordinal).first().map(|&(b, s)| (b, s))?;
+                (score.0 == r.book && score.1 >= min).then(|| (book[0].0..at + number.len(), r))
+            })
+        });
+        out.extend(found);
+    }
+    out
+}
+
 struct Parts {
     ordinal: Option<u8>,
     book_key: String,
@@ -254,6 +325,39 @@ mod tests {
         assert_eq!(p("hbr 11"), "Hebrews 11");
         assert_eq!(p("lmnt 3"), "Lamentations 3");
         assert_eq!(p("isiah 53"), "Isaiah 53");
+    }
+
+    fn found(text: &str) -> Vec<(String, String)> {
+        find_all(text).into_iter().map(|(at, r)| (text[at].to_string(), r.display())).collect()
+    }
+
+    #[test]
+    fn references_in_prose() {
+        let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        };
+        assert_eq!(
+            found("Compare Isaiah 9:2 and 1 John 2:8, also (John 8:12)."),
+            pairs(&[("Isaiah 9:2", "Isaiah 9:2"), ("1 John 2:8", "1 John 2:8"), ("John 8:12", "John 8:12")])
+        );
+        assert_eq!(
+            found("see Rom 5:8; read Romans 8 and 1 John 4. Then John 3:16–18!"),
+            pairs(&[
+                ("Rom 5:8", "Romans 5:8"),
+                ("Romans 8", "Romans 8"),
+                ("1 John 4", "1 John 4"),
+                ("John 3:16–18", "John 3:16–18"),
+            ])
+        );
+        assert_eq!(
+            found("Song of Songs 2:4 (Ps 23)"),
+            pairs(&[("Song of Songs 2:4", "Song of Solomon 2:4"), ("Ps 23", "Psalm 23")])
+        );
+        // A typo still finds a verse, but never a whole chapter.
+        assert_eq!(found("mathew 5:3, mathew 5."), pairs(&[("mathew 5:3", "Matthew 5:3")]));
+        // False friends.
+        assert_eq!(found("Job 3 times a day. Mark said 12 things. The 2 of us at 10:30."), pairs(&[]));
+        assert_eq!(found("The 2. Is 3, john 3."), pairs(&[]));
     }
 
     #[test]

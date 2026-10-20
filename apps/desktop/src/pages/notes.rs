@@ -84,34 +84,14 @@ fn plain(md: &str) -> String {
         .join(" ")
 }
 
-/// Verse references a note mentions ("Isaiah 9:2", "1 John 2:8"), in order, without repeats.
+/// Verse references a note mentions ("Isaiah 9:2", "1 John 2:8", "Romans 8"), in order, without
+/// repeats: the first verse of each reference core's `find_all` finds.
 pub fn mentioned(text: &str) -> Vec<VerseRef> {
-    let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || c == '(' || c == ')').collect();
     let mut out: Vec<VerseRef> = Vec::new();
-    for (i, w) in words.iter().enumerate() {
-        let cv = w.trim_end_matches([',', '.', ';', ':', '—', '–', '!', '?', '”', '"']);
-        let Some((c, v)) = cv.split_once(':') else { continue };
-        if c.is_empty()
-            || !c.chars().all(|ch| ch.is_ascii_digit())
-            || !v.starts_with(|ch: char| ch.is_ascii_digit())
-        {
-            continue;
-        }
-        // The book: up to three words before ("Song of Songs", "1 John").
-        for n in (1..=3usize).rev() {
-            if i < n {
-                continue;
-            }
-            let candidate = format!("{} {cv}", words[i - n..i].join(" "));
-            if let Some(r) = linger_core::reference::parse(&candidate)
-                && r.verse.is_some()
-            {
-                let v = r.verse_ref();
-                if !out.contains(&v) {
-                    out.push(v);
-                }
-                break;
-            }
+    for (_, r) in linger_core::reference::find_all(text) {
+        let v = r.verse_ref();
+        if !out.contains(&v) {
+            out.push(v);
         }
     }
     out

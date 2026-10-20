@@ -326,9 +326,35 @@ fn note_item(uid: &str, verse: VerseId, text: &str, created: i64) -> Item {
         captured_at: created.max(0) as u64 * 1000,
         updated_at: None,
         unreviewed: false,
-        anchors: vec![Anchor { from: verse, to: verse, origin: AnchorOrigin::User, at_ms: None, page: None }],
+        anchors: vec![Anchor { from: verse, to: verse, origin: AnchorOrigin::User, at_ms: None, page: None }]
+            .into_iter()
+            .chain(typed_anchors(text))
+            .collect(),
         files: Vec::new(),
     }
+}
+
+/// Sets a note's text, with its `typed` anchors: every reference written in it (`find_all`), on
+/// the canonical grid, without repeats. Its other anchors stay.
+fn set_note_text(item: &mut Item, text: &str) {
+    item.text = Some(text.into());
+    item.anchors.retain(|a| a.origin != AnchorOrigin::Typed);
+    item.anchors.extend(typed_anchors(text));
+}
+
+fn typed_anchors(text: &str) -> Vec<Anchor> {
+    let mut out: Vec<Anchor> = Vec::new();
+    for (_, r) in crate::reference::find_all(text) {
+        let (first, last) = match r.verse {
+            Some(v) => (v, r.verse_end.filter(|&e| e > v).unwrap_or(v)),
+            None => (1, r.chapter_idx().kjv_verses()),
+        };
+        let (from, to) = (VerseId::new(r.book, r.chapter, first), VerseId::new(r.book, r.chapter, last));
+        if from.is_valid() && to.is_valid() && !out.iter().any(|a| (a.from, a.to) == (from, to)) {
+            out.push(Anchor { from, to, origin: AnchorOrigin::Typed, at_ms: None, page: None });
+        }
+    }
+    out
 }
 
 /// Writes an item into the cache, with its anchors in the per-chapter index (none once deleted).
@@ -484,7 +510,7 @@ fn write_note(
     }
     let (uid, created) = own.map_or_else(|| (new_uid(), created), |n| (n.uid.clone(), n.created));
     let mut item = load_item(tx, &uid)?.unwrap_or_else(|| note_item(&uid, VerseId::from(v), body, created));
-    item.text = Some(body.into());
+    set_note_text(&mut item, body);
     put_item(tx, &item, created, updated)?;
     if queue {
         enqueue_uid(tx, Kind::Note, &uid, updated)?;
@@ -2347,7 +2373,7 @@ fn import_note(
         if item.deleted_at.is_none() && item.text.as_deref() == Some(n.note.as_str()) {
             return Ok(None);
         }
-        item.text = Some(n.note.clone());
+        set_note_text(&mut item, &n.note);
         item.deleted_at = None;
         put_item(tx, &item, created, updated)?;
         return Ok(Some(item.uid));

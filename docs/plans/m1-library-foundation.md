@@ -209,6 +209,12 @@ These gate M1's release, because they can't be fixed once users have libraries:
 4. **`reference::find_all(text) -> Vec<(Range<usize>, Reference)>`**, moved from
    `apps/desktop/src/pages/notes.rs` `mentioned()` and extended to whole chapters and ranges, with the
    existing tests.
+   Built (October 20): a verse or range is found after up to three words naming a book (typos
+   allowed only in one word of four letters or more); a whole chapter needs a capitalized full name
+   or alias, not an everyday word like "Is", followed by punctuation, the end, or "and"/"or", so
+   "Job 3 times" and "Mark said 12" aren't references. A note write stores every reference found as
+   a `typed` anchor beside its `user` anchor (a chapter anchors all its verses); `mentioned()` in the
+   desktop now calls it.
 5. **`api.rs`** gains `CONVEX_URL` (overridable with `LINGER_CONVEX_URL`) beside `API_URL`, and
    `ApiError` becomes the generated enum.
 
@@ -216,7 +222,7 @@ These gate M1's release, because they can't be fixed once users have libraries:
 
 Pass 2's first half changes only the cache under the existing UI: the popover and notes page edit the
 verse's own note through it, and Recents sync. What follows for the notes page and popover (a conflict
-copy shown beside its note, "edited on another device", typed anchors from `find_all`) and
+copy shown beside its note, "edited on another device"; typed anchors from `find_all` are built) and
 `items.updateDetails` come after pass 2's second push (purge, Allowance, `/v1/me`, export), with the
 library consent sheet.
 
@@ -242,6 +248,22 @@ library consent sheet.
    on its verse word for word, lets an export from before uids overwrite the verse's own note with
    its first note there, and otherwise adds another note item, so a conflict copy comes back as a
    copy.
+
+## Owed (picked up by the next machine)
+
+Still to come in pass 2: the library consent sheet (desktop item 5), the notes UI (a conflict copy
+beside its note, "edited on another device"), and `library/items.updateDetails`. Also owed:
+1. The `satisfies WriteAnswer as WriteAnswer` casts in `library/notes.ts` and `chats.ts`: annotate
+   the handler's return type instead.
+2. `lib/purge.ts`'s header says its steps read `Clock` so tests set it rather than faking `Date`,
+   but `test/library.test.ts` still fakes `Date` for the orphan and tombstone sweeps. Give the
+   harness a test `Clock` layer, or drop the claim.
+3. Before M1 ships: a generated answer type for the verse-keyed writes (`highlights.set`,
+   `bookmarks.set`), so the engine reads no answer JSON by hand.
+4. Export's `updated` (and `created`) can differ by one second between devices: `local_time` rounds
+   `(ms - offset + 500) div 1000`, and per-device offset jitter moves a stamp near .5 across the
+   second (Linux prover, 1 of 4 edits: stamp 1792505334916, A 14:08:54Z, B 14:08:55Z). Fix by
+   exporting from the server's milliseconds (or storing milliseconds), not the rounded column.
 
 ## Tests
 
