@@ -1,6 +1,6 @@
 # M1: The library foundation
 
-Status: not started. Depends on: nothing. Design: [library.md](library.md), [backend.md](backend.md).
+Status: done (October 20); the production cut-over is parked until the iOS app runs. Depends on: nothing. Design: [library.md](library.md), [backend.md](backend.md).
 
 **Goal.** Move the desktop app's personal data into Convex and keep it in sync, without changing how
 reading feels. After M1, notes, highlights, bookmarks and Recents live in the library, sync between two

@@ -34,7 +34,7 @@ on top of them.
 | M1 | [The library foundation](m1-library-foundation.md) | The production Clerk instance and `trylinger.com` first; Effect inside Convex, the record schema generated from Rust, the sync engine in core behind `LibraryBackend`, the desktop on it, migration of notes, highlights, bookmarks and Recents | |
 | M1b | [Sermons on Convex](m1b-sermons-on-convex.md) | One AAC encoder and one M4A muxer in core, parts for crash safety, the transcription workflow in Convex, recordings migrated, Pro audio kept, Vercel Blob gone | M1 |
 | M2 | [Search and Ask over the library](m2-search-and-ask.md) | Chunks, the digest step and its anchors, `library.search`, contract `ask/5`, citations, the reader's library marks, export, `cargo xtask eval-ask` | M1, M1b |
-| M3 | [The iOS app](m3-ios-app.md) | Sign-in, sync, the reader with notes and highlights, Ask, Recents, StoreKit, account deletion | M1, M2 |
+| M3 | [The iOS app](m3-ios-app.md) | M3a: sign-in, sync, the reader with notes and highlights, Recents, StoreKit, account deletion; M3b: the library's sermons and Ask over the library | M1 (M3a); M1b, M2 (M3b) |
 | M4 | [Photo capture](m4-photo-capture.md) | Camera and scanner, PencilKit marks, extraction, review, sources, photo allowances | M3 |
 | M5 | [Recording everywhere](m5-recording-everywhere.md) | iOS recording on core's encoder, slides attached by time, on-device transcription for Free (iOS, macOS, Linux) | M1b, M3, M4 |
 | M6 | [The Mac as a capture device, and handoff](m6-mac-capture-and-handoff.md) | Continuity Camera, drag-and-drop, marks on the Mac, reading position and plan sync, `ASWebAuthenticationSession` | M4 |
@@ -42,7 +42,7 @@ on top of them.
 | M8 | [Web](m8-web.md) | The reader and Ask in the browser, on `linger-core` compiled to wasm | M2 (and M6 for handoff) |
 | M9 | [Launch](m9-launch.md) | `api.` and `app.trylinger.com`, observability, legal answers, privacy page, App Store, Mac and web releases | all |
 
-M7 and M8 can run alongside M3–M6. Each milestone ships to `main` and to users as it lands. The one
+Order now (October 20, the owner's call): M1 is done; M3a runs next, then M1b, M2 and M3b. M7 and M8 can run alongside M3–M6. Each milestone ships to `main` and to users as it lands. The one
 exception is book-page capture (M4 on iOS, M6 on the Mac), which stays out of public builds behind a
 release-build switch, as the online translations are today (`LICENSED_ONLINE`), until the lawyer answers
 ([backend.md](backend.md#open-questions)).

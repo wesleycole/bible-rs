@@ -1,6 +1,6 @@
 # M1b: Sermons on Convex
 
-Status: not started. Depends on: M1. Design: [library.md](library.md#sermons),
+Status: not started; M3a (iOS on M1's surface) runs first. Depends on: M1. Design: [library.md](library.md#sermons),
 [backend.md](backend.md#state-in-convex).
 
 **Goal.** Sermons are library items: recorded through one encoder in core, written to one M4A on the

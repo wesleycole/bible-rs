@@ -1,6 +1,30 @@
 # M3: The iOS app
 
-Status: not started. Depends on: M1, M1b, M2. Design: [library.md](library.md), [backend.md](backend.md#accounts).
+Status: M3a in progress (October 20), run ahead of M1b and M2 by the owner's decision: a working
+product on Mac and iOS as soon as possible. M3b follows M1b and M2. Everything stays on Clerk's
+development instance and dev Convex until the production cut-over, which is parked until the iOS app
+runs ([m1](m1-library-foundation.md#before-any-code-ships)). Depends on: M1 (M3a); M1b and M2 (M3b).
+Design: [library.md](library.md), [backend.md](backend.md#accounts).
+
+## The split
+
+**M3a, on M1's surface.** The FFI growth below (1–3, 5–7: tokens, `Study` and its observer, sync,
+`find_all` and citation segments, `me()` / `deleteAccount()`, Keychain secrets), then the app:
+sign-in through the Clerk iOS SDK (email code and passkeys, development instance), the reader with
+selection and the six highlight colours, bookmarks, the verse note sheet and the notes list, Recents,
+the library and Ask consent sheets, sync status, Settings → Account with deletion, and StoreKit 2
+last (it needs the proxy, not M1b or M2). Ask ships in M3a only if the device-side tools the desktop
+had before M1 cross the FFI cheaply; otherwise it waits for M3b. Build order: the FFI with Rust tests
+and `LingerCoreTests`, sign-in, the reader and notes with sync, then the rest. Every UI step is
+checked on the simulator.
+
+**M3b, after M1b and M2.** The library tab's sermon views and playback (app 4), and Ask with the
+library tools (FFI 4, app 5), plus the Done-when items that need them.
+
+**Proxy for M3a.** `me()`, deletion, Ask and StoreKit go to the proxy, and the production proxy
+verifies production tokens, so the simulator talks to a proxy on dev Clerk and dev Convex: `pnpm dev`
+on the Mac (`127.0.0.1:3000`, which the simulator reaches), set by a build setting as the desktop's
+`LINGER_API_URL` is.
 
 **Goal.** A signed-in iPhone and iPad app that reads, takes notes, highlights, asks questions over the
 library, and stays in sync with the Mac. It reaches TestFlight at the end of M3. Capture comes next:
@@ -68,8 +92,10 @@ translations), and that the app launches to text as fast as now.
 
 ## project.yml
 
-- Capabilities: Sign in with Apple, Keychain sharing (for Clerk), In-App Purchase, and Associated Domains
-  for `auth.trylinger.com` (which exists from M1) if Clerk's iOS SDK needs it.
+- Capabilities: Keychain sharing (for Clerk), In-App Purchase, and Associated Domains with
+  `webcredentials:` the Clerk Frontend API's host, which Clerk's iOS SDK needs for passkeys
+  (`elegant-mink-67.clerk.accounts.dev` in M3a, `clerk.trylinger.com` from the cut-over). Sign in
+  with Apple joins when Apple sign-in is turned on in Clerk.
 - Usage descriptions arrive with the features that need them (camera and photo library in M4,
   microphone in M5).
 - The deployment target stays iOS 17; SpeechTranscriber (M5) is used only on iOS 26 and later.
@@ -85,10 +111,17 @@ translations), and that the app launches to text as fast as now.
 
 ## Done when
 
-- A note written on the iPhone appears on the Mac within a second, and the other way round.
-- Ask on the iPhone cites a sermon recorded on the Mac and plays it from the cited second.
-- A sandbox purchase on the iPhone unlocks Pro on the Mac.
+**M3a:**
+
+- A note or highlight made on the iPhone simulator appears on the Mac within a second, and the other
+  way round.
+- Sign-in and sign-out work through Clerk's development instance.
 - Account deletion from the iPhone removes everything ([backend.md](backend.md#deletion)).
+- A sandbox purchase on the iPhone unlocks Pro on the Mac.
+
+**M3b:**
+
+- Ask on the iPhone cites a sermon recorded on the Mac and plays it from the cited second.
 - A TestFlight build is in testers' hands, with review notes explaining why sign-in is required.
 
 ## Risks

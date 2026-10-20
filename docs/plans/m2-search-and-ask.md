@@ -1,6 +1,6 @@
 # M2: Search and Ask over the library
 
-Status: not started. Depends on: M1, M1b. Design: [library.md](library.md#search-and-ask),
+Status: not started; M3a (iOS on M1's surface) runs first. Depends on: M1, M1b. Design: [library.md](library.md#search-and-ask),
 [backend.md](backend.md#the-ask-contract).
 
 **Goal.** Ask answers from the user's library as well as the Bible, cites each library claim, and the
