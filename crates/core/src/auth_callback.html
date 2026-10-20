@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{{title}} · Linger</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      color-scheme: light;
+      background: #fbf5e8;
+      color: #3a2e22;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: 48px 24px;
+    }
+    main {
+      width: 100%;
+      max-width: 560px;
+      text-align: center;
+    }
+    .logo svg { display: block; width: 112px; height: 112px; margin: 0 auto; }
+    .wordmark { margin: 12px 0 0; font: 32px/1.2 Georgia, "Times New Roman", serif; }
+    .divider { width: 40px; height: 1px; margin: 36px auto; background: #e0d2b4; }
+    h1 {
+      margin: 0;
+      font: 400 clamp(30px, 5vw, 40px)/1.2 Georgia, "Times New Roman", serif;
+      letter-spacing: -0.025em;
+      text-wrap: balance;
+    }
+    .message { margin: 20px 0 0; font-size: 18px; line-height: 1.6; text-wrap: balance; }
+    .hint { margin: 32px 0 0; color: #73624e; font-size: 14px; line-height: 1.6; }
+    ::selection { background: #e0d2b4; color: #3a2e22; }
+  </style>
+</head>
+<body>
+  <!-- A quiet handoff to the desktop app, using Linger's doorway mark and sepia reading palette.
+       Everything is inline: the loopback listener closes after this response. -->
+  <main>
+    <div class="logo" aria-hidden="true">{{logo}}</div>
+    <p class="wordmark">Linger</p>
+    <div class="divider" aria-hidden="true"></div>
+    <h1>{{title}}</h1>
+    <p class="message">{{message}}</p>
+    <p class="hint">You can close this tab.</p>
+  </main>
+</body>
+</html>

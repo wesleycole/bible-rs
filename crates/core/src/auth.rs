@@ -351,8 +351,8 @@ impl Loopback {
     }
 }
 
-const PAGE: &str = "<!doctype html><meta charset=utf-8><title>Linger</title>\
-<body style=\"font:16px -apple-system,system-ui,sans-serif;margin:20vh auto;max-width:28em;text-align:center\">";
+const PAGE: &str = include_str!("auth_callback.html");
+const LOGO: &str = include_str!("../../../apps/desktop/assets/icon.svg");
 
 /// `None` for a request that isn't the callback.
 fn handle_callback(mut stream: TcpStream, state: &str) -> Result<Option<Result<String>>> {
@@ -373,14 +373,15 @@ fn handle_callback(mut stream: TcpStream, state: &str) -> Result<Option<Result<S
     } else {
         query_value(query, "code").context("the sign-in reply had no code")
     };
-    let message = match &result {
-        Ok(_) => "You're signed in to Linger. You can close this tab.",
-        Err(_) => "Linger couldn't finish signing in. Close this tab and try again.",
+    // The app still has to exchange the code and save the tokens after this response.
+    let (title, message) = match &result {
+        Ok(_) => ("Welcome to Linger.", "Return to the app to finish signing in."),
+        Err(_) => ("We couldn't finish signing in.", "Return to Linger and try signing in again."),
     };
-    let body = format!("{PAGE}<p>{message}</p>");
+    let body = PAGE.replace("{{title}}", title).replace("{{message}}", message).replace("{{logo}}", LOGO);
     let _ = write!(
         stream,
-        "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncache-control: no-store\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
     Ok(Some(result))
@@ -714,7 +715,7 @@ mod tests {
                 assert_eq!(get(&format!("{base}/favicon.ico")).0, 404);
                 let (status, page) = get(&format!("{redirect}?code=the-code&state={state}"));
                 assert_eq!(status, 200);
-                assert!(page.contains("signed in"), "{page}");
+                assert!(page.contains("Return to the app to finish signing in."), "{page}");
             });
         })
         .unwrap();
@@ -824,16 +825,37 @@ mod tests {
     }
 
     #[test]
-    fn loopback_rejects_a_reply_for_another_attempt() {
-        let loopback = Loopback::bind().unwrap();
-        let url = format!("{}?code=c&state=someone-else", loopback.redirect_uri);
-        let browser = std::thread::spawn(move || get(&url));
-        let err = loopback.wait("mine", Duration::from_secs(10)).unwrap_err();
-        assert!(err.to_string().contains("didn't match"), "{err}");
-        assert!(browser.join().unwrap().1.contains("couldn't finish"));
-        let denied = Loopback::bind().unwrap();
-        let url = format!("{}?error=access_denied&state=mine", denied.redirect_uri);
-        std::thread::spawn(move || get(&url));
-        assert!(denied.wait("mine", Duration::from_secs(10)).unwrap_err().to_string().contains("cancelled"));
+    fn loopback_page_guides_the_user_back_to_the_app() {
+        for (query, error) in [
+            ("code=private-code&state=mine", None),
+            ("code=private-code&state=someone-else", Some("didn't match")),
+            ("state=mine", Some("no code")),
+            (
+                "error=access_denied&error_description=%3Cscript%3Eprivate-error%3C%2Fscript%3E&state=mine",
+                Some("cancelled"),
+            ),
+        ] {
+            let loopback = Loopback::bind().unwrap();
+            let url = format!("{}?{query}", loopback.redirect_uri);
+            let browser = std::thread::spawn(move || get(&url));
+            let result = loopback.wait("mine", Duration::from_secs(10));
+            let (status, page) = browser.join().unwrap();
+            assert_eq!(status, 200);
+            if let Some(error) = error {
+                assert!(result.unwrap_err().to_string().contains(error));
+                assert!(page.contains("<h1>We couldn't finish signing in.</h1>"));
+                assert!(page.contains("Return to Linger and try signing in again."));
+                assert!(!page.contains("Welcome to Linger."));
+            } else {
+                assert_eq!(result.unwrap(), "private-code");
+                assert!(page.contains("<h1>Welcome to Linger.</h1>"));
+                assert!(page.contains("Return to the app to finish signing in."));
+            }
+            assert!(page.contains(LOGO), "the logo must be inline; the listener closes now");
+            assert!(page.contains("You can close this tab."));
+            assert!(!page.contains("private-code"));
+            assert!(!page.contains("private-error"));
+            assert!(!page.contains("{{"), "all template slots must be filled");
+        }
     }
 }
