@@ -26,7 +26,12 @@ These gate M1's release, because they can't be fixed once users have libraries:
    rebuild with `LINGER_CLERK_URL` and `LINGER_OAUTH_CLIENT_ID`. Production Convex then needs
    `CLERK_JWKS` (`https://clerk.trylinger.com/.well-known/jwks.json`) beside `CLERK_JWT_ISSUER`:
    `auth.config.ts` reads it, so the local test backend can inline a key, and Convex refuses to
-   deploy while it is unset (dev has it since October 20). A new
+   deploy while it is unset (dev has it since October 20). As of October 20 production Convex
+   (`expert-rabbit-665`) has only `LINGER_PROXY_URL` and `LINGER_SERVER_SECRET`, so the cut-over sets
+   `CLERK_JWT_ISSUER=https://clerk.trylinger.com` and `CLERK_JWKS` before it deploys. The Convex CLI
+   login on the implementer's Mac reaches it (`npx convex env list --prod`), so no deploy key is
+   needed. The proxy's Clerk variables (`CLERK_SECRET_KEY`, `CLERK_WEBHOOK_SIGNING_SECRET`,
+   `CLERK_JWT_ISSUER`) are set in Vercel's Production environment by the owner. A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
