@@ -1,0 +1,151 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>linger-core on wasm</title>
+<style>
+  body { font-family: Literata, Georgia, serif; max-width: 40rem; margin: 2rem auto; line-height: 1.55; padding: 0 1rem; }
+  h1 { font-size: 1.3em; }
+  h2 { font-size: 1.05em; margin: 1.2em 0 .3em; }
+  p { margin: 0 0 .6em; text-indent: 1.2em; }
+  p.flush, p.poetry { text-indent: 0; }
+  p.poetry { margin: 0; padding-left: 1.5em; }
+  p.poetry.l2 { padding-left: 3em; }
+  p.blank { margin-top: .8em; }
+  sup { font-size: .65em; color: #888; margin-right: .15em; }
+  .wj { color: #a31f1f; }
+  pre { white-space: pre-wrap; font: .78em/1.4 ui-monospace, monospace; background: #f4f4f1; padding: .6em; }
+</style>
+<h1>linger-core on wasm</h1>
+<p>Serve the repository root (so <code>/data/…</code> resolves) and open
+<code>/crates/web/www/</code>. The numbers below are measured in this browser.</p>
+<pre id="results">loading…</pre>
+<div id="chapter"></div>
+<h2>search "living water"</h2>
+<pre id="search"></pre>
+<h2>cross_references John 3:16</h2>
+<pre id="xrefs"></pre>
+<script type="module">
+  import init, { add_data, load_translation, chapter, search, run_tool, parse_reference, segments }
+    from './pkg/linger_web.js';
+
+  const results = { browser: navigator.userAgent };
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const since = (t0) => r2(performance.now() - t0);
+
+  async function fetchData(path) {
+    const t0 = performance.now();
+    const bytes = new Uint8Array(await (await fetch('/data/' + path)).arrayBuffer());
+    results['fetch ' + path] = { bytes: bytes.length, ms: since(t0) };
+    add_data(path, bytes);
+  }
+
+  // Byte offsets (marks, spans) → text, as core stores them.
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  function render(verses) {
+    const out = document.getElementById('chapter');
+    let p = null;
+    const paragraph = (cls) => { p = document.createElement('p'); p.className = cls || ''; out.appendChild(p); };
+    for (const v of verses) {
+      const bytes = enc.encode(v.text);
+      const cuts = new Set([0, bytes.length]);
+      for (const m of v.marks) cuts.add(m.offset);
+      for (const s of v.spans) { cuts.add(s.start); cuts.add(s.end); }
+      const points = [...cuts].sort((a, b) => a - b);
+      let numbered = false;
+      for (let i = 0; i < points.length; i++) {
+        const at = points[i];
+        for (const m of v.marks.filter((m) => m.offset === at)) {
+          if (m.kind === 7 || m.kind === 8) {
+            const h = document.createElement(m.kind === 7 ? 'h2' : 'p');
+            h.textContent = m.text;
+            if (m.kind === 8) h.className = 'flush';
+            out.appendChild(h);
+            p = null;
+          } else if (m.kind === 2 || m.kind === 3 || m.kind === 4) paragraph('poetry l' + m.level);
+          else if (m.kind === 6) paragraph('blank');
+          else if (m.kind === 1) paragraph('flush');
+          else paragraph();
+        }
+        if (i + 1 === points.length) break;
+        if (!p) paragraph();
+        if (!numbered) {
+          const sup = document.createElement('sup');
+          sup.textContent = v.number_end > v.number ? `${v.number}-${v.number_end}` : v.number;
+          p.appendChild(sup);
+          numbered = true;
+        }
+        const end = points[i + 1];
+        const piece = dec.decode(bytes.slice(at, end));
+        const red = v.spans.some((s) => s.style === 0 && s.start <= at && end <= s.end);
+        const node = red ? Object.assign(document.createElement('span'), { className: 'wj', textContent: piece })
+                         : document.createTextNode(piece);
+        p.appendChild(node);
+      }
+      if (p) p.appendChild(document.createTextNode(' '));
+    }
+  }
+
+  try {
+    let t0 = performance.now();
+    await init();
+    results.init_ms = since(t0);
+
+    await fetchData('translations/bsb.bbl');
+    t0 = performance.now();
+    const meta = JSON.parse(load_translation('bsb'));
+    results.decode_bsb_ms = since(t0);
+    results.translation = `${meta.abbrev}: ${meta.name}`;
+
+    t0 = performance.now();
+    const verses = JSON.parse(chapter('bsb', 'John 3'));
+    results.chapter_john3 = { verses: verses.length, ms: since(t0) };
+    render(verses);
+
+    const queries = ['love', 'living water', 'faith hope love', 'righteousness of god', 'born again'];
+    t0 = performance.now();
+    search('bsb', 'love', 10);
+    results.search_first_with_index_build_ms = since(t0);
+    results.search = {};
+    for (const q of queries) {
+      const times = [];
+      let total = 0;
+      for (let i = 0; i < 10; i++) {
+        const t = performance.now();
+        total = JSON.parse(search('bsb', q, 10)).total;
+        times.push(performance.now() - t);
+      }
+      times.sort((a, b) => a - b);
+      results.search[q] = { total, median_ms: r2(times[5]), max_ms: r2(times[9]) };
+    }
+    const living = JSON.parse(search('bsb', 'living water', 10));
+    document.getElementById('search').textContent =
+      living.verses.map((v) => `${v.reference}  ${v.text}`).join('\n');
+
+    await fetchData('crossrefs/crossrefs.zst');
+    const input = JSON.stringify({ reference: 'John 3:16', limit: 5 });
+    t0 = performance.now();
+    const xrefs = JSON.parse(run_tool('bsb', 'cross_references', input));
+    results.cross_references = { first_with_decode_ms: since(t0), links: xrefs.cross_references.length };
+    t0 = performance.now();
+    run_tool('bsb', 'cross_references', input);
+    results.cross_references.warm_ms = since(t0);
+    document.getElementById('xrefs').textContent = JSON.stringify(xrefs, null, 1);
+
+    // The other Ask data, for the cost of decoding it with ruzstd on first use.
+    await fetchData('names/names.zst');
+    t0 = performance.now();
+    JSON.parse(run_tool('bsb', 'people_and_places', JSON.stringify({ name: 'Nicodemus' })));
+    results.people_and_places_first_with_decode_ms = since(t0);
+    await fetchData('original/original.zst');
+    t0 = performance.now();
+    JSON.parse(run_tool('bsb', 'original_words', JSON.stringify({ reference: 'John 3:16' })));
+    results.original_words_first_with_decode_ms = since(t0);
+
+    results.parse_reference = JSON.parse(parse_reference('jn3:16'));
+    results.segments = JSON.parse(segments('See {{John 3:16}} and {{Romans 5:8}}.'));
+    results.ok = true;
+  } catch (e) {
+    results.error = String(e && e.stack || e);
+  }
+  document.getElementById('results').textContent = JSON.stringify(results, null, 1);
+  window.results = results;
+</script>

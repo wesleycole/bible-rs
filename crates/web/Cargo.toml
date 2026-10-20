@@ -1,0 +1,18 @@
+[package]
+name = "linger-web"
+description = "linger-core for the browser: the M8 wasm spike (docs/plans/m8-web.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# No `native` (no SQLite, ureq, zstd C library) and no `bundled` data: the page fetches it.
+linger-core = { path = "../core", default-features = false }
+anyhow.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "0.2"

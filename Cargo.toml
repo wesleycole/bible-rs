@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/ffi", "apps/desktop", "xtask"]
+members = ["crates/core", "crates/ffi", "crates/web", "apps/desktop", "xtask"]
 default-members = ["crates/core", "crates/ffi", "apps/desktop"]
 
 [workspace.package]

@@ -1,5 +1,7 @@
 /target
 /dist
+# wasm-bindgen's output for the web spike's test page (crates/web).
+/crates/web/www/pkg
 /.sources
 *.dmg
 .DS_Store
