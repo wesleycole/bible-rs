@@ -21,6 +21,15 @@ use linger_core::{reference, search};
 
 uniffi::setup_scaffolding!();
 
+mod account;
+mod study;
+
+pub use account::{Account, AccountError, AccountInfo};
+pub use study::{
+    HighlightColor, LibrarySync, Note, Study, StudyObserver, SyncObserver, SyncState, TokenProvider,
+    VerseMarks, VerseNote, VerseRef, highlight_colors,
+};
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum BibleError {
     #[error("translation {id:?} is not installed")]
@@ -292,6 +301,31 @@ pub fn format_reference(reference: Reference) -> Result<String, BibleError> {
     Ok(r.display())
 }
 
+/// A piece of text with its references found: what a note or a typed passage shows as links.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TextSegment {
+    Text { text: String },
+    Reference { text: String, reference: Reference },
+}
+
+/// Splits text at the references written in it ("see Rom 8:28 and jn 3").
+#[uniffi::export]
+pub fn reference_segments(text: String) -> Vec<TextSegment> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (range, r) in reference::find_all(&text) {
+        if range.start > at {
+            out.push(TextSegment::Text { text: text[at..range.start].into() });
+        }
+        out.push(TextSegment::Reference { text: text[range.clone()].into(), reference: r.into() });
+        at = range.end;
+    }
+    if at < text.len() {
+        out.push(TextSegment::Text { text: text[at..].into() });
+    }
+    out
+}
+
 impl From<reference::Reference> for Reference {
     fn from(r: reference::Reference) -> Self {
         Self { book: r.book.0, chapter: r.chapter, verse: r.verse, verse_end: r.verse_end }
@@ -383,5 +417,21 @@ mod tests {
         assert!(format_reference(Reference { book: 42, chapter: 22, verse: None, verse_end: None }).is_err());
         assert_eq!(books().len(), 66);
         assert_eq!(books()[39].testament, Testament::New);
+    }
+
+    #[test]
+    fn splits_text_at_references() {
+        let rom = Reference { book: 44, chapter: 8, verse: Some(28), verse_end: None };
+        let jn = Reference { book: 42, chapter: 3, verse: None, verse_end: None };
+        assert_eq!(
+            reference_segments("See Rom 8:28 and John 3.".into()),
+            [
+                TextSegment::Text { text: "See ".into() },
+                TextSegment::Reference { text: "Rom 8:28".into(), reference: rom },
+                TextSegment::Text { text: " and ".into() },
+                TextSegment::Reference { text: "John 3".into(), reference: jn },
+                TextSegment::Text { text: ".".into() },
+            ]
+        );
     }
 }

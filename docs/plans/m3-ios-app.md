@@ -47,12 +47,17 @@ Swift seems to need goes into core and crosses the FFI. The FFI grows:
    library list and items, `forChapter`), with a `StudyObserver` callback when `generation` moves.
 3. **Sync:** `Sync::start(data_dir, token_provider)` over the `ConvexBackend`, the same engine as the
    desktop's, `status()`, and the observer. The tokio thread lives inside Rust, as on the desktop.
+   Built as `LibrarySync.start(study, convexUrl, tokens, observer)`: it reads the engine's writes into
+   the `Study`, whose observer then fires, as the desktop's `library_sync` does each frame.
 4. **Ask:** `Conversation` (new, from saved JSON, `ask(question, context, mode, observer)`), streaming
    `AskEvent`s (text, tool, thinking, allowance) through a callback, with the device-side tools, the
    public-domain gate and the library tools exactly as on the desktop.
 5. **References:** `find_all`, and citation parsing (`segments`) so Swift renders chips the same way.
+   M3a ships `reference_segments` (over `find_all`); `citation_segments` comes with Ask, its only user.
 6. **The API:** `me()`, `deleteAccount()`, and `attachAppleTransaction(jws)`.
 7. **Secrets** move to the Keychain on iOS (`secrets.rs`; the README lists this as not done).
+   Not in M3a: nothing on iOS writes through `SecretStore` (Clerk keeps its session in its own
+   Keychain item, and the app sets no translation keys), so it waits for the first secret that does.
 
 `scripts/build-ios-core.sh` and the CI `ios` job keep building it. Check the static library's size with
 `original`, `crossrefs` and `names` now used by the Ask tools (about 6 MB compressed on top of the

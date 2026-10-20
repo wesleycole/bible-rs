@@ -44,3 +44,71 @@ final class LingerCoreTests: XCTestCase {
         XCTAssertEqual(books().count, 66)
     }
 }
+
+/// Study data and sync through the bindings, with observers called back from Rust threads.
+final class StudyTests: XCTestCase {
+    private final class Observer: StudyObserver, SyncObserver, @unchecked Sendable {
+        let changed: XCTestExpectation
+        private(set) var generation: UInt64 = 0
+        init(_ changed: XCTestExpectation) { self.changed = changed }
+        func studyChanged(generation: UInt64) {
+            self.generation = generation
+            changed.fulfill()
+        }
+        func syncChanged() {}
+    }
+
+    private final class Tokens: TokenProvider, @unchecked Sendable {
+        let asked: XCTestExpectation
+        init(_ asked: XCTestExpectation) { self.asked = asked }
+        func token() -> String? {
+            asked.fulfill()
+            return nil
+        }
+        func refresh() -> String? { nil }
+    }
+
+    private func dataDir() -> String {
+        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    }
+
+    func testANoteWrittenThroughStudyReachesTheObserver() throws {
+        let changed = expectation(description: "the observer is told")
+        changed.assertForOverFulfill = false
+        let observer = Observer(changed)
+        let study = try Study(dataDir: dataDir(), observer: observer)
+        let verse = VerseRef(book: 42, chapter: 3, verse: 16)
+
+        try study.setNote(verse: verse, body: "For God so loved")
+        try study.setHighlight(verses: [verse], color: .green)
+        wait(for: [changed], timeout: 1)
+
+        XCTAssertEqual(observer.generation, study.generation())
+        XCTAssertEqual(try study.note(verse: verse)?.body, "For God so loved")
+        XCTAssertEqual(
+            try study.chapterMarks(book: 42, chapter: 3),
+            [VerseMarks(verse: 16, highlight: .green, note: true, bookmark: false)])
+        XCTAssertEqual(study.notes().map(\.reference), ["John 3:16"])
+        XCTAssertEqual(highlightColors().count, 6)
+        XCTAssertEqual(study.pendingChanges(), 2)
+    }
+
+    func testATokenProviderFeedsSync() throws {
+        let asked = expectation(description: "sync asks for a token")
+        asked.assertForOverFulfill = false
+        let study = try Study(dataDir: dataDir(), observer: nil)
+        // A closed port: the engine asks for a token before it ever reaches the server.
+        let sync = try LibrarySync.start(
+            study: study, convexUrl: "http://127.0.0.1:9", tokens: Tokens(asked), observer: nil)
+        wait(for: [asked], timeout: 5)
+        XCTAssertNotEqual(sync.status(), .synced)
+    }
+
+    func testSplitsTextAtReferences() {
+        let segments = referenceSegments(text: "See Rom 8:28.")
+        XCTAssertEqual(segments.count, 3)
+        guard case let .reference(text, reference) = segments[1] else { return XCTFail("\(segments)") }
+        XCTAssertEqual(text, "Rom 8:28")
+        XCTAssertEqual(reference.display, "Romans 8:28")
+    }
+}
