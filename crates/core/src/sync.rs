@@ -307,6 +307,9 @@ struct Engine {
 impl Engine {
     fn run(&mut self) {
         self.authenticate();
+        // The clock first, so the first pages a new device pulls are dated by it too; offline,
+        // the loop measures it once the server answers.
+        self.measure_clock();
         let after = cache::cursor(&self.conn).unwrap_or(0);
         self.subscribe(after);
         loop {
