@@ -491,10 +491,12 @@ mod tests {
     }
 
     /// Requests a mock server saw: (path, body).
+    #[cfg(not(target_os = "macos"))]
     type Seen = Arc<Mutex<Vec<(String, String)>>>;
 
     /// A stand-in for Clerk's token endpoints: answers each POST from `reply(path, form)` and
     /// keeps every request it saw.
+    #[cfg(not(target_os = "macos"))]
     fn mock_clerk(reply: impl Fn(&str, &str) -> (u16, String) + Send + 'static) -> (OAuthConfig, Seen) {
         use std::io::Read;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
