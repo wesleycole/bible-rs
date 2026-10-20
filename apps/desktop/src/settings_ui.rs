@@ -549,8 +549,8 @@ impl SettingsUi {
             footnote(
                 ui,
                 p,
-                "Reading never needs an account. Sign-in opens in your browser, with Apple, Google \
-                 or a code sent to your email. The free plan includes 30 questions a month.",
+                "Reading never needs an account. Sign-in opens in your browser, with a code sent \
+                 to your email or a passkey. The free plan includes 30 questions a month.",
             );
             self.dev_token(ui, p, actions);
             return;

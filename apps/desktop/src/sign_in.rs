@@ -80,7 +80,7 @@ impl SignIn {
                 cx,
                 button_top + 44.0,
                 20.0,
-                "Opens your browser to sign in with Apple, Google or your email.",
+                "Opens your browser to sign in with your email or a passkey.",
                 theme::text::SMALL.font(),
                 p.ink_3,
                 0.0,

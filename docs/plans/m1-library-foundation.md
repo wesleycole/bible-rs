@@ -37,7 +37,12 @@ These gate M1's release, because they can't be fixed once users have libraries:
    production tokens with `CLERK_SECRET_KEY` and Clerk's JWKS; `CLERK_JWT_KEY` is only for the local
    dev-token harness (`scripts/dev-token.ts --env`). The sign-in smoke test against production
    needs a real inbox: Clerk's test mode (`+clerk_test` addresses, code 424242) is on only in
-   development instances, and stays off in production. A new
+   development instances, and stays off in production. Smoke-tested October 20 (Mac prover):
+   `linger signin` with the two overrides opens `accounts.trylinger.com/sign-in`, "Sign in to
+   Linger" with email and "Use passkey instead", no Google, Apple or password, and no OAuth error.
+   The registered redirect is `http://127.0.0.1/callback` (no port); whether Clerk accepts the
+   app's ported loopback when it issues the code is unproven until one real sign-in (Wes), because
+   `/oauth/authorize` sends the browser to sign in before it checks `redirect_uri`. A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
@@ -197,7 +202,9 @@ These gate M1's release, because they can't be fixed once users have libraries:
    order: a refused change holds the ones behind it, and the footer shows its error with Retry.
    A feed the server answers with an error is subscribed again on the same backoff, so a passing
    server failure mends itself rather than waiting for Retry or a restart; the error reads text
-   first, with Convex's request id after it ("Server Error (request 398131bce453f0af)").
+   first, with Convex's request id after it ("Server Error (request 398131bce453f0af)"). Only a
+   feed refused mid-session reaches that footer (the sync test covers it): a token refused at
+   launch lands on the full-window sign-in screen with "Your session ended. Sign in again."
    The `convex` crate reconnects on its own and never errors a subscription for want of a network,
    so "offline" comes from its `WebSocketState` channel (`Backend::connected`), and the engine
    backs off as a whole while offline rather than per change. The cache keeps tombstones (a
@@ -373,11 +380,15 @@ inside `Effect.promise`; then the proxy becomes a `Context.Service` like the ven
 
 ## Done when
 
-Status (October 20, after the Effect conversion): the second, third and fourth hold; the first holds
-in the core (sync tests, both provers) and needs a timing with the window uncovered; for the fifth,
-offline reading, notes and Recents work, and start-up isn't yet compared with sync on. Still open
-from Tests: the 1,000-client load test, and reading CI's first start-up comparison with sync on. Parked for the cut-over push: the production defaults in `auth.rs`, production
-Convex and the proxy (the production Clerk instance and its OAuth application exist).
+Status (October 20, after the Effect conversion): the first four hold. For the first, the Mac
+prover timed five edits from another device with the window uncovered and frontmost: the cache
+write and the window's repaint both landed 0.019–0.024 s after the writer's sync returned (and
+0.019 s visible but not frontmost), editor, list and "Edited on another device just now" current;
+the earlier "lag" was a window covered by a call, which macOS doesn't draw. For the fifth,
+offline reading, notes and Recents work, and start-up with sync on is no slower on this Mac
+(`RUNS=4`, see Tests); `RUNS=20` on both machines settles it. Still open from Tests: the 1,000-client
+load test. Parked for the cut-over push: the production defaults in `auth.rs`, production Convex
+and the proxy (the production Clerk instance and its OAuth application exist).
 
 - A note written on one Mac appears on another within a second, and survives editing on both while one
   is offline: the later edit wins, the earlier one is kept as a conflict copy, and the open editor says

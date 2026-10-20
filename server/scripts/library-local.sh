@@ -23,13 +23,6 @@ case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) TARGET=x86_64-unknown-linux-gnu ;;
     *) echo "no Convex backend build for $(uname -sm)" >&2; exit 1 ;;
 esac
-if [[ "$(uname -s)" == Linux ]]; then
-    have=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || echo 0)
-    if [[ "$(printf '%s\n2.39\n' "$have" | sort -V | head -1)" != 2.39 ]]; then
-        echo "Convex's local backend needs glibc 2.39 or newer; this host has ${have}." >&2
-        exit 1
-    fi
-fi
 BIN="$HOME/.cache/convex/binaries/$TAG/convex-local-backend"
 if [[ ! -x "$BIN" ]]; then
     mkdir -p "$(dirname "$BIN")"
@@ -37,6 +30,17 @@ if [[ ! -x "$BIN" ]]; then
         "https://github.com/get-convex/convex-backend/releases/download/$TAG/convex-local-backend-$TARGET.zip"
     unzip -q -o "$DIR/backend.zip" -d "$(dirname "$BIN")"
     chmod +x "$BIN"
+fi
+# The binary itself is the test (a host may run it through a newer libc of its own); when it can't
+# start, say why it most likely can't.
+if ! "$BIN" --help >/dev/null 2>&1; then
+    if [[ "$(uname -s)" == Linux ]]; then
+        have=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || echo unknown)
+        echo "Convex's local backend needs glibc 2.39 or newer; this host has ${have}." >&2
+    else
+        echo "Convex's local backend ($BIN) doesn't start on this host." >&2
+    fi
+    exit 1
 fi
 
 NAME=linger-test
