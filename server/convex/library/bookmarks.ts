@@ -4,12 +4,13 @@
  */
 import { Effect, Schema } from "effect"
 import type { InvalidRequest } from "../../shared/Errors.js"
-import { Bookmark } from "../../shared/records.js"
+import { Bookmark, type WriteAnswer } from "../../shared/records.js"
 import { effectMutation } from "../lib/effect.js"
 import { setPerVerse } from "../lib/perVerse.js"
 import type { Sequence } from "../lib/sequence.js"
 import { CurrentUser, MutationCtx } from "../lib/services.js"
 import { checkVerse } from "../lib/verses.js"
+import { asRecord } from "./notes.js"
 
 export const SetArgs = Schema.Struct({
   verse: Schema.Int,
@@ -21,16 +22,12 @@ export const SetArgs = Schema.Struct({
   createdAt: Bookmark.fields.createdAt
 })
 
-export type SetResult =
-  | { readonly result: "ok"; readonly seq: number }
-  | { readonly result: "conflict"; readonly seq: number; readonly createdAt?: number; readonly label: string | null }
-
 /** The record's id, derived from the verse, so every device makes the same one. */
 export const bookmarkUid = (verse: number) => `b-${verse}`
 
 export const set = effectMutation({
   args: SetArgs,
-  handler: Effect.fn("bookmarks.set")(function*(args): Effect.fn.Return<SetResult, InvalidRequest, MutationCtx | CurrentUser | Sequence> {
+  handler: Effect.fn("bookmarks.set")(function*(args): Effect.fn.Return<WriteAnswer, InvalidRequest, MutationCtx | CurrentUser | Sequence> {
     const verse = yield* checkVerse(args.verse)
     const ctx = yield* MutationCtx
     const { userId } = yield* CurrentUser
@@ -45,6 +42,9 @@ export const set = effectMutation({
           ctx.db.patch(id, label === null ? { seq, deletedAt } : { seq, label, deletedAt: undefined, ...(createdAt === undefined ? {} : { createdAt }) })
         )
     }, args.label, args.baseSeq, args.createdAt)
-    return result.result === "conflict" ? { result: "conflict", seq: result.seq, label: result.value, ...(result.createdAt === undefined ? {} : { createdAt: result.createdAt }) } : result
+    const row = yield* Effect.promise(() => ctx.db.query("bookmarks").withIndex("by_user_verse", (q) => q.eq("userId", userId).eq("verse", verse)).unique())
+    const record = row ? yield* asRecord("bookmark", row) : undefined
+    if (result.result === "conflict") return { result: "conflict", seq: result.seq, record: record! }
+    return { result: "ok", seq: result.seq, ...(record ? { record } : {}) }
   })
 })

@@ -19,9 +19,11 @@ export interface VerseTable<V, K> {
   readonly update: (id: K, seq: number, value: V | null, deletedAt: number, createdAt: number | undefined) => Effect.Effect<void>
 }
 
-export type SetResult<V> =
-  | { readonly result: "ok"; readonly seq: number }
-  | { readonly result: "conflict"; readonly seq: number; readonly value: V | null; readonly createdAt?: number }
+/** What happened; the handler answers it with the stored record (`WriteAnswer`). */
+export interface SetResult {
+  readonly result: "ok" | "conflict"
+  readonly seq: number
+}
 
 /**
  * Sets the verse's record to `value`, or clears it for `null`, unless `baseSeq` is stale. A new
@@ -36,12 +38,10 @@ export const setPerVerse = Effect.fnUntraced(function*<V, K>(
   const stored = yield* table.find
   const decision = decidePerVerse(stored, value, baseSeq)
   switch (decision.kind) {
-    case "conflict": {
-      const when = stored?.createdAt
-      return { result: "conflict", seq: decision.seq, value: decision.value, ...(when === undefined ? {} : { createdAt: when }) } as SetResult<V>
-    }
+    case "conflict":
+      return { result: "conflict", seq: decision.seq } satisfies SetResult
     case "unchanged":
-      return { result: "ok", seq: decision.seq } as SetResult<V>
+      return { result: "ok", seq: decision.seq } satisfies SetResult
     case "write": {
       const seq = yield* (yield* Sequence).next
       const now = yield* Clock.currentTimeMillis
@@ -52,7 +52,7 @@ export const setPerVerse = Effect.fnUntraced(function*<V, K>(
         const revived = stored.value === null && decision.value !== null
         yield* table.update(stored.id, seq, decision.value, now, revived ? createdAt ?? now : undefined)
       }
-      return { result: "ok", seq } as SetResult<V>
+      return { result: "ok", seq } satisfies SetResult
     }
   }
 })

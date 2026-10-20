@@ -23,13 +23,18 @@ describe("library.highlights (Effect inside Convex)", () => {
   it("writes, lists and clears a highlight with a rising sequence", async () => {
     const t = await makeConvex()
     const ann = as(t, "user_ann")
-    expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "yellow" })).toEqual({ result: "ok", seq: 1 })
-    expect(await ann.mutation(api.library.highlights.set, { verse: ROMANS_8_28, color: "blue" })).toEqual({ result: "ok", seq: 2 })
+    expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "yellow" })).toEqual({
+      result: "ok",
+      seq: 1,
+      // The record as stored, exactly as the feed sends it.
+      record: (await page(t, "user_ann", 0)).records[0]
+    })
+    expect(await ann.mutation(api.library.highlights.set, { verse: ROMANS_8_28, color: "blue" })).toMatchObject({ result: "ok", seq: 2, record: { color: "blue" } })
     expect(await ann.query(api.library.highlights.list, {})).toEqual([
       { uid: "h-42003016", seq: 1, verse: JOHN_3_16, color: "yellow" },
       { uid: "h-44008028", seq: 2, verse: ROMANS_8_28, color: "blue" }
     ])
-    expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: null, baseSeq: 1 })).toEqual({ result: "ok", seq: 3 })
+    expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: null, baseSeq: 1 })).toMatchObject({ result: "ok", seq: 3, record: { deletedAt: expect.any(Number) } })
     expect(await ann.query(api.library.highlights.list, {})).toEqual([{ uid: "h-44008028", seq: 2, verse: ROMANS_8_28, color: "blue" }])
     // Clearing what isn't there is a no-op, not a write.
     expect(await ann.mutation(api.library.highlights.set, { verse: 1_001_001, color: null })).toEqual({ result: "ok", seq: 0 })
@@ -65,19 +70,18 @@ describe("library.highlights (Effect inside Convex)", () => {
     expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "pink", baseSeq: 1 })).toEqual({
       result: "conflict",
       seq: 2,
-      color: "green",
-      createdAt: expect.any(Number)
+      record: { type: "highlight", uid: "h-42003016", seq: 2, verse: JOHN_3_16, color: "green", createdAt: expect.any(Number) }
     })
     expect(await ann.query(api.library.highlights.list, {})).toEqual([{ uid: "h-42003016", seq: 2, verse: JOHN_3_16, color: "green" }])
     // A write without baseSeq (a first write from a device with no copy) still wins.
-    expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "pink" })).toEqual({ result: "ok", seq: 3 })
+    expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "pink" })).toMatchObject({ result: "ok", seq: 3 })
   })
 
   it("never shows one user's records to another", async () => {
     const t = await makeConvex()
     await as(t, "user_ann").mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "yellow" })
     expect(await as(t, "user_bob").query(api.library.highlights.list, {})).toEqual([])
-    expect(await as(t, "user_bob").mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "blue" })).toEqual({ result: "ok", seq: 1 })
+    expect(await as(t, "user_bob").mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "blue" })).toMatchObject({ result: "ok", seq: 1 })
     expect(await as(t, "user_ann").query(api.library.highlights.list, {})).toEqual([{ uid: "h-42003016", seq: 1, verse: JOHN_3_16, color: "yellow" }])
   })
 
@@ -108,13 +112,12 @@ describe("library.bookmarks", () => {
   it("keeps the server's copy when the writer's baseSeq is stale", async () => {
     const t = await makeConvex()
     const ann = as(t, "user_ann")
-    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "Gospel" })).toEqual({ result: "ok", seq: 1 })
-    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "The gospel", baseSeq: 1 })).toEqual({ result: "ok", seq: 2 })
-    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: null, baseSeq: 1 })).toEqual({
+    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "Gospel" })).toMatchObject({ result: "ok", seq: 1 })
+    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "The gospel", baseSeq: 1 })).toMatchObject({ result: "ok", seq: 2 })
+    expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: null, baseSeq: 1 })).toMatchObject({
       result: "conflict",
       seq: 2,
-      label: "The gospel",
-      createdAt: expect.any(Number)
+      record: { type: "bookmark", label: "The gospel", createdAt: expect.any(Number) }
     })
     const rows = await t.run((ctx) => ctx.db.query("bookmarks").collect())
     expect(rows.map((r) => [r.verse, r.seq, r.label, r.deletedAt])).toEqual([[JOHN_3_16, 2, "The gospel", undefined]])

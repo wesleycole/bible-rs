@@ -698,7 +698,7 @@ export const Changes = Schema.Union([Schema.Struct({
 
 export type Changes = typeof Changes["Type"]
 
-/** What a write of a record kept by uid answers (`library/notes.upsert` and `.remove`, `library/chats.save` and `.remove`). The records are as the feed sends them at their `seq`, so the writing device holds exactly what every other device gets. */
+/** What every library write answers (`library/highlights.set`, `bookmarks.set`, `notes.upsert` and `.remove`, `chats.save` and `.remove`, `items.updateDetails`). The records are as the feed sends them at their `seq`, so the writing device holds exactly what every other device gets. */
 export const WriteAnswerValidator = v.union(v.object({
     record: v.optional(v.union(v.object({
       color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),

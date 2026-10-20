@@ -30,8 +30,11 @@ export const RemoveArgs = Schema.Struct({ uid: Uid, baseSeq: Schema.optionalKey(
 
 const encodeRecord = Schema.encodeUnknownEffect(FeedRecord)
 
-/** A stored note or chat as the feed sends it, for a write's answer (`WriteAnswer`). */
-export const asRecord = (type: "item" | "chat", doc: Doc<"items"> | Doc<"chats">) => Effect.orDie(encodeRecord({ ...doc, type }))
+/** A stored record as the feed sends it, for a write's answer (`WriteAnswer`). */
+export const asRecord = (
+  type: FeedRecord["type"],
+  doc: Doc<"items"> | Doc<"chats"> | Doc<"highlights"> | Doc<"bookmarks">
+) => Effect.orDie(encodeRecord({ ...doc, type }))
 
 /** A note's title: its first line, trimmed. */
 export const titleOf = (text: string) => (text.split("\n").find((l) => l.trim() !== "")?.trim() ?? "").slice(0, 80)
