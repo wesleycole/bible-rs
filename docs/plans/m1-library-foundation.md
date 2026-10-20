@@ -42,7 +42,9 @@ These gate M1's release, because they can't be fixed once users have libraries:
    Linger" with email and "Use passkey instead", no Google, Apple or password, and no OAuth error.
    The registered redirect is `http://127.0.0.1/callback` (no port); whether Clerk accepts the
    app's ported loopback when it issues the code is unproven until one real sign-in (Wes), because
-   `/oauth/authorize` sends the browser to sign in before it checks `redirect_uri`. A new
+   `/oauth/authorize` sends the browser to sign in before it checks `redirect_uri`. Before the client
+   defaults flip, the smoke test also confirms the proxy's `/v1/me` answers 200 for a production
+   token: a refusal there signs the app out and stops sync, as the start-up bench found. A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
