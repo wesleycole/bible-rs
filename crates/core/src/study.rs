@@ -491,6 +491,7 @@ impl StudyStore {
 
     /// Edits the server refused because another device had changed the record since, newest
     /// first: the server's copy stood and is what this device now shows.
+    /// The order is part of the contract: `linger sync` takes the head to report a run's own.
     pub fn conflicts(&self) -> Vec<SyncConflict> {
         let Ok(mut st) =
             self.conn.prepare_cached("SELECT kind, key, mine, theirs, at FROM conflicts ORDER BY id DESC")

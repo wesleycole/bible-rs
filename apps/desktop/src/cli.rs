@@ -391,8 +391,8 @@ fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
     let (h, _, b) = study.counts();
     println!("synced with {url}: cursor {cursor}, {h} highlights, {b} bookmarks");
     let conflicts = study.conflicts();
-    // Newest first, so this run's are the head of the list.
-    for c in &conflicts[..conflicts.len().saturating_sub(before)] {
+    // conflicts() is newest first, so this run's are the head of the list.
+    for c in conflicts.iter().take(conflicts.len().saturating_sub(before)) {
         println!("conflict on {} {}: kept {} over this device's {}", c.kind, c.verse, c.theirs, c.mine);
     }
     Ok(())

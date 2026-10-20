@@ -183,7 +183,9 @@ submission.
      grant; a grant happens only within a minute of expiry or after a 401, and its answer is
      written before the new token is used, because Clerk rotates the refresh token on every grant
      and a process killed in between would otherwise leave a dead one. The UI and sync threads
-     share one session, which holds one grant at a time.
+     share one session, which holds one grant at a time. Two processes starting inside the same pre-expiry minute
+     can both grant with one refresh token; the second's start fails on Clerk's rotation, and its
+     next start succeeds with the pair the first stored. That is a known limit, not fixed.
 
 ### Verification
 
