@@ -15,13 +15,40 @@ transcription (M5), the digest (M2), playback of synced audio in the desktop app
 1. **AssemblyAI's written no-training commitment**, or a move to a transcription provider that gives
    one ([backend.md](backend.md#privacy-and-consent)).
 2. **Two spikes, two days each:**
-   - **The encoder from Rust:** `AudioConverter` through `objc2-audio-toolbox` (or `coreaudio-sys`)
-     encoding a 5-minute 16 kHz WAV to AAC-LC packets on macOS, built for an iOS target too. If the
-     bindings fall short, a C shim built by `build.rs`, not Swift.
-   - **The muxer:** `recording::mp4` writes an M4A from those packets; AVPlayer, Safari, Chrome and
-     `ffprobe` report its exact duration and seek exactly, and a timestamp an hour into a two-hour test
-     file lands on its sentence. The ADTS numbers in [library.md](library.md#sermons) are why this
-     matters.
+   - **The encoder from Rust** (done, October 20): `recording::aac` on `objc2-audio-toolbox` 0.3
+     (its `AudioConverter` feature) and `objc2-core-audio-types`, behind core's `apple-audio` feature;
+     the bindings cover it, so no C shim. `cargo check --features apple-audio` passes for
+     `aarch64-apple-ios` and `aarch64-apple-ios-sim`. One continuous converter per recording, 16 kHz
+     mono 16-bit in, 1024-frame `kAudioFormatMPEG4AAC` packets out, bit rate set to 32 kbps (the
+     converter offers 12–48 kbps at this rate); the input callback answers a private status code when
+     the pushed samples run out, so `push` returns the packets that are complete and keeps the rest
+     without padding or copying. Measured in release on an M-series Mac: five minutes → 4690 packets,
+     1,025,595 bytes (27.3 kbit/s) in 0.21 s (≈1450× real time); two hours → 112,503 packets,
+     27,360,760 bytes (30.4 kbit/s, 13.7 MB an hour) in 4.9 s. Priming is 2112 frames
+     (`kAudioConverterPrimeInfo`) and the magic cookie is a whole ES descriptor holding the two-byte
+     AudioSpecificConfig `14 08`; variable-size properties must be sized with
+     `AudioConverterGetPropertyInfo` first, any other buffer size is refused. The `aarch64-apple-ios`
+     release `liblinger_ffi.a` grows by 0.9 MB (79.3 → 80.2 MB, unstripped archive), core's rlib by
+     122 KB.
+   - **The muxer** (done, October 20): `recording::mp4` writes `ftyp`, `moov`, `mdat`: one track with
+     `stsz`/`stts`/`stsc`/`stco`, the `esds` config, an edit list that skips the priming and ends at
+     the recorded frame count, and a `roll` sample group (`sgpd`/`sbgp`, roll distance −1). Measured
+     on a five-minute and a two-hour file whose every second carries two tones spelling its number
+     (the ignored `spike_files` test writes them): `ffprobe` 9.0 reports 300.000000 and 7200.000000
+     (start 0, 4690 and 112,503 frames) and a full decode is exactly 4,800,000 and 115,200,000
+     samples; AVAsset and AVPlayerItem say 300.0 and 7200.0 (115200000/16000), a zero-tolerance seek
+     lands on 3600.0 and AVAssetReader reads second 3600 there; Chrome 145's `<audio>` reports 300 and
+     7200, `currentTime = 3600` lands on 3600 and the rendered audio sits on the timeline within
+     10 ms; WebKit (an off-screen `WKWebView`, Safari's engine) reports 300 and 7200, seeks to 3600,
+     and its `decodeAudioData` gives the exact 115,200,000 samples with second 3600 in place. The bare
+     ADTS of the same packets reproduces [library.md](library.md#sermons): `ffprobe` 611.4 s and
+     16,260.1 s, AVAsset 10,536.8 s, and the seek "an hour in" plays second 2482. The `roll` group is
+     the finding: without it, Apple's decoders (AVAssetReader and AVPlayer, so Safari too) assume
+     2112 priming frames on their own and apply the edit list on top, so playback runs 0.132 s early
+     and a whole-file read is 2112 samples short; Apple's own encoder writes no edit list at all,
+     only an `iTunSMPB` tag, which ffmpeg and Chrome don't read (300.16 s, 0.132 s late). Edit list
+     plus `roll` group is what ffmpeg writes, and every player reads it the same way. Chrome's
+     `decodeAudioData` alone keeps the 448 frames of end padding; its element and timeline don't.
 
 ## linger-core
 
@@ -31,8 +58,9 @@ transcription (M5), the digest (M2), playback of synced audio in the desktop app
    a packet boundary, and a packet table (size, offset, part) kept for the muxer. WAV chunks continue on
    the Mac for crash safety and on-device transcription.
 3. **`recording::mp4`:** the muxer. One AAC track, `moov` first (`stsz`, `stts`, `stsc`, `stco`, the
-   `esds` AudioSpecificConfig), then `mdat` copied from the parts; no re-encoding. Golden files in
-   tests.
+   `esds` AudioSpecificConfig, the edit list and `roll` group the spike settled), then `mdat` copied
+   from the parts; no re-encoding. Golden files in tests. The spike's `write` takes the packet sizes
+   and a reader over the packets; the packet table from 2 feeds it.
 4. **Linux:** one FLAC with a seek table at the end through `flacenc`.
 5. **Upload sequence**, in core, through the outbox: parts as they close, only if `sermons.begin` said
    `uploadAudio`; at the end, the M4A (or FLAC) in 8 MB `uploadPart` slices, then `sermons.finish`.

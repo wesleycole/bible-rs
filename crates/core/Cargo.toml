@@ -19,6 +19,8 @@ native = ["dep:rusqlite", "dep:ureq", "dep:hound", "dep:zip", "dep:flate2", "dep
 sync = ["native"]
 # The native Convex backend: the `convex` crate on a current-thread tokio runtime.
 convex = ["sync", "dep:convex", "dep:tokio", "dep:futures"]
+# AAC encoding through AudioToolbox's `AudioConverter` (`recording::aac`), on macOS and iOS.
+apple-audio = ["dep:objc2-audio-toolbox", "dep:objc2-core-audio-types"]
 
 [dependencies]
 anyhow.workspace = true
@@ -48,6 +50,18 @@ web-time = "1"
 # API keys live in the macOS Keychain; other platforms use a 0600 file.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = "4"
+
+# The AAC encoder: the same AudioToolbox C API on macOS and iOS, bound by objc2's generated crates.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2-audio-toolbox = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "AudioConverter",
+    "objc2-core-audio-types",
+] }
+objc2-core-audio-types = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "CoreAudioBaseTypes",
+] }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

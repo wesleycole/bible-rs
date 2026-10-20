@@ -2691,6 +2691,8 @@ dependencies = [
  "hound",
  "keyring",
  "memchr",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
  "rusqlite",
  "ruzstd",
  "schemars",

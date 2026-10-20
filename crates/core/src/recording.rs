@@ -13,8 +13,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+pub mod aac;
+pub mod mp4;
+
 /// What transcription services expect and what speech needs: 16 kHz mono.
 pub const SAMPLE_RATE: u32 = 16_000;
+/// Frames (samples) in one AAC-LC packet.
+pub const FRAMES_PER_PACKET: u32 = 1024;
+/// The MPEG-4 AudioSpecificConfig of the AAC-LC stream (object type 2, 16 kHz, mono), which the
+/// muxer's `esds` carries and the decoder needs.
+pub const AUDIO_SPECIFIC_CONFIG: [u8; 2] = [0x14, 0x08];
 /// Long enough to give the transcriber context, short enough that a crash loses little.
 pub const CHUNK_SECONDS: u32 = 30;
 
