@@ -264,6 +264,8 @@ pub struct BibleApp {
     /// it sets when the cache changed, for `StudyStore::refresh`.
     pub sync: Option<linger_core::sync::SyncHandle>,
     sync_dirty: Arc<std::sync::atomic::AtomicBool>,
+    /// The cache changed while the window was hidden, so what it shows is stale until a frame paints.
+    stale_while_hidden: bool,
     /// Why the engine couldn't start, if it couldn't (shown in the sidebar footer).
     sync_error: Option<String>,
     /// Screenshots: the footer's status without an engine (`sync:` demo step).
@@ -421,6 +423,7 @@ impl BibleApp {
             account,
             sync: None,
             sync_dirty: Arc::default(),
+            stale_while_hidden: false,
             sync_error: None,
             demo_sync: None,
             settings_ui: None,
@@ -2679,6 +2682,7 @@ impl BibleApp {
             }
         }
         self.library_sync(ctx);
+        self.stale_while_hidden = false;
         if let Some(sp) = &mut self.scroll_probe {
             if self.startup.frames > 3 {
                 sp.frames.push(frame_start.elapsed().as_secs_f64() * 1000.0);
@@ -2717,6 +2721,22 @@ impl BibleApp {
 }
 
 impl eframe::App for BibleApp {
+    /// While the window is covered or minimised eframe runs only this, never `ui`, and uncovering
+    /// it doesn't ask for a frame: so pick up what sync wrote here, and while that leaves the
+    /// window showing an old picture, keep a slow tick going so the first one after it's shown
+    /// paints.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().visible()) != Some(false) || self.startup.first_ui.is_none() {
+            return;
+        }
+        let generation = self.study.generation();
+        self.library_sync(ctx);
+        self.stale_while_hidden |= self.study.generation() != generation;
+        if self.stale_while_hidden {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let frame_start = Instant::now();
         if self.startup.frames < 2 {
