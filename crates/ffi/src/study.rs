@@ -193,11 +193,6 @@ impl Study {
         Ok(Arc::new(Self { dir, store: Mutex::new(store), observer }))
     }
 
-    /// Moves whenever study data changes.
-    pub fn generation(&self) -> u64 {
-        self.lock().generation()
-    }
-
     /// The marks on a chapter's verses, for those that have any.
     pub fn chapter_marks(&self, book: u8, chapter: u8) -> Result<Vec<VerseMarks>, BibleError> {
         let c = chapter_idx(book, chapter)?;
@@ -489,7 +484,7 @@ mod tests {
             .set_highlight(vec![ROM_8_28, VerseRef { verse: 29, ..ROM_8_28 }], Some(HighlightColor::Purple))
             .unwrap();
         // The writer's own observer hears its writes at once.
-        assert_eq!(a.seen.0.load(Ordering::Relaxed), a.study.generation());
+        assert!(a.seen.0.load(Ordering::Relaxed) > 0, "a's study observer wasn't told");
 
         eventually("the note on b", || {
             b.study.note(ROM_8_28).unwrap().is_some_and(|n| n.body == "All things")

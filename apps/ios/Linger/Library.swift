@@ -10,16 +10,20 @@ final class Library {
     let study: Study?
     /// Moves when study data changes, here or from another device.
     fileprivate(set) var generation: UInt64 = 0
+    fileprivate(set) var syncState: SyncState = .signedOut
+    /// The account's plan and allowances, from the proxy.
+    private(set) var account: AccountInfo?
     private(set) var error: String?
-    private var sync: LibrarySync?
+    fileprivate var sync: LibrarySync?
     private let relay = Relay()
+    private let proxy = Account(baseUrl: Config.apiURL, tokens: ClerkTokens())
 
     init() {
         do {
             study = try Study(dataDir: dataDirectory(), observer: relay)
         } catch {
             study = nil
-            self.error = error.localizedDescription
+            self.error = message(of: error)
         }
         relay.library = self
     }
@@ -31,17 +35,61 @@ final class Library {
         return Dictionary(uniqueKeysWithValues: marks.map { ($0.verse, $0) })
     }
 
+    /// Changes the study; what it refuses is shown.
+    func write(_ change: (Study) throws -> Void) {
+        guard let study else { return }
+        do {
+            try change(study)
+        } catch {
+            self.error = message(of: error)
+        }
+    }
+
     /// Syncs while Clerk has a user; stops (keeping the cache and what's waiting) when it hasn't.
     func signedIn(_ signedIn: Bool) {
         guard let study else { return }
         if !signedIn {
             sync = nil
+            account = nil
+            syncState = .signedOut
         } else if sync == nil {
             do {
-                sync = try LibrarySync.start(study: study, convexUrl: Config.convexURL, tokens: ClerkTokens(), observer: nil)
+                let sync = try LibrarySync.start(
+                    study: study, convexUrl: Config.convexURL, tokens: ClerkTokens(), observer: relay)
+                self.sync = sync
+                syncState = sync.status()
             } catch {
-                self.error = error.localizedDescription
+                self.error = message(of: error)
             }
+        }
+    }
+
+    func retry() {
+        sync?.retry()
+    }
+
+    func loadAccount() async {
+        let proxy = self.proxy
+        switch await Task.detached(operation: { Result { try proxy.me() } }).value {
+        case let .success(info): account = info
+        case let .failure(error): self.error = message(of: error)
+        }
+    }
+
+    /// Deletes the account on the server, then everything of it on this device. If the server
+    /// refuses, the device keeps its data.
+    func deleteAccount() async {
+        let proxy = self.proxy
+        if case let .failure(error) = await Task.detached(operation: { Result { try proxy.deleteAccount() } }).value {
+            self.error = message(of: error)
+            return
+        }
+        sync = nil
+        do {
+            try study?.clearLibrary()
+            try await Clerk.shared.auth.signOut()
+        } catch {
+            self.error = message(of: error)
         }
     }
 
@@ -59,7 +107,7 @@ final class Library {
             try study?.clearLibrary()
             try await Clerk.shared.auth.signOut()
         } catch {
-            self.error = error.localizedDescription
+            self.error = message(of: error)
         }
     }
 
@@ -68,12 +116,19 @@ final class Library {
     }
 }
 
-/// Core calls its observer from its own threads.
-private final class Relay: StudyObserver, @unchecked Sendable {
+/// Core calls its observers from its own threads.
+private final class Relay: StudyObserver, SyncObserver, @unchecked Sendable {
     weak var library: Library?
 
     func studyChanged(generation: UInt64) {
         Task { @MainActor in self.library?.generation = generation }
+    }
+
+    func syncChanged() {
+        Task { @MainActor in
+            guard let library = self.library, let sync = library.sync else { return }
+            library.syncState = sync.status()
+        }
     }
 }
 

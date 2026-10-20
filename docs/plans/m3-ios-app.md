@@ -81,6 +81,8 @@ translations), and that the app launches to text as fast as now.
    Recents, and the allowance message on 402 and 429.
 6. **Settings → Account:** plan, questions and sermon hours left, storage used, Manage subscription,
    Export, Sign out, Delete account.
+   M3a leaves Export out: no Done-when needs it. Settings also shows the sync status and Retry, and
+   anything the study store refuses.
 7. **Consent sheets:** the library sheet at first sign-in and the Ask sheet at first question
    ([backend.md](backend.md#privacy-and-consent)).
 8. **Sync status** in the library tab, as on the desktop.
@@ -119,8 +121,14 @@ translations), and that the app launches to text as fast as now.
 **M3a:**
 
 - A note or highlight made on the iPhone simulator appears on the Mac within a second, and the other
-  way round.
-- Sign-in and sign-out work through Clerk's development instance.
+  way round. **Proven on the simulator** (8d85783, iPhone Air, dev Convex): a highlight tapped on the
+  phone was on the Mac 0.77 s later (an upper bound, including the CLI sync), and a bookmark synced
+  on the Mac was on the phone's screen 0.17 s after the Mac's sync returned. On a device with
+  TestFlight later.
+- Sign-in and sign-out work through Clerk's development instance. **Proven on the simulator**
+  (8d85783, iPhone Air): sign-out cleared study.sqlite to zero rows and a relaunch opened on the
+  sign-in screen; signing in again refilled the same counts as the Mac (40 highlights, 11 notes,
+  37 bookmarks). The headless XCUITest (LingerUITests) signs in by email code. On a device later.
 - Account deletion from the iPhone removes everything ([backend.md](backend.md#deletion)).
 - A sandbox purchase on the iPhone unlocks Pro on the Mac.
 

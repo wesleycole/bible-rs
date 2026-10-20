@@ -8,6 +8,7 @@ struct ReaderView: View {
     @State private var selected: Set<UInt8> = []
     @State private var noteVerse: VerseRef?
     @State private var showingNotes = false
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -33,12 +34,15 @@ struct ReaderView: View {
                 if !selected.isEmpty { actions }
             }
             .sheet(item: $noteVerse) { verse in
-                if let study = library.study { NoteSheet(study: study, verse: verse) }
+                NoteSheet(library: library, verse: verse)
             }
             .sheet(isPresented: $showingNotes) {
                 NotesList(library: library) { verse in model.go(book: verse.book, chapter: verse.chapter) }
             }
-            .alert(library.error ?? "", isPresented: .constant(library.error != nil)) {
+            .sheet(isPresented: $showingSettings) {
+                SettingsView(library: library)
+            }
+            .alert(library.error ?? "", isPresented: .constant(library.error != nil && !showingSettings)) {
                 Button("OK", action: library.dismissError)
             }
         }
@@ -79,7 +83,7 @@ struct ReaderView: View {
     }
 
     private func act(_ change: (Study) throws -> Void) {
-        if let study = library.study { try? change(study) }
+        library.write(change)
         selected = []
     }
 
@@ -121,9 +125,7 @@ struct ReaderView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu("Account", systemImage: "person.crop.circle") {
                 Button("Notes", systemImage: "note.text") { showingNotes = true }
-                Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
-                    Task { await library.signOut() }
-                }
+                Button("Settings", systemImage: "gearshape") { showingSettings = true }
             }
         }
         ToolbarItemGroup(placement: .bottomBar) {

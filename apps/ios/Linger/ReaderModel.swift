@@ -23,7 +23,7 @@ final class ReaderModel {
             translations = library?.translations() ?? []
         } catch {
             library = nil
-            self.error = error.localizedDescription
+            self.error = message(of: error)
         }
     }
 
@@ -79,7 +79,7 @@ final class ReaderModel {
             self.error = nil
         case let .failure(error):
             self.content = nil
-            self.error = error.localizedDescription
+            self.error = message(of: error)
         }
     }
 }

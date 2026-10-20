@@ -3,7 +3,7 @@ import SwiftUI
 
 /// A verse's note, saved as the sheet closes; an empty note is deleted.
 struct NoteSheet: View {
-    let study: Study
+    let library: Library
     let verse: VerseRef
     @State private var text = ""
     @FocusState private var editing: Bool
@@ -22,10 +22,10 @@ struct NoteSheet: View {
                 }
         }
         .onAppear {
-            text = (try? study.note(verse: verse))?.body ?? ""
+            text = (try? library.study?.note(verse: verse))?.body ?? ""
             editing = true
         }
-        .onDisappear { try? study.setNote(verse: verse, body: text) }
+        .onDisappear { library.write { try $0.setNote(verse: verse, body: text) } }
     }
 }
 

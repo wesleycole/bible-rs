@@ -24,3 +24,14 @@ extension Reference {
         (try? formatReference(reference: self)) ?? ""
     }
 }
+
+/// The message core gave an error, to show as it is. UniFFI's own description of its errors is
+/// the Swift enum case, not the message.
+public func message(of error: Error) -> String {
+    switch error {
+    case let AccountError.SignIn(message), let AccountError.Failed(message), let BibleError.Failed(message):
+        message
+    default:
+        error.localizedDescription
+    }
+}

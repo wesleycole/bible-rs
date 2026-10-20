@@ -29,7 +29,6 @@ impl From<ApiError> for AccountError {
 /// `GET /v1/me`: the plan and what's left of it.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct AccountInfo {
-    pub user_id: String,
     pub email: Option<String>,
     /// For StoreKit purchases: ties an App Store transaction to this account.
     pub app_account_token: Option<String>,
@@ -38,10 +37,7 @@ pub struct AccountInfo {
     /// "app_store" or "stripe".
     pub source: Option<String>,
     pub questions_left: u32,
-    pub questions_reset_at: String,
-    pub deep_available: bool,
     pub sermon_hours_left: f64,
-    pub sermon_trial_available: bool,
     /// Library storage in bytes, when the server reports it.
     pub storage_used: Option<u64>,
     pub storage_limit: Option<u64>,
@@ -51,16 +47,12 @@ impl From<api::Me> for AccountInfo {
     fn from(me: api::Me) -> Self {
         Self {
             pro: me.is_pro(),
-            user_id: me.user.id,
             email: me.user.email,
             app_account_token: me.user.app_account_token,
             renews_at: me.renews_at,
             source: me.source,
             questions_left: me.ask.questions_left,
-            questions_reset_at: me.ask.resets_at,
-            deep_available: me.ask.deep_available,
             sermon_hours_left: me.sermons.hours_left,
-            sermon_trial_available: me.sermons.trial_available,
             storage_used: me.library.as_ref().map(|l| l.storage_used),
             storage_limit: me.library.as_ref().map(|l| l.storage_limit),
         }
