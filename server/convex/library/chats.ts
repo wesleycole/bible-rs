@@ -57,7 +57,7 @@ export const save = effectMutation({
     const { userId } = yield* CurrentUser
     const seq = yield* (yield* Sequence).next
     const now = yield* Clock.currentTimeMillis
-    const fields = { seq, title: args.title, fileUid: file.uid, url: file.url, bytes: file.bytes }
+    const fields = { seq, updatedAt: now, title: args.title, fileUid: file.uid, url: file.url, bytes: file.bytes }
     if (stored) {
       const revived = stored.deletedAt !== undefined
       yield* Effect.promise(() => ctx.db.patch(stored._id, { ...fields, deletedAt: undefined, ...(revived ? { createdAt: args.createdAt ?? now } : {}) }))
@@ -81,7 +81,7 @@ export const remove = effectMutation({
     const ctx = yield* MutationCtx
     const seq = yield* (yield* Sequence).next
     const deletedAt = yield* Clock.currentTimeMillis
-    yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, title: "", url: "", bytes: 0 }))
+    yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, updatedAt: deletedAt, title: "", url: "", bytes: 0 }))
     yield* (yield* Files).remove(stored!.fileUid)
     return { result: "ok", seq } as WriteResult
   })

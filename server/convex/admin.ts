@@ -17,7 +17,9 @@ const PLANS = [
     maxRounds: 6,
     costCeilingMicros: 250_000,
     sermonSecondsPerMonth: 0,
-    modelKey: "free"
+    modelKey: "free",
+    storageBytes: 1_000_000_000,
+    keepAudio: false
   },
   {
     key: "pro",
@@ -29,7 +31,9 @@ const PLANS = [
     sermonSecondsPerMonth: 10 * 3600,
     modelKey: "standard",
     deepModelKey: "deep",
-    ceilingModelKey: "free"
+    ceilingModelKey: "free",
+    storageBytes: 25_000_000_000,
+    keepAudio: true
   }
 ] as const
 
@@ -41,7 +45,8 @@ const MODELS = [
 
 /**
  * Seeds the plans, models and routing rows. Existing rows are left alone unless `overwrite`, so
- * values retuned in the dashboard survive a re-seed.
+ * values retuned in the dashboard survive a re-seed; a field a plan row lacks (one added since it
+ * was seeded) is filled in either way.
  */
 export const seed = internalMutation({
   args: { overwrite: v.optional(v.boolean()) },
@@ -55,6 +60,12 @@ export const seed = internalMutation({
       } else if (overwrite) {
         await ctx.db.replace(row._id, { ...plan })
         changed.push(`plans.${plan.key}`)
+      } else {
+        const missing = Object.fromEntries(Object.entries(plan).filter(([k]) => !(k in row)))
+        if (Object.keys(missing).length > 0) {
+          await ctx.db.patch(row._id, missing)
+          changed.push(...Object.keys(missing).map((k) => `plans.${plan.key}.${k}`))
+        }
       }
     }
     for (const m of MODELS) {

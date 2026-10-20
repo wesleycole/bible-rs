@@ -132,6 +132,8 @@ export const ItemFields = {
   uid: v.string(),
   /** Whether a model wrote parts the person hasn't reviewed. */
   unreviewed: v.boolean(),
+  /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+  updatedAt: v.optional(v.number()),
 }
 
 export const Item = Schema.Struct({
@@ -195,6 +197,8 @@ export const Item = Schema.Struct({
   uid: Schema.String,
   /** Whether a model wrote parts the person hasn't reviewed. */
   unreviewed: Schema.Boolean,
+  /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+  updatedAt: Schema.optionalKey(Schema.Int),
 })
 
 export type Item = typeof Item["Type"]
@@ -212,6 +216,8 @@ export const ChatFields = {
   title: v.string(),
   /** The record's id, a UUID the client makes. */
   uid: v.string(),
+  /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+  updatedAt: v.optional(v.number()),
   url: v.string(),
 }
 
@@ -227,6 +233,8 @@ export const Chat = Schema.Struct({
   title: Schema.String,
   /** The record's id, a UUID the client makes. */
   uid: Schema.String,
+  /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+  updatedAt: Schema.optionalKey(Schema.Int),
   url: Schema.String,
 })
 
@@ -321,6 +329,8 @@ export const FeedRecordValidator = v.union(v.object({
     uid: v.string(),
     /** Whether a model wrote parts the person hasn't reviewed. */
     unreviewed: v.boolean(),
+    /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+    updatedAt: v.optional(v.number()),
   }), v.object({
     bytes: v.number(),
     /** When the conversation began, in server milliseconds. */
@@ -334,6 +344,8 @@ export const FeedRecordValidator = v.union(v.object({
     type: v.literal("chat"),
     /** The record's id, a UUID the client makes. */
     uid: v.string(),
+    /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+    updatedAt: v.optional(v.number()),
     url: v.string(),
   }))
 
@@ -425,6 +437,8 @@ export const FeedRecord = Schema.Union([Schema.Struct({
     uid: Schema.String,
     /** Whether a model wrote parts the person hasn't reviewed. */
     unreviewed: Schema.Boolean,
+    /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+    updatedAt: Schema.optionalKey(Schema.Int),
   }), Schema.Struct({
     bytes: Schema.Int,
     /** When the conversation began, in server milliseconds. */
@@ -438,6 +452,8 @@ export const FeedRecord = Schema.Union([Schema.Struct({
     type: Schema.Literal("chat"),
     /** The record's id, a UUID the client makes. */
     uid: Schema.String,
+    /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+    updatedAt: Schema.optionalKey(Schema.Int),
     url: Schema.String,
   })])
 
@@ -534,6 +550,8 @@ export const ChangesValidator = v.union(v.object({
       uid: v.string(),
       /** Whether a model wrote parts the person hasn't reviewed. */
       unreviewed: v.boolean(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
     }), v.object({
       bytes: v.number(),
       /** When the conversation began, in server milliseconds. */
@@ -547,6 +565,8 @@ export const ChangesValidator = v.union(v.object({
       type: v.literal("chat"),
       /** The record's id, a UUID the client makes. */
       uid: v.string(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
       url: v.string(),
     }))),
     /** The highest `seq` in `records`, or `after` when there are none: the next cursor. */
@@ -648,6 +668,8 @@ export const Changes = Schema.Union([Schema.Struct({
       uid: Schema.String,
       /** Whether a model wrote parts the person hasn't reviewed. */
       unreviewed: Schema.Boolean,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
     }), Schema.Struct({
       bytes: Schema.Int,
       /** When the conversation began, in server milliseconds. */
@@ -661,6 +683,8 @@ export const Changes = Schema.Union([Schema.Struct({
       type: Schema.Literal("chat"),
       /** The record's id, a UUID the client makes. */
       uid: Schema.String,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
       url: Schema.String,
     })])),
     /** The highest `seq` in `records`, or `after` when there are none: the next cursor. */

@@ -242,6 +242,10 @@ pub struct Item {
     pub conflict_of: Option<String>,
     /// When it was made or captured, in server milliseconds.
     pub captured_at: u64,
+    /// When the record was last written, in server milliseconds, stamped by the server on every
+    /// write. Absent only on records written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
     /// Whether a model wrote parts the person hasn't reviewed.
     pub unreviewed: bool,
     pub anchors: Vec<Anchor>,
@@ -261,6 +265,10 @@ pub struct Chat {
     pub deleted_at: Option<u64>,
     /// When the conversation began, in server milliseconds.
     pub created_at: u64,
+    /// When the record was last written, in server milliseconds, stamped by the server on every
+    /// write. Absent only on records written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
     pub title: String,
     pub file_uid: String,
     pub url: String,

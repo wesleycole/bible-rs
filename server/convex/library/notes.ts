@@ -70,7 +70,7 @@ const write = Effect.fnUntraced(function*(
   const { userId } = yield* CurrentUser
   const seq = yield* (yield* Sequence).next
   const now = yield* Clock.currentTimeMillis
-  const fields = { seq, title: titleOf(args.text), text: args.text, anchors: [...args.anchors] }
+  const fields = { seq, updatedAt: now, title: titleOf(args.text), text: args.text, anchors: [...args.anchors] }
   const id = existing
     ? yield* Effect.promise(() =>
       ctx.db.patch(existing._id, {
@@ -139,7 +139,7 @@ export const remove = effectMutation({
     const seq = yield* (yield* Sequence).next
     const deletedAt = yield* Clock.currentTimeMillis
     // A tombstone keeps no text: other devices only need to drop the note.
-    yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, text: "", title: "", anchors: [] }))
+    yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, updatedAt: deletedAt, text: "", title: "", anchors: [] }))
     yield* (yield* Anchors).rebuild(stored!._id, [])
     return { result: "ok", seq } as WriteResult
   })

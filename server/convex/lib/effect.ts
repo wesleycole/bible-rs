@@ -4,15 +4,23 @@
  * failure from shared/Errors.ts becomes the `ConvexError` the apps already understand. Anything
  * else is a defect and is rethrown, so Convex logs it as the bug it is.
  */
+import type { ObjectType, PropertyValidators } from "convex/values"
 import { Cause, Effect, Exit, Layer, Option, Schema } from "effect"
 import type { Doc } from "../_generated/dataModel.js"
-import type { MutationCtx as RawMutationCtx, QueryCtx as RawQueryCtx } from "../_generated/server.js"
+import {
+  internalMutation,
+  type ActionCtx as RawActionCtx,
+  type MutationCtx as RawMutationCtx,
+  type QueryCtx as RawQueryCtx
+} from "../_generated/server.js"
 import { type ApiError, InvalidRequest } from "../../shared/Errors.js"
+import { Allowance } from "./allowance.js"
 import { toConvexError } from "./errors.js"
 import { Anchors } from "./anchors.js"
 import { Files } from "./files.js"
 import { Sequence } from "./sequence.js"
-import { CurrentUser, MutationCtx, QueryCtx } from "./services.js"
+import { serverAction, serverMutation, serverQuery } from "./server.js"
+import { ActionCtx, CurrentUser, MutationCtx, QueryCtx, ServerCaller } from "./services.js"
 import { userMutation, userQuery } from "./user.js"
 
 /** Runs a handler's effect: a typed failure becomes a ConvexError, a defect stays thrown. */
@@ -42,17 +50,16 @@ const currentUser = (user: Doc<"users">) => CurrentUser.of({ clerkId: user.clerk
 const queryServices = (ctx: WithUser<RawQueryCtx>) =>
   Layer.mergeAll(Layer.succeed(QueryCtx, QueryCtx.of(ctx)), Layer.succeed(CurrentUser, currentUser(ctx.user)))
 
+const mutationCtx = (ctx: RawMutationCtx) =>
+  Layer.mergeAll(Layer.succeed(MutationCtx, MutationCtx.of(ctx)), Layer.succeed(QueryCtx, QueryCtx.of(ctx)))
+
 const mutationServices = (ctx: WithUser<RawMutationCtx>) =>
   Layer.mergeAll(Files.layer, Anchors.layer).pipe(
-    Layer.provideMerge(Sequence.layer),
-    Layer.provideMerge(
-      Layer.mergeAll(
-        Layer.succeed(MutationCtx, MutationCtx.of(ctx)),
-        Layer.succeed(QueryCtx, QueryCtx.of(ctx)),
-        Layer.succeed(CurrentUser, currentUser(ctx.user))
-      )
-    )
+    Layer.provideMerge(Layer.mergeAll(Sequence.layer, Allowance.layer)),
+    Layer.provideMerge(Layer.mergeAll(mutationCtx(ctx), Layer.succeed(CurrentUser, currentUser(ctx.user))))
   )
+
+const proxy = Layer.succeed(ServerCaller, ServerCaller.of({ proxy: true }))
 
 /**
  * A query the apps call with their Clerk token, written as an Effect. A signed-in user whose
@@ -76,7 +83,7 @@ export const effectQuery = <S extends Args, A>(spec: {
 }
 
 /** What a library mutation's handler can ask for. */
-export type MutationServices = MutationCtx | QueryCtx | CurrentUser | Sequence | Files | Anchors
+export type MutationServices = MutationCtx | QueryCtx | CurrentUser | Sequence | Files | Anchors | Allowance
 
 /** A mutation the apps call with their Clerk token, written as an Effect. */
 export const effectMutation = <S extends Args, A>(spec: {
@@ -89,3 +96,56 @@ export const effectMutation = <S extends Args, A>(spec: {
       run(decode(raw).pipe(Effect.flatMap(spec.handler), Effect.provide(mutationServices(ctx))))
   })
 }
+
+/** What a proxy mutation's handler can ask for: it acts for the user the proxy names. */
+export type ServerMutationServices = MutationCtx | QueryCtx | ServerCaller | Allowance
+
+/**
+ * A mutation only the proxy calls (it passes the server secret), written as an Effect. Its
+ * arguments keep their Convex validators: they are the proxy's typed contract (`Store`).
+ */
+export const effectServerMutation = <V extends PropertyValidators, A>(spec: {
+  readonly args: V
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, ServerMutationServices>
+}) =>
+  serverMutation({
+    args: spec.args,
+    handler: (ctx: RawMutationCtx, args: ObjectType<V>): Promise<A> =>
+      run(spec.handler(args).pipe(Effect.provide(Allowance.layer.pipe(Layer.provideMerge(Layer.mergeAll(mutationCtx(ctx), proxy))))))
+  })
+
+/** A query only the proxy calls, written as an Effect. */
+export const effectServerQuery = <V extends PropertyValidators, A>(spec: {
+  readonly args: V
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, QueryCtx | ServerCaller>
+}) =>
+  serverQuery({
+    args: spec.args,
+    handler: (ctx: RawQueryCtx, args: ObjectType<V>): Promise<A> =>
+      run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Layer.succeed(QueryCtx, QueryCtx.of(ctx)), proxy))))
+  })
+
+/** An action only the proxy calls, written as an Effect. */
+export const effectServerAction = <V extends PropertyValidators, A>(spec: {
+  readonly args: V
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, ActionCtx | ServerCaller>
+}) =>
+  serverAction({
+    args: spec.args,
+    handler: (ctx: RawActionCtx, args: ObjectType<V>): Promise<A> =>
+      run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Layer.succeed(ActionCtx, ActionCtx.of(ctx)), proxy))))
+  })
+
+/** What an internal mutation (a cron, a scheduled step) can ask for. */
+export type InternalMutationServices = MutationCtx | QueryCtx | Allowance
+
+/** A mutation nothing outside the deployment can call: crons and scheduled steps. */
+export const effectInternalMutation = <V extends PropertyValidators, A>(spec: {
+  readonly args: V
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, InternalMutationServices>
+}) =>
+  internalMutation({
+    args: spec.args,
+    handler: (ctx: RawMutationCtx, args: ObjectType<V>): Promise<A> =>
+      run(spec.handler(args).pipe(Effect.provide(Allowance.layer.pipe(Layer.provideMerge(mutationCtx(ctx))))))
+  })

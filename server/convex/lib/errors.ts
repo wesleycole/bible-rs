@@ -26,3 +26,6 @@ export const deny = (
 
 /** The error as the apps see it from a Convex call: a `ConvexError` whose data is the contract's body. */
 export const toConvexError = (e: ApiError) => new ConvexError(bodyOf(e).error)
+
+/** A typed failure as the `Denial` value the proxy's functions return instead of throwing. */
+export const denial = (e: ApiError): Denial => ({ ok: false, error: bodyOf(e).error as Denial["error"] })

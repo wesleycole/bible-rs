@@ -1,15 +1,17 @@
 import { v } from "convex/values"
+import { Effect } from "effect"
 import { internal } from "./_generated/api.js"
 import type { Doc, Id } from "./_generated/dataModel.js"
-import { internalMutation, type MutationCtx } from "./_generated/server.js"
-import { effectivePlan, ensureUsage, ensureUser, loadPlan, outstanding, userByClerk } from "./lib/accounts.js"
-import { deny, type Denial } from "./lib/errors.js"
-import { transcriptionCost } from "./lib/pricing.js"
+import { internalMutation } from "./_generated/server.js"
+import { ensureUser, userByClerk } from "./lib/accounts.js"
+import { Allowance } from "./lib/allowance.js"
+import { effectInternalMutation, effectServerMutation } from "./lib/effect.js"
+import { deny, denial, type Denial } from "./lib/errors.js"
 import { serverAction, serverMutation, serverQuery } from "./lib/server.js"
+import { MutationCtx } from "./lib/services.js"
 import { DAY, HOUR } from "./lib/time.js"
 
-/** The Free plan's one-time cloud trial: one sermon of up to an hour. */
-export const TRIAL_SECONDS = 3600
+export { TRIAL_SECONDS } from "./lib/allowance.js"
 
 export type CreateSermon = { ok: true; sermonId: Id<"sermons">; blobPath: string; trial: boolean } | Denial
 
@@ -17,7 +19,7 @@ export type CreateSermon = { ok: true; sermonId: Id<"sermons">; blobPath: string
  * Admits a sermon for cloud transcription: Pro with hours left, or a Free account's unused trial.
  * Reserves its duration and names the private blob it will be uploaded to.
  */
-export const create = serverMutation({
+export const create = effectServerMutation({
   args: {
     clerkId: v.string(),
     recordingId: v.string(),
@@ -25,48 +27,31 @@ export const create = serverMutation({
     bytes: v.number(),
     nonce: v.string()
   },
-  handler: async (ctx, args): Promise<CreateSermon> => {
+  handler: Effect.fn("sermons.create")(function*(args) {
+    const ctx = yield* MutationCtx
+    const allowance = yield* Allowance
     const now = Date.now()
-    const user = await ensureUser(ctx, args.clerkId)
-    const { plan: planKey } = await effectivePlan(ctx, user._id, now)
-    const plan = await loadPlan(ctx, planKey)
-    let trial = false
-    if (planKey === "pro" && plan.sermonSecondsPerMonth > 0) {
-      const usage = await ensureUsage(ctx, user._id, now)
-      const held = await outstanding(ctx, user._id)
-      if (usage.sermonSeconds + held.seconds + args.durationSec > plan.sermonSecondsPerMonth) {
-        return deny("allowance_exhausted", "This sermon is longer than the transcription time left this month.")
-      }
-    } else {
-      if (user.trialHourUsed) {
-        return deny("plan_required", "Cloud transcripts are part of Linger Pro.", { upgrade: true })
-      }
-      if (args.durationSec > TRIAL_SECONDS) {
-        return deny("plan_required", "The free cloud trial covers one sermon of up to an hour.", { upgrade: true })
-      }
-      trial = true
-      await ctx.db.patch(user._id, { trialHourUsed: true })
-    }
-    const blobPath = `sermons/${user._id}/${args.nonce}.wav`
-    const sermonId = await ctx.db.insert("sermons", {
-      userId: user._id,
-      recordingId: args.recordingId,
-      blobPath,
-      durationSec: args.durationSec,
-      bytes: args.bytes,
-      trial,
-      status: "uploading",
-      createdAt: now
-    })
-    await ctx.db.insert("reservations", {
-      userId: user._id,
-      kind: "sermon",
-      seconds: args.durationSec,
-      sermonId,
-      createdAt: now
-    })
-    return { ok: true, sermonId, blobPath, trial }
-  }
+    const user = yield* Effect.promise(() => ensureUser(ctx, args.clerkId))
+    return yield* Effect.gen(function*() {
+      const { trial } = yield* allowance.admitSermon(user, args.durationSec)
+      const blobPath = `sermons/${user._id}/${args.nonce}.wav`
+      const sermon = yield* Effect.promise(async () => {
+        const id = await ctx.db.insert("sermons", {
+          userId: user._id,
+          recordingId: args.recordingId,
+          blobPath,
+          durationSec: args.durationSec,
+          bytes: args.bytes,
+          trial,
+          status: "uploading",
+          createdAt: now
+        })
+        return (await ctx.db.get(id))!
+      })
+      yield* allowance.reserveSermon(sermon)
+      return { ok: true as const, sermonId: sermon._id, blobPath, trial } satisfies CreateSermon as CreateSermon
+    }).pipe(Effect.catch((e) => Effect.succeed<CreateSermon>(denial(e))))
+  })
 })
 
 const owned = async (ctx: Parameters<typeof userByClerk>[0], clerkId: string, sermonId: string) => {
@@ -137,85 +122,66 @@ export const complete = serverAction({
   }
 })
 
-const reservationFor = (ctx: MutationCtx, s: Doc<"sermons">) =>
-  ctx.db
-    .query("reservations")
-    .withIndex("by_user", (q) => q.eq("userId", s.userId))
-    .filter((q) => q.eq(q.field("sermonId"), s._id))
-    .first()
-
-export const markDone = internalMutation({
+export const markDone = effectInternalMutation({
   args: { sermonId: v.id("sermons"), storageId: v.id("_storage"), audioSeconds: v.number() },
-  handler: async (ctx, { sermonId, storageId, audioSeconds }) => {
-    const s = await ctx.db.get(sermonId)
+  handler: Effect.fn("sermons.markDone")(function*({ sermonId, storageId, audioSeconds }) {
+    const ctx = yield* MutationCtx
+    const s = yield* Effect.promise(() => ctx.db.get(sermonId))
     // A second webhook delivery, or a poll racing the webhook: the first one settled it.
     if (!s || s.status === "done") return false
-    const now = Date.now()
     const seconds = Math.ceil(audioSeconds)
-    await ctx.db.patch(s._id, { status: "done", transcript: storageId, audioSeconds: seconds, doneAt: now })
-    const reservation = await reservationFor(ctx, s)
-    if (reservation) await ctx.db.delete(reservation._id)
-    if (!s.trial) {
-      const usage = await ensureUsage(ctx, s.userId, now)
-      await ctx.db.patch(usage._id, { sermonSeconds: usage.sermonSeconds + seconds })
-    }
-    await ctx.db.insert("ledger", {
-      userId: s.userId,
-      kind: "sermon",
-      audioSeconds: seconds,
-      costMicros: transcriptionCost(seconds),
-      durationMs: now - (s.transcribingAt ?? s.createdAt),
-      status: s.trial ? "trial" : "ok",
-      at: now
-    })
+    yield* Effect.promise(() => ctx.db.patch(s._id, { status: "done", transcript: storageId, audioSeconds: seconds, doneAt: Date.now() }))
+    yield* (yield* Allowance).settleSermon(s, seconds)
     return true
-  }
+  })
 })
 
-const failSermon = async (ctx: MutationCtx, s: Doc<"sermons">, error: string) => {
-  await ctx.db.patch(s._id, { status: "error", error })
-  const reservation = await reservationFor(ctx, s)
-  if (reservation) await ctx.db.delete(reservation._id)
-  // A trial that failed through no fault of the user's is given back.
-  if (s.trial) await ctx.db.patch(s.userId, { trialHourUsed: false })
-}
+const failSermon = Effect.fnUntraced(function*(s: Doc<"sermons">, error: string) {
+  const ctx = yield* MutationCtx
+  yield* Effect.promise(() => ctx.db.patch(s._id, { status: "error", error }))
+  yield* (yield* Allowance).releaseSermon(s)
+})
 
-export const fail = serverMutation({
+export const fail = effectServerMutation({
   args: { sermonId: v.id("sermons"), error: v.string() },
-  handler: async (ctx, { sermonId, error }) => {
-    const s = await ctx.db.get(sermonId)
+  handler: Effect.fn("sermons.fail")(function*({ sermonId, error }) {
+    const ctx = yield* MutationCtx
+    const s = yield* Effect.promise(() => ctx.db.get(sermonId))
     if (!s || s.status === "done" || s.status === "error") return { failed: false }
-    await failSermon(ctx, s, error)
+    yield* failSermon(s, error)
     return { failed: true }
-  }
+  })
 })
 
 /**
  * Fails sermons stuck in transcription for over 3 hours, or never uploaded within 2 hours, and
  * returns the blobs and AssemblyAI jobs to delete.
  */
-export const failStuck = internalMutation({
+export const failStuck = effectInternalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: Effect.fn("sermons.failStuck")(function*() {
+    const ctx = yield* MutationCtx
     const now = Date.now()
-    const stuck = [
-      ...(await ctx.db
-        .query("sermons")
-        .withIndex("by_status", (q) => q.eq("status", "transcribing").lt("createdAt", now - 3 * HOUR))
-        .take(200)),
-      ...(await ctx.db
-        .query("sermons")
-        .withIndex("by_status", (q) => q.eq("status", "uploading").lt("createdAt", now - 2 * HOUR))
-        .take(200))
-    ].filter((s) => s.status === "uploading" || (s.transcribingAt ?? s.createdAt) < now - 3 * HOUR)
+    const stuck = yield* Effect.promise(async () =>
+      [
+        ...(await ctx.db
+          .query("sermons")
+          .withIndex("by_status", (q) => q.eq("status", "transcribing").lt("createdAt", now - 3 * HOUR))
+          .take(200)),
+        ...(await ctx.db
+          .query("sermons")
+          .withIndex("by_status", (q) => q.eq("status", "uploading").lt("createdAt", now - 2 * HOUR))
+          .take(200))
+      ].filter((s) => s.status === "uploading" || (s.transcribingAt ?? s.createdAt) < now - 3 * HOUR)
+    )
     for (const s of stuck) {
-      await failSermon(ctx, s, s.status === "uploading" ? "The upload never finished." : "Transcription took too long.")
+      yield* failSermon(s, s.status === "uploading" ? "The upload never finished." : "Transcription took too long.")
     }
     return {
       blobPaths: stuck.map((s) => s.blobPath),
       assemblyIds: stuck.flatMap((s) => (s.assemblyId ? [s.assemblyId] : []))
     }
-  }
+  })
 })
 
 /**

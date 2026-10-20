@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { PAGE_RECORDS } from "../convex/library/sync.js"
-import { api } from "../convex/_generated/api.js"
+import { api, internal } from "../convex/_generated/api.js"
+import { SECRET } from "./harness.js"
 import { makeConvex, type TestConvex } from "./harness.js"
 
 const JOHN_3_16 = 42_003_016
@@ -269,7 +270,7 @@ describe("library.chats and files", () => {
     const page = await ann.query(api.library.sync.changes, { after: 0 })
     expect(page).toMatchObject({ records: [{ type: "chat", uid: "c1", seq: 2, fileUid: "f2", url: f2.url, bytes: f2.bytes, title: "Grace" }] })
     if (!("records" in page)) throw new Error("a page")
-    expect(Object.keys(page.records[0]!).sort()).toEqual(["bytes", "createdAt", "fileUid", "seq", "title", "type", "uid", "url"])
+    expect(Object.keys(page.records[0]!).sort()).toEqual(["bytes", "createdAt", "fileUid", "seq", "title", "type", "uid", "updatedAt", "url"])
     // A stale save keeps the server's chat, answers it, and frees the losing upload.
     const three = await upload(t, '{"messages":[9]}')
     await ann.mutation(api.library.files.attach, { uid: "f3", ownerUid: "c1", role: "chat", ...three })
@@ -281,5 +282,85 @@ describe("library.chats and files", () => {
     expect((await library()).storageBytes).toBe(f2.bytes)
     expect(await ann.mutation(api.library.chats.remove, { uid: "c1", baseSeq: 2 })).toEqual({ result: "ok", seq: 3 })
     expect((await library()).storageBytes).toBe(0)
+  })
+})
+
+describe("purge, tombstones and storage", () => {
+  const upload = (t: TestConvex, text: string) =>
+    t.run(async (ctx) => {
+      const id = await ctx.storage.store(new Blob([text], { type: "application/json" }))
+      return { storageId: id as string, sha256: Buffer.from((await ctx.db.system.get(id))!.sha256, "base64").toString("hex") }
+    })
+
+  it("purges a user with 2,000 records in steps, files included, and leaves another user's", async () => {
+    vi.useFakeTimers()
+    try {
+      const t = await makeConvex()
+      const [ann, bob] = [as(t, "user_ann"), as(t, "user_bob")]
+      await bob.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "pink" })
+      await ann.mutation(api.library.files.attach, { uid: "f1", ownerUid: "c1", role: "chat", ...(await upload(t, "{}")) })
+      await ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f1" })
+      await ann.mutation(api.library.notes.upsert, { uid: "n1", text: "x", anchors: [{ from: JOHN_3_16, to: JOHN_3_16, origin: "user" }] })
+      const userId = (await t.run((ctx) => ctx.db.query("users").withIndex("by_clerk", (q) => q.eq("clerkId", "user_ann")).unique()))!._id
+      for (let batch = 0; batch < 4; batch++) {
+        await t.run(async (ctx) => {
+          for (let i = 0; i < 500; i++) {
+            const verse = 1_001 + batch * 500 + i
+            await ctx.db.insert("bookmarks", { userId, uid: `b-${verse}`, seq: 10 + batch * 500 + i, verse, label: "" })
+          }
+        })
+      }
+      await t.mutation(api.account.purge, { secret: SECRET, clerkId: "user_ann" })
+      await t.finishAllScheduledFunctions(vi.runAllTimers)
+      const left = await t.run(async (ctx) => ({
+        users: (await ctx.db.query("users").collect()).map((u) => u.clerkId),
+        bookmarks: (await ctx.db.query("bookmarks").collect()).length,
+        highlights: (await ctx.db.query("highlights").collect()).map((h) => h.verse),
+        items: (await ctx.db.query("items").collect()).length,
+        anchors: (await ctx.db.query("anchors").collect()).length,
+        chats: (await ctx.db.query("chats").collect()).length,
+        files: (await ctx.db.query("files").collect()).length,
+        storage: (await ctx.db.system.query("_storage").collect()).length,
+        libraries: (await ctx.db.query("userLibrary").collect()).length
+      }))
+      expect(left).toEqual({ users: ["user_bob"], bookmarks: 0, highlights: [JOHN_3_16], items: 0, anchors: 0, chats: 0, files: 0, storage: 0, libraries: 1 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("hard-deletes tombstones after 30 days and tells a cursor behind them to resync", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      const t = await makeConvex()
+      const ann = as(t, "user_ann")
+      await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "pink" })
+      await ann.mutation(api.library.highlights.set, { verse: ROMANS_8_28, color: "blue" })
+      await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: null, baseSeq: 1 })
+      vi.setSystemTime(Date.now() + 29 * 24 * 3600_000)
+      expect(await t.mutation(internal.library.purge.tombstones, {})).toEqual({ deleted: 0 })
+      vi.setSystemTime(Date.now() + 2 * 24 * 3600_000)
+      expect(await t.mutation(internal.library.purge.tombstones, {})).toEqual({ deleted: 1 })
+      expect((await t.run((ctx) => ctx.db.query("highlights").collect())).map((h) => h.verse)).toEqual([ROMANS_8_28])
+      expect(await ann.query(api.library.sync.changes, { after: 2 })).toEqual({ resync: true })
+      expect(await ann.query(api.library.sync.changes, { after: 3 })).toMatchObject({ records: [] })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("refuses a file past the plan's storage, attaching nothing, and /v1/me reports the storage", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    await t.run(async (ctx) => {
+      const free = (await ctx.db.query("plans").withIndex("by_key", (q) => q.eq("key", "free")).unique())!
+      await ctx.db.patch(free._id, { storageBytes: 10 })
+    })
+    const small = await ann.mutation(api.library.files.attach, { uid: "f1", ownerUid: "c1", role: "chat", ...(await upload(t, "12345")) })
+    const big = await upload(t, "123456")
+    expect((await errorOf(ann.mutation(api.library.files.attach, { uid: "f2", ownerUid: "c2", role: "chat", ...big }))).type).toBe("too_large")
+    expect((await t.run((ctx) => ctx.db.query("files").collect())).map((f) => f.uid)).toEqual(["f1"])
+    const me = await t.mutation(api.users.me, { secret: SECRET, clerkId: "user_ann" })
+    expect(me.library).toEqual({ storageUsed: small.bytes, storageLimit: 10 })
   })
 })

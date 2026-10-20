@@ -221,7 +221,10 @@ describe("account.purge", () => {
       nonce: "abc"
     })
     await t.mutation(api.users.me, { secret: SECRET, clerkId: "user_stays" })
+    vi.useFakeTimers()
     const left = await t.mutation(api.account.purge, { secret: SECRET, clerkId: "user_gone" })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    vi.useRealTimers()
     expect(left.found).toBe(true)
     expect(left.blobPaths).toEqual([s.ok ? s.blobPath : ""])
     const counts = await t.run(async (ctx) => ({

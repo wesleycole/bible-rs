@@ -27,7 +27,9 @@ export const Me = Schema.Struct({
   renewsAt: Schema.optionalKey(Schema.String),
   source: Schema.optionalKey(Schema.Literals(["app_store", "stripe"])),
   ask: Schema.Struct({ questionsLeft: Schema.Number, resetsAt: Schema.String, deepAvailable: Schema.Boolean }),
-  sermons: Schema.Struct({ hoursLeft: Schema.Number, trialAvailable: Schema.Boolean })
+  sermons: Schema.Struct({ hoursLeft: Schema.Number, trialAvailable: Schema.Boolean }),
+  /** Library storage in bytes: what the user's files take, and what their plan allows. */
+  library: Schema.Struct({ storageUsed: Schema.Number, storageLimit: Schema.Number })
 })
 export type Me = typeof Me.Type
 

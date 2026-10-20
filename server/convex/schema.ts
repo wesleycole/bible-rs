@@ -48,7 +48,11 @@ export default defineSchema({
     modelKey: v.string(),
     deepModelKey: v.optional(v.string()),
     /** Where questions go past the cost ceiling; without one they stop. */
-    ceilingModelKey: v.optional(v.string())
+    ceilingModelKey: v.optional(v.string()),
+    /** Library storage. Optional only until admin:seed has filled it in on every deployment. */
+    storageBytes: v.optional(v.number()),
+    /** Whether sermon audio is kept in the library (Pro) or stays on the device that recorded it. */
+    keepAudio: v.optional(v.boolean())
   }).index("by_key", ["key"]),
 
   models: defineTable({
@@ -182,18 +186,22 @@ export default defineSchema({
   // indexed by [userId, seq] for the change feed.
   highlights: defineTable({ userId: v.id("users"), ...HighlightFields })
     .index("by_user_seq", ["userId", "seq"])
+    .index("by_deleted", ["deletedAt"])
     .index("by_user_verse", ["userId", "verse"]),
 
   bookmarks: defineTable({ userId: v.id("users"), ...BookmarkFields })
     .index("by_user_seq", ["userId", "seq"])
+    .index("by_deleted", ["deletedAt"])
     .index("by_user_verse", ["userId", "verse"]),
 
   items: defineTable({ userId: v.id("users"), ...ItemFields })
     .index("by_user_seq", ["userId", "seq"])
+    .index("by_deleted", ["deletedAt"])
     .index("by_user_uid", ["userId", "uid"]),
 
   chats: defineTable({ userId: v.id("users"), ...ChatFields })
     .index("by_user_seq", ["userId", "seq"])
+    .index("by_deleted", ["deletedAt"])
     .index("by_user_uid", ["userId", "uid"]),
 
   /** Server-only: one row per chapter an item's anchor touches, rebuilt from the item's anchors. */

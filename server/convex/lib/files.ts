@@ -4,7 +4,8 @@
  */
 import { Context, Effect, Layer } from "effect"
 import type { Doc, Id } from "../_generated/dataModel.js"
-import { InvalidRequest } from "../../shared/Errors.js"
+import { InvalidRequest, type TooLarge } from "../../shared/Errors.js"
+import { Allowance } from "./allowance.js"
 import type { Item } from "../../shared/records.js"
 import { Sequence } from "./sequence.js"
 import { CurrentUser, MutationCtx } from "./services.js"
@@ -30,7 +31,7 @@ export class Files extends Context.Service<Files, {
   /** A URL to POST one file's bytes to (valid an hour). */
   readonly uploadUrl: Effect.Effect<string>
   /** Records an uploaded file as `uid`, idempotently: attaching the same uid again returns the first. */
-  readonly attach: (a: Attach) => Effect.Effect<Doc<"files">, InvalidRequest>
+  readonly attach: (a: Attach) => Effect.Effect<Doc<"files">, InvalidRequest | TooLarge>
   /** The user's file `uid`, if there is one. */
   readonly get: (uid: string) => Effect.Effect<Doc<"files"> | null>
   /** Deletes the file's bytes and row, and gives its bytes back to the storage counter. */
@@ -42,6 +43,7 @@ export class Files extends Context.Service<Files, {
       const ctx = yield* MutationCtx
       const { userId } = yield* CurrentUser
       const sequence = yield* Sequence
+      const allowance = yield* Allowance
       const get = (uid: string) =>
         Effect.promise(() => ctx.db.query("files").withIndex("by_user_uid", (q) => q.eq("userId", userId).eq("uid", uid)).unique())
       const attach = Effect.fnUntraced(function*(a: Attach) {
@@ -54,6 +56,9 @@ export class Files extends Context.Service<Files, {
         if (sha256 !== a.sha256.toLowerCase()) {
           return yield* new InvalidRequest({ message: "The upload's bytes don't match its SHA-256." })
         }
+        // A refused upload stays in _storage: the failed mutation would roll its deletion back.
+        // It is no user's file and counts toward no limit.
+        yield* allowance.checkStorage(userId, stored.size)
         const url = yield* Effect.promise(() => ctx.storage.getUrl(storageId))
         const id: Id<"files"> = yield* Effect.promise(() =>
           ctx.db.insert("files", {

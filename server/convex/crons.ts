@@ -10,5 +10,6 @@ crons.daily("reconcile App Store", { hourUTC: 7, minuteUTC: 0 }, internal.mainte
 crons.daily("prune questions", { hourUTC: 7, minuteUTC: 15 }, internal.maintenance.pruneQuestions)
 crons.daily("prune ledger", { hourUTC: 7, minuteUTC: 30 }, internal.maintenance.pruneLedger)
 crons.daily("prune webhook events", { hourUTC: 7, minuteUTC: 45 }, internal.webhooks.prune)
+crons.daily("purge library tombstones", { hourUTC: 8, minuteUTC: 0 }, internal.library.purge.tombstones)
 
 export default crons
