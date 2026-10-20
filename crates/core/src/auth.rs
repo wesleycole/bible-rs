@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::secrets::SecretStore;
 
 /// Clerk's Frontend API for the Linger application: its development instance until a production
-/// instance has a domain (`clerk.linger.app`).
+/// instance has a domain (`clerk.trylinger.com`).
 pub const CLERK_URL: &str = "https://elegant-mink-67.clerk.accounts.dev";
 /// The "Linger Desktop" OAuth application's client id (public: PKCE, no secret).
 pub const CLIENT_ID: &str = "XDg0tXKW3CgO9rJy";
@@ -453,7 +453,7 @@ impl OAuthSession {
     /// trades the code and keeps the refresh token.
     pub fn sign_in(cfg: OAuthConfig, store: SecretStore, open: impl FnOnce(&str)) -> Result<Self> {
         // TODO(macOS): ASWebAuthenticationSession (objc2-authentication-services) with the
-        // https://auth.linger.app/oauth/callback Associated Domains redirect. The loopback flow
+        // https://auth.trylinger.com/oauth/callback Associated Domains redirect. The loopback flow
         // below works on macOS too, so it is used there until that lands.
         let loopback = Loopback::bind()?;
         let pkce = Pkce::new();

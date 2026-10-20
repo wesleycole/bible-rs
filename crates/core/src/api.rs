@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::auth::TokenSource;
 
-/// The production proxy (Vercel's own URL until `api.linger.app` points at it).
+/// The production proxy (Vercel's own URL until `api.trylinger.com` points at it).
 pub const API_URL: &str = "https://linger-api.vercel.app";
 
 /// What went wrong talking to the proxy, by what the user can do about it.

@@ -17,7 +17,16 @@ These gate M1's release, because they can't be fixed once users have libraries:
 
 1. **The production Clerk instance and `trylinger.com`.** Register `trylinger.com` and create the production
    instance for the "Linger" application on `trylinger.com` (Frontend API `https://clerk.trylinger.com`;
-   the user chose `trylinger.com`, not `linger.app`), with Apple, Google and email. A new
+   the user chose `trylinger.com`, not `linger.app`), with email code and passkeys (Apple and Google
+   later; [backend.md](backend.md#clerk)). The production "Linger Desktop" OAuth application exists:
+   client id `jXfTnIvmljaPQhDg`, Frontend API `https://clerk.trylinger.com`. The cut-over push sets
+   them as `CLIENT_ID` and `CLERK_URL`, together with production Convex and the proxy; until then
+   main keeps the development instance's, because every test build syncs against dev Convex, whose
+   `CLERK_JWT_ISSUER` is the development instance. A build signs in against production without a
+   rebuild with `LINGER_CLERK_URL` and `LINGER_OAUTH_CLIENT_ID`. Production Convex then needs
+   `CLERK_JWKS` (`https://clerk.trylinger.com/.well-known/jwks.json`) beside `CLERK_JWT_ISSUER`:
+   `auth.config.ts` reads it, so the local test backend can inline a key, and Convex refuses to
+   deploy while it is unset (dev has it since October 20). A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
@@ -297,6 +306,12 @@ stores seconds; that is the departure from "export from the server's millisecond
 record type, highlights included, with one rule, and two devices can still differ only if their
 measured offsets fall either side of ±0.5 s.
 
+Also: `ensureUser` is an Effect function (its `createdAt` from `Clock`), and `admin.seed` is written
+step by step in its handler rather than one `Effect.promise` around a plain function. Owed, when the
+Convex side gains a second outbound call: `maintenance.callProxy` reads `process.env` and fetches
+inside `Effect.promise`; then the proxy becomes a `Context.Service` like the vendors in
+`src/services`.
+
 ## Tests
 
 - **Convex (convex-test, through the Effect test layers):**
@@ -323,18 +338,28 @@ measured offsets fall either side of ±0.5 s.
   chapters, ranges, ordinals ("1 John 4") and false friends ("Job 3 times", "Mark said").
 - **Desktop:** `tests/ask_recents.rs` and `tests/empty_state.rs` move to the cache; a new test runs two
   `StudyStore`s against one local Convex backend and sees a note written in one appear in the other.
+  Built (`apps/desktop/tests/library_local.rs`): against the backend `server/scripts/library-local.sh`
+  starts (Convex's prebuilt local backend, this checkout's functions, seeded, accepting dev tokens
+  through an inline JWKS, `CLERK_JWKS`), the note arrives within a second, and a stale offline edit
+  becomes the conflict copy on both. Without the backend it skips. CI's Linux job runs it once the
+  workflow change lands (it needs a push with GitHub's `workflow` scope).
 - **Sync load:** 1,000 clients subscribed to the feed while 100 write, against a dev deployment.
 - **Start-up:** CI's startup probe stays within 5% of today's numbers with sync on. CI also records
   Convex's execution time for `highlights.set` so the Effect overhead is watched.
+  Built (the CI half waits on the same workflow change): CI's Linux job runs the startup probe twice, as today and with `SYNC=1` (signed in, the
+  library consent accepted, against the local backend), so the two medians sit side by side in one
+  log; nothing fails the job on the 5% yet, it is read. `server/scripts/time-writes.ts` makes 100
+  `highlights.set` writes there and reports Convex's own `executionTime` from the log stream
+  (median and p95, in the job summary). Departure: it is the local backend's time, not a cloud
+  deployment's; on this Mac 50 writes took a median of 19 ms and a p95 of 40 ms.
 
 ## Done when
 
 Status (October 20, after the Effect conversion): the second, third and fourth hold; the first holds
 in the core (sync tests, both provers) and needs a timing with the window uncovered; for the fifth,
 offline reading, notes and Recents work, and start-up isn't yet compared with sync on. Still open
-from Tests: the desktop test of two `StudyStore`s against a local Convex backend, the 1,000-client
-load test, CI recording `highlights.set`'s execution time, and the start-up comparison. Parked: the
-production Clerk instance, production Convex and the proxy, waiting on `trylinger.com`'s DNS.
+from Tests: the 1,000-client load test, and reading CI's first start-up comparison with sync on. Parked for the cut-over push: the production defaults in `auth.rs`, production
+Convex and the proxy (the production Clerk instance and its OAuth application exist).
 
 - A note written on one Mac appears on another within a second, and survives editing on both while one
   is offline: the later edit wins, the earlier one is kept as a conflict copy, and the open editor says

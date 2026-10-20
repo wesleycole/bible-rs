@@ -162,7 +162,8 @@ submission.
   creates the production instance and the `trylinger.com` domain before any library data exists**: a new
   instance gives every user a new `sub`, which would orphan their library. Accounts already on the
   development instance (testers) are remapped once by email with an admin script.
-- **Sign-in methods:** Sign in with Apple, Google and email code; passkeys if the plan allows them.
+- **Sign-in methods:** email code and passkeys at launch (the user's choice; Google, Apple and
+  password are off on the production instance). Sign in with Apple and Google come later.
 - **iOS (M3):** the Clerk iOS SDK (`clerk-ios`) with native Sign in with Apple. Requests carry Clerk's
   short-lived session token (`getToken()`) as `Authorization: Bearer`. Account deletion calls
   `DELETE /v1/account`.
@@ -170,7 +171,11 @@ submission.
 - **Desktop (built):** Clerk as an **OAuth 2.0 provider**, a public client with PKCE, because native
   Sign in with Apple and IAP aren't available to Developer ID builds.
   1. The OAuth application "Linger Desktop": public, PKCE required, scopes
-     `openid profile email offline_access`.
+     `openid profile email offline_access`. Development: client id `XDg0tXKW3CgO9rJy` on
+     `elegant-mink-67.clerk.accounts.dev` (today's defaults in `auth.rs`). Production: client id
+     `jXfTnIvmljaPQhDg` on `https://clerk.trylinger.com`, the defaults from the cut-over (M1). Its
+     redirect URIs must allow the loopback `http://127.0.0.1:<any port>/callback`, and
+     `http://127.0.0.1:53682/callback` for `scripts/clerk-test-token.ts`.
   2. The app generates `code_verifier`, `code_challenge` (S256) and `state`, and opens Clerk's
      `/oauth/authorize`. Today the redirect is a loopback listener on `127.0.0.1` on every platform;
      M6 moves macOS to `ASWebAuthenticationSession` with an Associated Domains callback

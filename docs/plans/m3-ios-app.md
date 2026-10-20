@@ -36,7 +36,8 @@ translations), and that the app launches to text as fast as now.
 
 ## The app
 
-1. **Sign-in:** the Clerk iOS SDK with native Sign in with Apple, Google and email code, on a first
+1. **Sign-in:** the Clerk iOS SDK with email code and passkeys (native Sign in with Apple and Google
+   once they are turned on; [backend.md](backend.md#clerk)), on a first
    screen that explains the library in one sentence. Sign-out (which waits for the outbox, then clears
    the cache), and **Delete account** in Settings. Confirm that deleting a Clerk user revokes its Sign in
    with Apple token (Apple TN3194); if it doesn't, store the token and revoke it in the purge.
