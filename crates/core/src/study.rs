@@ -190,7 +190,7 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         bail!("study.sqlite was written by a newer Linger (schema {version})");
     }
     if version < 1 {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(SCHEMA)?;
         tx.execute_batch(MIGRATION_1)?;
         // The packed (book, chapter, verse) keys become VerseIds, and everything already here
@@ -256,7 +256,7 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         tx.commit()?;
     }
     if version < 2 {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(MIGRATION_2)?;
         let t = now();
         // Each note becomes the verse's own note item and goes to the server once, as do chats.
@@ -324,6 +324,7 @@ fn note_item(uid: &str, verse: VerseId, text: &str, created: i64) -> Item {
         details: None,
         conflict_of: None,
         captured_at: created.max(0) as u64 * 1000,
+        updated_at: None,
         unreviewed: false,
         anchors: vec![Anchor { from: verse, to: verse, origin: AnchorOrigin::User, at_ms: None, page: None }],
         files: Vec::new(),
@@ -383,11 +384,16 @@ fn put_item(tx: &Connection, item: &Item, created: i64, updated: i64) -> Result<
     Ok(())
 }
 
-/// The item `uid` as the cache holds it.
+/// The item `uid` as the cache holds it. Its `seq` is the column's, the server's: the record JSON
+/// of a note made here keeps whatever it was written with.
 fn load_item(conn: &Connection, uid: &str) -> Result<Option<Item>> {
-    let record: Option<String> =
-        conn.query_row("SELECT record FROM items WHERE uid = ?1", [uid], |r| r.get(0)).optional()?;
-    record.map(|r| serde_json::from_str(&r).map_err(Into::into)).transpose()
+    let row: Option<(String, i64)> = conn
+        .query_row("SELECT record, seq FROM items WHERE uid = ?1", [uid], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    let Some((record, seq)) = row else { return Ok(None) };
+    let mut item: Item = serde_json::from_str(&record)?;
+    item.seq = seq as u64;
+    Ok(Some(item))
 }
 
 /// Deletes an item here (a tombstone, so a later write is made against its `seq`).
@@ -406,10 +412,14 @@ fn delete_item(tx: &Connection, uid: &str, t: i64) -> Result<bool> {
     Ok(true)
 }
 
-/// The verse whose own note `item` is: a live note, not a conflict copy, whose only user anchor
-/// is that one verse.
-fn own_verse(item: &Item) -> Option<VerseRef> {
-    if item.kind != ItemKind::Note || item.deleted_at.is_some() || item.conflict_of.is_some() {
+/// The verse whose own note `item` could be: a live note whose only user anchor is that one
+/// verse, and not a conflict copy of a note still live (`live` holds the live notes' uids). A
+/// copy whose original is gone is an ordinary note on its verse.
+fn own_verse(item: &Item, live: &std::collections::HashSet<String>) -> Option<VerseRef> {
+    if item.kind != ItemKind::Note
+        || item.deleted_at.is_some()
+        || item.conflict_of.as_ref().is_some_and(|of| live.contains(of))
+    {
         return None;
     }
     let mut user = item.anchors.iter().filter(|a| a.origin == AnchorOrigin::User);
@@ -429,11 +439,14 @@ fn own_notes(conn: &Connection) -> Result<HashMap<u32, Note>> {
     let rows = st.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
     })?;
+    let notes: Vec<(String, i64, i64, Item)> = rows
+        .filter_map(|r| r.ok())
+        .filter_map(|(uid, c, u, record)| Some((uid, c, u, serde_json::from_str::<Item>(&record).ok()?)))
+        .collect();
+    let live = notes.iter().map(|n| n.0.clone()).collect();
     let mut out = HashMap::new();
-    for row in rows {
-        let (uid, created, updated, record) = row?;
-        let Ok(item) = serde_json::from_str::<Item>(&record) else { continue };
-        if let Some(v) = own_verse(&item) {
+    for (uid, created, updated, item) in notes {
+        if let Some(v) = own_verse(&item, &live) {
             out.entry(v.key()).or_insert(Note { uid, body: item.text.unwrap_or_default(), created, updated });
         }
     }
@@ -870,7 +883,7 @@ impl StudyStore {
 
     /// Highlights a verse (or clears it), and queues the change for the server.
     pub fn set_highlight(&mut self, v: VerseRef, color: Option<HighlightColor>) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let changed = put_highlight(&tx, v, color, now())?;
         tx.commit()?;
         match color {
@@ -894,7 +907,7 @@ impl StudyStore {
     pub fn set_note(&mut self, v: VerseRef, body: &str) -> Result<()> {
         let t = now();
         let own = self.notes.get(&v.key()).cloned();
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let standing = write_note(&tx, own.as_ref(), v, body, t, t)?;
         tx.commit()?;
         let changed = own.is_some() || standing.is_some();
@@ -911,7 +924,7 @@ impl StudyStore {
 
     /// Bookmarks a verse with a label (or removes the bookmark), and queues the change.
     pub fn set_bookmark(&mut self, v: VerseRef, label: Option<&str>) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let changed = put_bookmark(&tx, v, label, now())?;
         tx.commit()?;
         match label {
@@ -1071,7 +1084,7 @@ impl StudyStore {
     ) -> Result<i64> {
         let messages = serde_json::to_string(messages)?;
         let at = now();
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // Order of saving, which the second-resolution times can't settle.
         let ord: i64 = tx.query_row("SELECT IFNULL(MAX(ord), 0) + 1 FROM chats", [], |r| r.get(0))?;
         let id = match id {
@@ -1104,7 +1117,7 @@ impl StudyStore {
 
     /// Deletes a conversation, from the library too.
     pub fn delete_chat(&mut self, id: i64) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let uid: Option<String> = tx
             .query_row(
                 "UPDATE chats SET deleted = 1 WHERE id = ?1 AND deleted = 0 RETURNING uid",
@@ -1245,14 +1258,15 @@ impl StudyStore {
                     created: rfc3339(self.highlights[&v.key()].1),
                 })
                 .collect(),
-            notes: self
-                .notes()
+            notes: all_notes(&self.conn)?
                 .into_iter()
-                .map(|(v, n)| ExportNote {
-                    verse: entry(v),
-                    note: n.body.clone(),
+                .map(|n| ExportNote {
+                    verse: entry(n.verse),
+                    note: n.body,
                     created: rfc3339(n.created),
                     updated: rfc3339(n.updated),
+                    uid: Some(n.uid),
+                    conflict_of: n.conflict_of,
                 })
                 .collect(),
             bookmarks: self
@@ -1390,7 +1404,7 @@ impl StudyStore {
             let book = BookId::from_code(&e.book).with_context(|| format!("unknown book {}", e.book))?;
             Ok(VerseRef::new(book, e.chapter, e.verse))
         };
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         let mut own = self.notes.clone();
         for h in &doc.highlights {
             put_highlight(
@@ -1400,16 +1414,16 @@ impl StudyStore {
                 parse_rfc3339(&h.created).unwrap_or_else(now),
             )?;
         }
+        let mut seen = std::collections::HashSet::new();
         for n in &doc.notes {
             let v = verse(&n.verse)?;
-            let (created, updated) = (
-                parse_rfc3339(&n.created).unwrap_or_else(now),
-                parse_rfc3339(&n.updated).unwrap_or_else(now),
-            );
-            match write_note(&tx, own.get(&v.key()), v, &n.note, created, updated)? {
-                Some(note) => own.insert(v.key(), note),
-                None => own.remove(&v.key()),
-            };
+            let legacy_first = seen.insert(v.key());
+            if let Some(uid) = import_note(&tx, own.get(&v.key()), v, n, legacy_first)?
+                && VerseId::from(v).is_valid()
+            {
+                enqueue_uid(&tx, Kind::Note, &uid, now())?;
+            }
+            own = own_notes(&tx)?;
         }
         for b in &doc.bookmarks {
             put_bookmark(
@@ -1463,7 +1477,7 @@ impl StudyStore {
     /// Highlights, bookmarks and notes are cleared through the outbox, so they go from the library
     /// too.
     pub fn erase_all(&mut self) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let t = now();
         let notes: Vec<String> = tx
             .prepare("SELECT uid FROM items WHERE kind = 'note' AND deleted = 0")?
@@ -1492,6 +1506,9 @@ impl StudyStore {
 
 /// Opens study.sqlite as one of its two connections (the app's and the sync engine's): WAL, and
 /// waiting out the other's writes rather than failing.
+///
+/// Every transaction here begins `IMMEDIATE`: one that reads before it writes would otherwise
+/// fail with "database is locked" (not wait) when the other connection committed in between.
 fn connect(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -1607,7 +1624,10 @@ pub(crate) mod cache {
                         return Ok(Some(entry(Key::Uid(uid), "library/notes:remove", args, None)));
                     }
                     if seq == 0 && base == 0 && already_there(conn, &item)? {
-                        let tx = conn.unchecked_transaction()?;
+                        let tx = rusqlite::Transaction::new_unchecked(
+                            conn,
+                            rusqlite::TransactionBehavior::Immediate,
+                        )?;
                         tx.execute("DELETE FROM items WHERE uid = ?1", [&uid])?;
                         tx.execute("DELETE FROM item_anchors WHERE uid = ?1", [&uid])?;
                         tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
@@ -1713,7 +1733,7 @@ pub(crate) mod cache {
     /// The server took the change as `seq`. If it was edited again meanwhile, the newer edit stays
     /// queued, now against `seq`.
     pub(crate) fn sent(conn: &mut Connection, e: &Entry, seq: u64) -> Result<()> {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if tx.execute("DELETE FROM outbox WHERE id = ?1 AND rev = ?2", params![e.id, e.rev])? == 0 {
             tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
         }
@@ -1744,7 +1764,7 @@ pub(crate) mod cache {
     pub(crate) fn conflicted(conn: &mut Connection, e: &Entry, answer: &Value) -> Result<bool> {
         let seq = answer["seq"].as_u64().unwrap_or(0);
         let offset = clock_offset_ms(conn)?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let rev: i64 = tx.query_row("SELECT rev FROM outbox WHERE id = ?1", [e.id], |r| r.get(0))?;
         let real = match (&e.key, e.kind) {
             (Key::Verse(verse), _) => {
@@ -1807,7 +1827,8 @@ pub(crate) mod cache {
                 }
                 if let Some(theirs) = &theirs {
                     let created = local_time(Some(theirs.captured_at), offset).unwrap_or_else(now);
-                    put_item(&tx, theirs, created, now())?;
+                    let updated = local_time(theirs.updated_at, offset).unwrap_or_else(now);
+                    put_item(&tx, theirs, created, updated)?;
                 }
                 let text = |i: Option<&Item>| match i {
                     Some(i) if i.deleted_at.is_none() => json!(i.text.as_deref().unwrap_or("")),
@@ -1867,7 +1888,7 @@ pub(crate) mod cache {
 
     /// The device's clock offset from the server's, measured from an uncached answer.
     pub(crate) fn set_clock_offset_ms(conn: &mut Connection, ms: i64) -> Result<()> {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         set_state(&tx, "clock_offset_ms", ms)?;
         tx.commit()?;
         Ok(())
@@ -1891,7 +1912,7 @@ pub(crate) mod cache {
     /// device moved the record past it. Returns how many records changed what the app shows.
     pub(crate) fn apply_page(conn: &mut Connection, records: &[FeedRecord], seq: u64) -> Result<usize> {
         let clock_offset_ms = clock_offset_ms(conn)?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut changed = 0;
         for record in records {
             let (kind, verse, rseq, created, value) = match record {
@@ -1912,7 +1933,8 @@ pub(crate) mod cache {
                 FeedRecord::Item(item) => {
                     if newer_by_uid(&tx, Kind::Note, &item.uid, item.seq)? {
                         let created = local_time(Some(item.captured_at), clock_offset_ms).unwrap_or_else(now);
-                        put_item(&tx, item, created, now())?;
+                        let updated = local_time(item.updated_at, clock_offset_ms).unwrap_or_else(now);
+                        put_item(&tx, item, created, updated)?;
                         changed += 1;
                     }
                     continue;
@@ -1990,6 +2012,7 @@ pub(crate) mod cache {
     fn write_chat(tx: &Connection, c: &Chat, clock_offset_ms: i64) -> Result<()> {
         let t = now();
         let created = local_time(Some(c.created_at), clock_offset_ms).unwrap_or(t);
+        let updated = local_time(c.updated_at, clock_offset_ms).unwrap_or(t);
         let ord: i64 = tx.query_row("SELECT IFNULL(MAX(ord), 0) + 1 FROM chats", [], |r| r.get(0))?;
         tx.execute(
             "INSERT INTO chats(title, created, updated, messages, api, ord, uid, seq, deleted, file_uid, url, fetched)
@@ -2001,7 +2024,7 @@ pub(crate) mod cache {
             params![
                 c.title,
                 created,
-                t,
+                updated,
                 ord,
                 c.uid,
                 c.seq as i64,
@@ -2060,7 +2083,7 @@ pub(crate) mod cache {
     /// The server dropped tombstones this device hadn't seen: forget the cache (keeping records
     /// with a change still waiting, which the outbox settles) and pull the library from 0.
     pub(crate) fn resync(conn: &mut Connection) -> Result<()> {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for kind in [Kind::Highlight, Kind::Bookmark] {
             tx.execute(
                 &format!(
@@ -2216,6 +2239,82 @@ struct ExportNote {
     note: String,
     created: String,
     updated: String,
+    /// The note item's id, so importing a backup again updates it rather than adding another.
+    /// Absent in exports made before notes became items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    uid: Option<String>,
+    /// For a conflict copy, the uid of the note it collided with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conflict_of: Option<String>,
+}
+
+/// A live note item as export lists it: its verse (the first anchor's), text, times, and ids.
+struct AnyNote {
+    verse: VerseRef,
+    uid: String,
+    body: String,
+    created: i64,
+    updated: i64,
+    conflict_of: Option<String>,
+}
+
+/// Every live note item, several to a verse allowed, in verse order then oldest first.
+fn all_notes(conn: &Connection) -> Result<Vec<AnyNote>> {
+    let mut st = conn.prepare(
+        "SELECT uid, created, updated, record FROM items WHERE kind = 'note' AND deleted = 0 ORDER BY created, uid",
+    )?;
+    let rows = st.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+    })?;
+    let mut out: Vec<AnyNote> = rows
+        .filter_map(|r| r.ok())
+        .filter_map(|(uid, created, updated, record)| {
+            let item: Item = serde_json::from_str(&record).ok()?;
+            let verse = verse_of(item.anchors.first()?.from.0 as i64)?;
+            let body = item.text.unwrap_or_default();
+            Some(AnyNote { verse, uid, body, created, updated, conflict_of: item.conflict_of })
+        })
+        .collect();
+    out.sort_by_key(|n| n.verse);
+    Ok(out)
+}
+
+/// Imports one exported note; returns the uid it was written to, if it was. Its uid, when this
+/// cache has that item, updates it; a note already on the verse word for word is skipped; an
+/// export from before uids overwrites the verse's own note with its first note on that verse
+/// (`legacy_first`); anything else becomes another note item, conflict copies included.
+fn import_note(
+    tx: &Connection,
+    own: Option<&Note>,
+    v: VerseRef,
+    n: &ExportNote,
+    legacy_first: bool,
+) -> Result<Option<String>> {
+    let created = parse_rfc3339(&n.created).unwrap_or_else(now);
+    let updated = parse_rfc3339(&n.updated).unwrap_or_else(now);
+    if n.note.trim().is_empty() {
+        return Ok(None);
+    }
+    if let Some(mut item) = n.uid.as_deref().map(|u| load_item(tx, u)).transpose()?.flatten() {
+        if item.deleted_at.is_none() && item.text.as_deref() == Some(n.note.as_str()) {
+            return Ok(None);
+        }
+        item.text = Some(n.note.clone());
+        item.deleted_at = None;
+        put_item(tx, &item, created, updated)?;
+        return Ok(Some(item.uid));
+    }
+    if all_notes(tx)?.iter().any(|o| o.verse == v && o.body == n.note) {
+        return Ok(None);
+    }
+    if n.uid.is_none() && legacy_first {
+        return Ok(write_note(tx, own, v, &n.note, created, updated)?.map(|note| note.uid));
+    }
+    let uid = n.uid.clone().unwrap_or_else(new_uid);
+    let mut item = note_item(&uid, VerseId::from(v), &n.note, created);
+    item.conflict_of = n.conflict_of.clone();
+    put_item(tx, &item, created, updated)?;
+    Ok(Some(uid))
 }
 
 #[derive(Serialize, Deserialize)]

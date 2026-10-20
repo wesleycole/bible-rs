@@ -318,7 +318,8 @@ struct Engine {
     files_dir: PathBuf,
     /// The cache may want files it doesn't have.
     fetch_due: bool,
-    /// Files the server refused to give (deleted since): not asked for again until restart.
+    /// File URLs the server refused (the file was replaced or deleted since): not asked for again
+    /// until restart. Keyed by URL, not by owner, so a chat's next conversation is still fetched.
     unfetchable: HashSet<String>,
 }
 
@@ -444,6 +445,19 @@ impl Engine {
 
     /// Applies one result of the feed.
     fn apply(&mut self, value: Value) -> Result<()> {
+        // A record type newer than this build: stop here rather than skip it (the cursor would
+        // move past records this device never kept), and say what mends it.
+        let known = ["highlight", "bookmark", "item", "chat"];
+        if let Some(t) = value["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find_map(|r| r["type"].as_str().filter(|t| !known.contains(t)))
+        {
+            anyhow::bail!(
+                "Update Linger to keep syncing: your library has {t} records this version can't read."
+            );
+        }
         match serde_json::from_value::<Changes>(value)? {
             Changes::Page { records, seq, .. } => {
                 if cache::apply_page(&mut self.conn, &records, seq)? > 0 {
@@ -568,14 +582,14 @@ impl Engine {
         }
         self.fetch_due = false;
         for f in cache::to_fetch(&self.conn).unwrap_or_default() {
-            if self.unfetchable.contains(&f.uid) {
+            if self.unfetchable.contains(&f.url) {
                 continue;
             }
             match self.backend.download(&f.url) {
                 Ok(bytes) => match cache::fetched(&self.conn, &f, &bytes, &self.files_dir) {
                     Ok(()) => self.data_changed = true,
                     Err(_) => {
-                        self.unfetchable.insert(f.uid);
+                        self.unfetchable.insert(f.url);
                     }
                 },
                 Err(CallError::Offline(_)) => {
@@ -584,7 +598,7 @@ impl Engine {
                     return;
                 }
                 Err(CallError::Refused(_)) => {
-                    self.unfetchable.insert(f.uid);
+                    self.unfetchable.insert(f.url);
                 }
             }
         }
@@ -592,7 +606,7 @@ impl Engine {
 
     /// Files the cache still wants and can get.
     fn fetching(&self) -> bool {
-        cache::to_fetch(&self.conn).unwrap_or_default().iter().any(|f| !self.unfetchable.contains(&f.uid))
+        cache::to_fetch(&self.conn).unwrap_or_default().iter().any(|f| !self.unfetchable.contains(&f.url))
     }
 
     fn refused(&self, entry: &cache::Entry, error: &str) -> Result<()> {
@@ -923,6 +937,7 @@ impl FakeState {
                 title,
                 text: Some(text.into()),
                 anchors,
+                updated_at: Some(now),
                 ..i
             },
             None => Item {
@@ -944,6 +959,7 @@ impl FakeState {
                 details: None,
                 conflict_of: conflict_of.map(Into::into),
                 captured_at: captured.unwrap_or(now),
+                updated_at: Some(now),
                 unreviewed: false,
                 anchors,
                 files: Vec::new(),
@@ -963,8 +979,14 @@ impl FakeState {
             ByUid::Write => {
                 let seq = self.next_seq();
                 let i = self.items.get_mut(&uid).expect("stored");
-                (i.seq, i.deleted_at, i.text, i.title, i.anchors) =
-                    (seq, Some(now_ms() as u64), Some(String::new()), String::new(), Vec::new());
+                (i.seq, i.deleted_at, i.updated_at, i.text, i.title, i.anchors) = (
+                    seq,
+                    Some(now_ms() as u64),
+                    Some(now_ms() as u64),
+                    Some(String::new()),
+                    String::new(),
+                    Vec::new(),
+                );
                 self.wrote();
                 json!({ "result": "ok", "seq": seq })
             }
@@ -1029,6 +1051,7 @@ impl FakeState {
                     seq,
                     deleted_at: None,
                     created_at,
+                    updated_at: Some(now_ms() as u64),
                     title,
                     file_uid: file_uid.into(),
                     url: format!("fake://storage/{storage}"),
@@ -1050,8 +1073,8 @@ impl FakeState {
             ByUid::Write => {
                 let seq = self.next_seq();
                 let c = self.chats.get_mut(&uid).expect("stored");
-                (c.seq, c.deleted_at, c.title, c.url, c.bytes) =
-                    (seq, Some(now_ms() as u64), String::new(), String::new(), 0);
+                (c.seq, c.deleted_at, c.updated_at, c.title, c.url, c.bytes) =
+                    (seq, Some(now_ms() as u64), Some(now_ms() as u64), String::new(), String::new(), 0);
                 let file = c.file_uid.clone();
                 self.files.remove(&file);
                 self.wrote();
@@ -1180,6 +1203,9 @@ mod convex_backend {
     /// How long a call waits for an answer before the engine treats the server as unreachable.
     /// The crate keeps the request and sends it on reconnect; the writes are idempotent.
     const CALL_TIMEOUT: Duration = Duration::from_secs(20);
+    /// A call fails as offline once the socket has been down this long: the crate would hold it
+    /// until a reconnect, and the engine would publish nothing meanwhile.
+    const DOWN_GRACE: Duration = Duration::from_secs(3);
 
     /// The `convex` crate on a current-thread tokio runtime, driven on the engine's thread.
     pub struct ConvexBackend {
@@ -1190,6 +1216,9 @@ mod convex_backend {
         feed: Option<tokio::task::JoinHandle<()>>,
         /// The socket's state, from the crate's state channel (it reconnects on its own).
         connected: Arc<AtomicBool>,
+        /// Since when the socket hasn't been connected (from the client's creation until the first
+        /// connect), or `None` while it is.
+        down_since: Arc<Mutex<Option<Instant>>>,
     }
 
     impl ConvexBackend {
@@ -1197,7 +1226,16 @@ mod convex_backend {
         pub fn new(url: &str) -> Result<Self> {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
             let connected = Arc::new(AtomicBool::new(true));
-            Ok(Self { url: url.into(), rt, client: None, notify: Arc::default(), feed: None, connected })
+            let down_since = Arc::new(Mutex::new(None));
+            Ok(Self {
+                url: url.into(),
+                rt,
+                client: None,
+                notify: Arc::default(),
+                feed: None,
+                connected,
+                down_since,
+            })
         }
 
         fn client(&mut self) -> Result<ConvexClient, CallError> {
@@ -1208,9 +1246,15 @@ mod convex_backend {
                 let client =
                     self.rt.block_on(builder.build()).map_err(|e| CallError::Refused(format!("{e:#}")))?;
                 let (connected, notify) = (self.connected.clone(), self.notify.clone());
+                let down_since = self.down_since.clone();
+                *down_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 self.rt.spawn(async move {
                     while let Some(state) = states.recv().await {
-                        connected.store(matches!(state, WebSocketState::Connected), Ordering::Relaxed);
+                        let up = matches!(state, WebSocketState::Connected);
+                        connected.store(up, Ordering::Relaxed);
+                        let mut down = down_since.lock().unwrap_or_else(|e| e.into_inner());
+                        *down = if up { None } else { down.or_else(|| Some(Instant::now())) };
+                        drop(down);
                         notify.notify_one();
                     }
                 });
@@ -1222,17 +1266,33 @@ mod convex_backend {
         fn run(&mut self, kind: CallKind, name: &str, args: Value) -> Result<Value, CallError> {
             let mut client = self.client()?;
             let args = to_convex(args);
+            let down_since = self.down_since.clone();
+            let down_too_long = async move {
+                loop {
+                    let since = *down_since.lock().unwrap_or_else(|e| e.into_inner());
+                    if since.is_some_and(|t| t.elapsed() >= DOWN_GRACE) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            };
             // The timer is made inside the runtime, which it needs.
             let answer = self.rt.block_on(async {
-                tokio::time::timeout(CALL_TIMEOUT, async {
+                let call = std::pin::pin!(tokio::time::timeout(CALL_TIMEOUT, async {
                     match kind {
                         CallKind::Query => client.query(name, args).await,
                         CallKind::Mutation => client.mutation(name, args).await,
                         CallKind::Action => client.action(name, args).await,
                     }
-                })
-                .await
+                }));
+                match futures::future::select(call, std::pin::pin!(down_too_long)).await {
+                    futures::future::Either::Left((answer, _)) => Some(answer),
+                    futures::future::Either::Right(_) => None,
+                }
             });
+            let Some(answer) = answer else {
+                return Err(CallError::Offline("Can't reach Linger's server".into()));
+            };
             match answer {
                 Err(_) => {
                     Err(CallError::Offline(format!("no answer from Convex in {} s", CALL_TIMEOUT.as_secs())))

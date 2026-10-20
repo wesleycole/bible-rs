@@ -65,6 +65,13 @@ These gate M1's release, because they can't be fixed once users have libraries:
    the proxy and `convex/` import one list. Today's billing functions (`usage.ts`, `entitlements.ts`,
    `account.ts`, `webhooks.ts`, `sermons.ts`) move onto it behind their existing tests, so the
    `Allowance` service exists before the library needs it.
+   As built (pass 2): `lib/allowance.ts` holds every plan check, count and reservation (Ask rounds,
+   sermon seconds, storage) and the `/v1/me` summary; `effectServerMutation` / `Query` / `Action`
+   (with `ServerCaller`) and `effectInternalMutation` wrap the proxy's and the crons' functions. On
+   them so far: `usage.*`, `users.me`, `sermons.create` / `markDone` / `fail` / `failStuck`,
+   `account.purge` and `library/purge`. A denial is still returned as the `Denial` value the proxy
+   maps, not thrown. Still plain, and next: `entitlements.upsert`, `webhooks.*`, the rest of
+   `sermons.*`, `users.setStripeCustomer` / `billingProfile`, `maintenance.*` and `admin.*`.
 3. **The generated schema.** `crates/core/src/records.rs` defines every synced record and `VerseId`;
    `cargo xtask schema` writes `server/shared/records.ts` (an Effect `Schema` and a Convex validator
    per record), `server/convex/lib/canon.json` (verses per chapter), the cache's column list and core's
@@ -102,10 +109,18 @@ These gate M1's release, because they can't be fixed once users have libraries:
    sha256, partIndex?, page? })`, which checks the storage limit through `Allowance`, refuses with
    `too_large`, and records the file's permanent `url`.
 9. **`/v1/me`** gains `library: { storageUsed, storageLimit }` ([backend.md](backend.md#get-v1me)).
+   Built: `plans` gains `storageBytes` (1 GB Free, 25 GB Pro) and `keepAudio`, optional in the schema
+   until `admin:seed` (which now fills fields a plan row lacks) has run on every deployment; a file
+   over the limit is refused `too_large` and isn't attached. Its upload stays in `_storage`,
+   because deleting it inside the failing mutation is rolled back; nothing counts it.
 10. **Purge and tombstones.** Replace `account.purge` with the scheduled chain (`library/purge.step`, 500
     records a run) over every user table and file, ending with the `users` row
     ([backend.md](backend.md#deletion)). A daily cron hard-deletes tombstones older than 30 days with their
     files and index rows. `DELETE /v1/account` and the Clerk webhook start the chain.
+    Built (`library/purge.ts`): the first step runs inside `account.purge`, so a small account is
+    gone when the request returns, and each later step is scheduled; the tombstone cron
+    (08:00 UTC) reads a `by_deleted` index on each synced table, 500 a run, rescheduling itself
+    while more remain, and raises each user's `purgedThrough` to the highest `seq` it deleted.
 
 ## linger-core
 
@@ -174,6 +189,15 @@ These gate M1's release, because they can't be fixed once users have libraries:
    fetches. A second device's migrated note is dropped instead of sent when the library already has
    the same text on the same anchors. The desktop keeps a chat's local row id as its handle (only the
    engine uses `uid`), so Recents didn't change. `Item` has no photo `pages` until M4.
+   `Item` and `Chat` carry `updatedAt`, server-stamped on every write, so the cache's `updated` (and
+   the export) is the real edit time on every device, not the time the record arrived. A conflict
+   copy whose original is gone (deleted, or not in the cache) is an ordinary note on its verse and
+   can be the verse's own. The `items.seq` column is the server's and the one source: the record
+   JSON's `seq` is replaced by it on load. Every cache transaction begins `IMMEDIATE`, because a
+   read-then-write transaction fails \"database is locked\" rather than waiting when the other
+   connection committed in between. A Convex call fails as offline once the socket has been down
+   3 s, instead of waiting out the crate's reconnects for the 20 s call timeout, so the status is
+   Offline at once whatever is first in the outbox.
 4. **`reference::find_all(text) -> Vec<(Range<usize>, Reference)>`**, moved from
    `apps/desktop/src/pages/notes.rs` `mentioned()` and extended to whole chapters and ranges, with the
    existing tests.
@@ -185,7 +209,8 @@ These gate M1's release, because they can't be fixed once users have libraries:
 Pass 2's first half changes only the cache under the existing UI: the popover and notes page edit the
 verse's own note through it, and Recents sync. What follows for the notes page and popover (a conflict
 copy shown beside its note, "edited on another device", typed anchors from `find_all`) and
-`items.updateDetails` come in the second half.
+`items.updateDetails` come after pass 2's second push (purge, Allowance, `/v1/me`, export), with the
+library consent sheet.
 
 1. **Start sync after sign-in** from `Account`. **Sign-out** waits for the outbox (or asks), then deletes
    the cache and cached files, keeping recordings that exist only on this Mac unless the user deletes them
@@ -203,6 +228,12 @@ copy shown beside its note, "edited on another device", typed anchors from `find
    ([backend.md](backend.md#privacy-and-consent)). Recordings follow in M1b, through the same sheet.
    The Ask consent text drops "conversations stay on the device".
 6. **The CLI** (`cli.rs`) reads notes from the cache.
+7. **Export** (`linger export --json`, the user's backup) lists every live note item, several to a
+   verse allowed, each `{ reference, book, chapter, verse, text?, note, created, updated, uid,
+   conflict_of? }`. Import updates the item a `uid` names when this cache has it, skips a note already
+   on its verse word for word, lets an export from before uids overwrite the verse's own note with
+   its first note there, and otherwise adds another note item, so a conflict copy comes back as a
+   copy.
 
 ## Tests
 

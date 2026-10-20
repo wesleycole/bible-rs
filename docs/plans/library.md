@@ -198,6 +198,9 @@ for the web's wasm build):
   what is there). Because every record has its own `seq`, a page can end anywhere without skipping. The engine subscribes, applies a page to the cache in one SQLite
   transaction, stores the new cursor and subscribes again. Convex re-runs the query when any of those
   rows change, so a photo saved on the iPhone reaches the Mac within a second.
+  A device that meets a record type newer than itself stops at that page with "Update Linger to
+  keep syncing" and never skips it, so a release that adds a record type leaves older apps
+  stopped, not silently missing records, until they update.
 - **Push: the outbox.** Every local write goes to an `outbox` table first, then to an idempotent
   mutation keyed by `uid` (`notes.upsert`, `highlights.set`, `chats.save`, …). An entry leaves the
   outbox when its mutation succeeds. Files upload through upload URLs (below) before the mutation that

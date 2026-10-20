@@ -363,11 +363,26 @@ fn a_note_syncs_and_a_stale_edit_is_kept_beside_the_newer_one() {
     );
     assert_eq!(b.store.pending_changes(), 0);
 
-    // B edits its copy no further; A deletes the note and B sees it go.
+    // Both notes are in the backup, the copy naming its original.
+    let export: serde_json::Value =
+        serde_json::from_str(&b.store.export_json("KJV", |_| None).unwrap()).unwrap();
+    let notes = export["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes.iter().any(|n| n["note"] == "God's love" && n["conflict_of"] == original.uid.as_str()));
+
+    // A deletes the original: the copy is now an ordinary note, the verse's own, on both devices.
     a.store.set_note(verse(3, 16), "").unwrap();
     a.settle(&server);
     b.settle(&server);
-    assert!(b.store.note(verse(3, 16)).is_none());
+    for d in [&a, &b] {
+        assert_eq!(d.store.note(verse(3, 16)).unwrap().body, "God's love");
+    }
+    // And a backup imported elsewhere brings both notes back as two, not one over the other.
+    let mut c = StudyStore::open_in_memory().unwrap();
+    c.import_json(&serde_json::to_string(&export).unwrap()).unwrap();
+    let again: serde_json::Value = serde_json::from_str(&c.export_json("KJV", |_| None).unwrap()).unwrap();
+    assert_eq!(again["notes"].as_array().unwrap().len(), 2);
+    assert_eq!(c.note(verse(3, 16)).unwrap().body, "Love, endlessly");
 }
 
 #[test]
@@ -395,4 +410,20 @@ fn a_conversation_saved_on_one_device_opens_on_the_other() {
     a.settle(&server);
     assert!(a.store.chats().is_empty());
     assert!(server.chats().is_empty());
+}
+
+#[test]
+fn a_record_type_newer_than_this_build_stops_sync_and_says_to_update() {
+    let server = FakeServer::new();
+    let mut a = Device::new("newer");
+    a.start(&server);
+    a.settle(&server);
+    server.deliver(serde_json::json!({
+        "records": [{ "type": "photo", "uid": "p1", "seq": 1 }], "seq": 1, "serverTime": 1
+    }));
+    let sync = a.sync.as_ref().unwrap();
+    eventually(|| matches!(sync.status(), SyncStatus::Error(_)));
+    let SyncStatus::Error(e) = sync.status() else { unreachable!() };
+    assert!(e.starts_with("Update Linger to keep syncing"), "{e}");
+    assert_eq!(sync.cursor(), 0, "the cursor doesn't move past what it couldn't read");
 }

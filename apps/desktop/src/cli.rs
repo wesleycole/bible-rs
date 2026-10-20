@@ -417,6 +417,10 @@ fn account(data_dir: &Path) -> Result<()> {
         if me.is_pro() { "Pro" } else { "Free" }
     );
     println!("Ask: {} questions left, resets {}", me.ask.questions_left, me.ask.resets_at);
+    if let Some(l) = &me.library {
+        let mb = |b: u64| b as f64 / 1e6;
+        println!("Library: {:.1} MB of {:.0} MB used", mb(l.storage_used), mb(l.storage_limit));
+    }
     if me.is_pro() {
         println!("Sermons: {:.1} hours of cloud transcripts left", me.sermons.hours_left);
     } else if me.sermons.trial_available {

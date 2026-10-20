@@ -109,6 +109,18 @@ pub struct Me {
     pub source: Option<String>,
     pub ask: MeAsk,
     pub sermons: MeSermons,
+    /// Library storage; absent from a server older than M1's second pass.
+    #[serde(default)]
+    pub library: Option<MeLibrary>,
+}
+
+/// Library storage in bytes: what the user's files take, and what their plan allows.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct MeLibrary {
+    #[serde(rename = "storageUsed")]
+    pub storage_used: u64,
+    #[serde(rename = "storageLimit")]
+    pub storage_limit: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
