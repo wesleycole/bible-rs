@@ -183,8 +183,9 @@ for the web's wasm build):
   engine through `crates/ffi`, with a callback that hands SwiftUI each change.
 - **Tokens.** The engine asks the existing `auth::TokenSource` for a token on every connect, and pushes
   a fresh one 30 seconds before the current one's `exp`: Clerk session tokens on iOS last about a
-  minute, the desktop's OAuth access token a day. (M1 confirms the crate's `set_auth_callback` and
-  `set_auth` behave this way before building on them.)
+  minute, the desktop's OAuth access token a day. The crate's `set_auth_callback` refetches on
+  every reconnect and `set_auth` swaps a token in place (confirmed in M1,
+  [backend.md](backend.md#answered-in-m1)).
 - **One ordering for every write: a per-user sequence.** Every library mutation reads the user's
   `userLibrary.seq` and gives each record it writes the next number, so no two records share a `seq`. Because they all write that one
   document, Convex serializes a user's library writes, so `seq` order is commit order. A timestamp

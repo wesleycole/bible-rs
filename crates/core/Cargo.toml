@@ -10,6 +10,10 @@ license.workspace = true
 default = ["bundled"]
 # Embed the public-domain translations from data/translations into the binary.
 bundled = []
+# The sync engine (sync.rs): the cache, the outbox and the change feed behind `sync::Backend`.
+sync = []
+# The native Convex backend: the `convex` crate on a current-thread tokio runtime.
+convex = ["sync", "dep:convex", "dep:tokio", "dep:futures"]
 
 [dependencies]
 anyhow.workspace = true
@@ -25,6 +29,10 @@ ureq = "3"
 hound = "3.5"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+# rustls, as ureq already uses, rather than the crate's default vendored OpenSSL.
+convex = { version = "0.10", optional = true, default-features = false, features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1", optional = true, features = ["rt", "time", "sync"] }
+futures = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 
 # API keys live in the macOS Keychain; other platforms use a 0600 file.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -32,6 +40,10 @@ keyring = "4"
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[example]]
+name = "convex_tokens"
+required-features = ["convex"]
 
 [[bench]]
 name = "search"

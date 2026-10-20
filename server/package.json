@@ -9,6 +9,7 @@
     "dev": "tsx watch --env-file=.env.local src/dev/serve.ts",
     "dev:convex": "bash scripts/convex-local.sh",
     "dev:token": "tsx scripts/dev-token.ts",
+    "clerk-test-token": "tsx scripts/clerk-test-token.ts",
     "seed": "convex run admin:seed",
     "typecheck": "tsc --noEmit -p . && tsc --noEmit -p convex",
     "test": "vitest run",

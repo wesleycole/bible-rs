@@ -11,7 +11,19 @@ pnpm dev:convex          # anonymous local Convex on :3210; pushes convex/ on sa
 npx convex run admin:seed  # once: plans, models and routing
 npx convex env set LINGER_SERVER_SECRET <same value as .env.local>
 npx convex env set LINGER_PROXY_URL http://127.0.0.1:3000
+npx convex env set CLERK_JWT_ISSUER https://elegant-mink-67.clerk.accounts.dev  # convex/auth.config.ts
 pnpm dev                 # the proxy on :3000
+```
+
+The library functions (`convex/library/`) take the apps' Clerk tokens directly. To call them as a
+real user on a cloud dev deployment (`npx convex dev --configure existing --team
+wesley-cole87-gmail-com --project linger-99de5 --dev-deployment cloud`), mint tokens for the Clerk
+test user without a browser:
+
+```sh
+pnpm clerk-test-token             # signs amp+clerk_test@example.com in; prints both token kinds
+pnpm clerk-test-token --oauth     # a fresh desktop OAuth access token (a day)
+pnpm clerk-test-token --session   # a fresh session token (60 s)
 ```
 
 `.env.local` (gitignored) needs `CONVEX_URL`, `LINGER_SERVER_SECRET`, `CLERK_JWT_KEY`,

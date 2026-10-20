@@ -208,9 +208,9 @@ export default {
 
 With no `applicationID`, Convex doesn't check `aud`, so the same provider accepts session tokens and
 the desktop's OAuth access tokens, and gives one person the same `tokenIdentifier` on every device.
-Convex doesn't reject the `at+jwt` header. Both were tested with tokens of the same shape on Convex
-Cloud (October 2026); M1 confirms it with real Clerk tokens from the Mac and an iPhone. Library
-functions also refuse a `sub` that isn't `user_…`, as the proxy does.
+Convex doesn't reject the `at+jwt` header. Confirmed with real Clerk tokens on a cloud dev deployment
+(October 19, 2026; [below](#answered-in-m1)). Library functions also refuse a `sub` that isn't
+`user_…`, as the proxy does.
 
 ### Deletion
 
@@ -612,9 +612,35 @@ them in M1).
 | Can a paid Linger offer the ESV, NLT, NET and API.Bible integrations, and users' own API.Bible keys? Confirm the letters were sent, and chase answers | Crossway, Tyndale, bible.org, API.Bible | Their return to release builds |
 | Is a user's own photo of a copyrighted book, sent to Claude for their private study, acceptable to rely on? And sermon audio? | Lawyer | Any public (non-TestFlight) release of M4's book-page capture |
 | Does AssemblyAI commit in writing to no training on customer audio? | AssemblyAI | M1b release |
-| Does a real Mac OAuth token get the same Convex `tokenIdentifier` as an iOS session token? | M1, with real tokens | M1 |
 | Do Clerk passkeys and the production instance need Clerk Pro for this application? | Clerk dashboard | M1 |
-| Does the `convex` crate's `set_auth_callback` refetch on reconnect, and can `set_auth` replace a token before it expires? | M1 spike | M1 |
-| Does a `userMutation` on Effect stay inside Convex's 1 s budget and bundle limit? | M1 spike | M1 |
 | Does core's M4A muxer give AVPlayer, Safari, Chrome and `ffprobe` the exact duration? | M1b spike | M1b |
 | Does Clerk revoke Sign in with Apple tokens on user deletion? | Clerk docs or support | M3 |
+
+### Answered in M1
+
+Measured October 19, 2026 on the cloud dev deployment `adorable-porcupine-835` against Clerk's
+development instance, with the test user `amp+clerk_test@example.com` (test mode, code 424242).
+`pnpm clerk-test-token` (server) mints both kinds of token without a browser; `cargo run -p
+linger-core --features convex --example convex_tokens` reruns the checks through the `convex` crate.
+
+- **One `tokenIdentifier` for both kinds of token: yes.** A desktop OAuth access token (`typ: at+jwt`,
+  `client_id` "Linger Desktop", a day long, no `aud`) and a Clerk session token from the hosted
+  sign-in flow (60 s, no `aud`, since Clerk's Convex integration isn't activated on the development
+  instance) both resolve to `https://elegant-mink-67.clerk.accounts.dev|user_…` in `whoami`. The
+  session token came from Clerk's Frontend API, the flow a phone's hosted sign-in uses; an iPhone
+  build repeats it in M3.
+- **`set_auth_callback` refetches on reconnect: yes.** The crate calls the fetcher once with
+  `force_refresh=false`, then with `true` after every reconnect. Convex does not drop a socket or
+  error a subscription when its token passes `exp`: a `whoami` subscription stayed live for 150 s on
+  a 60 s token. The first request after expiry gets an `AuthError`; the client restarts the protocol,
+  calls the fetcher (`true`), and the write then succeeds, about 5 s late.
+- **`set_auth` replaces a token before it expires: yes.** Swapping in a fresh session token every
+  30 s kept a subscription running through three token lifetimes; each swap re-ran it under the new
+  identity, with no error. With one fixed token and no swap, a write after expiry never gets an
+  answer (still none after 4 minutes): the client reconnects with the same expired token
+  indefinitely. So the sync engine uses `set_auth_callback` over `auth::TokenSource` (refresh on
+  `force_refresh`) and also pushes a fresh token 30 s before `exp`, so writes don't wait for the
+  `AuthError` round trip.
+- **Effect inside Convex's limits: yes.** `highlights.set`: 24.8 ms median `userExecutionTime`
+  against 24.1 ms for the same mutation written plainly; the deployment bundles to 694 KB of the
+  32 MiB limit ([M1](m1-library-foundation.md#before-any-code-ships)).
