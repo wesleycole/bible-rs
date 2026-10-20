@@ -128,6 +128,32 @@ pub fn base64url(bytes: &[u8]) -> String {
     s
 }
 
+/// When a JWT expires (its `exp`, Unix seconds), read without checking the signature: for
+/// scheduling a refresh, not for trusting the token.
+pub fn expires_at(jwt: &str) -> Option<u64> {
+    let payload = jwt.split('.').nth(1)?;
+    let mut bytes = Vec::with_capacity(payload.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0);
+    for c in payload.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        acc = acc << 6 | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((acc >> bits) as u8);
+        }
+    }
+    serde_json::from_slice::<serde_json::Value>(&bytes).ok()?["exp"].as_u64()
+}
+
 /// Percent-encodes a query or form value (RFC 3986 unreserved characters pass through).
 pub fn encode(s: &str) -> String {
     s.bytes()
@@ -438,6 +464,13 @@ impl TokenSource for OAuthSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expires_at_reads_a_jwts_exp() {
+        let payload = base64url(br#"{"sub":"user_1","exp":1792460000}"#);
+        assert_eq!(expires_at(&format!("eyJhbGciOiJSUzI1NiJ9.{payload}.sig")), Some(1_792_460_000));
+        assert_eq!(expires_at("not a jwt"), None);
+    }
 
     #[test]
     fn base64url_matches_rfc4648_vectors() {

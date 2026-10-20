@@ -152,6 +152,19 @@ pub struct Api {
     agent: ureq::Agent,
 }
 
+/// The production Convex deployment, which the library syncs with ([`convex_url`]).
+pub const CONVEX_URL: &str = "https://expert-rabbit-665.convex.cloud";
+
+/// The Convex deployment's URL: `LINGER_CONVEX_URL` (a developer's dev deployment), or production.
+pub fn convex_url() -> String {
+    std::env::var("LINGER_CONVEX_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| CONVEX_URL.into())
+        .trim_end_matches('/')
+        .to_string()
+}
+
 /// The proxy's URL: `LINGER_API_URL`, or production.
 pub fn base_url() -> String {
     std::env::var("LINGER_API_URL")
@@ -176,6 +189,11 @@ impl Api {
             .build()
             .into();
         Self { base: base.into().trim_end_matches('/').to_string(), tokens, agent }
+    }
+
+    /// The signed-in user's tokens, for the sync engine's own connection.
+    pub fn tokens(&self) -> Arc<dyn TokenSource> {
+        self.tokens.clone()
     }
 
     pub fn base(&self) -> &str {

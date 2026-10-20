@@ -5,6 +5,12 @@
 //! while reading the KJV shows up in the WEB too. The tables are mirrored in memory — they hold
 //! hundreds of rows, not millions — so the reader can look them up per verse every frame; writes go
 //! straight through to SQLite (WAL mode, a few hundred microseconds each).
+//!
+//! Highlights and bookmarks are also the library cache (docs/plans/library.md, "The sync engine"):
+//! keyed by [`VerseId`], with the `seq` of the server's copy and a `deleted` flag for tombstones.
+//! Every local change to them goes into the `outbox` in the same transaction; the sync engine
+//! (`sync.rs`, on its own connection) sends it and applies the change feed here, and
+//! [`StudyStore::refresh`] picks up what it wrote.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -12,8 +18,12 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::books::{BookId, ChapterIdx, VerseRef};
+#[cfg(feature = "sync")]
+use crate::records::FeedRecord;
+use crate::records::VerseId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -77,6 +87,11 @@ pub struct StudyStore {
     notes: HashMap<u32, Note>,
     bookmarks: BTreeMap<u32, Bookmark>,
     generation: u64,
+    /// SQLite's `data_version` when the mirrors were last read: it moves when another connection
+    /// (the sync engine's) commits.
+    data_version: i64,
+    /// Told after a change is queued in the outbox, so the sync engine sends it now.
+    on_outbox: Option<Box<dyn Fn() + Send>>,
 }
 
 const SCHEMA: &str = "
@@ -106,6 +121,231 @@ CREATE TABLE IF NOT EXISTS chats(
     id INTEGER PRIMARY KEY, title TEXT NOT NULL, created INTEGER NOT NULL,
     updated INTEGER NOT NULL, messages TEXT NOT NULL, api TEXT NOT NULL, seq INTEGER NOT NULL);
 ";
+
+/// The `PRAGMA user_version` this build migrates a file to.
+const VERSION: i64 = 1;
+
+/// Migration 1 (M1): highlights and bookmarks become the library cache, keyed by [`VerseId`],
+/// with the outbox, the feed cursor and recorded conflicts beside them.
+const MIGRATION_1: &str = "
+CREATE TABLE highlights_v1(
+    verse INTEGER PRIMARY KEY, color INTEGER NOT NULL, created INTEGER NOT NULL,
+    updated INTEGER NOT NULL, seq INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE bookmarks_v1(
+    verse INTEGER PRIMARY KEY, label TEXT NOT NULL, created INTEGER NOT NULL,
+    updated INTEGER NOT NULL, seq INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE outbox(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, key INTEGER NOT NULL,
+    payload TEXT NOT NULL, base_seq INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, next_at INTEGER NOT NULL DEFAULT 0,
+    created INTEGER NOT NULL, UNIQUE(kind, key));
+CREATE TABLE sync_state(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+CREATE TABLE conflicts(
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, key INTEGER NOT NULL, mine TEXT NOT NULL,
+    theirs TEXT NOT NULL, at INTEGER NOT NULL);
+";
+
+/// Brings a file (new, or from any earlier version) up to [`VERSION`], one transaction a step.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version > VERSION {
+        bail!("study.sqlite was written by a newer Linger (schema {version})");
+    }
+    if version < 1 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA)?;
+        tx.execute_batch(MIGRATION_1)?;
+        // The packed (book, chapter, verse) keys become VerseIds, and everything already here
+        // goes to the server once, through the outbox, the first time this device is signed in.
+        let t = now();
+        let mut queue = Vec::new();
+        let mut rows = Vec::new();
+        {
+            let mut st = tx.prepare("SELECT book, chapter, verse, color, created FROM highlights")?;
+            let mut q = st.query([])?;
+            while let Some(r) = q.next()? {
+                rows.push((
+                    r.get::<_, String>(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ));
+            }
+        }
+        for (b, c, v, color, created) in rows {
+            let (Some(vr), Some(color)) = (verse_from_row(&b, c, v), HighlightColor::from_i64(color)) else {
+                continue;
+            };
+            let id = VerseId::from(vr);
+            tx.execute(
+                "INSERT OR REPLACE INTO highlights_v1(verse, color, created, updated) VALUES(?1, ?2, ?3, ?3)",
+                params![id.0, color.to_i64(), created],
+            )?;
+            queue.push((Kind::Highlight, id, json!(color.name())));
+        }
+        let mut rows = Vec::new();
+        {
+            let mut st = tx.prepare("SELECT book, chapter, verse, label, created FROM bookmarks")?;
+            let mut q = st.query([])?;
+            while let Some(r) = q.next()? {
+                rows.push((
+                    r.get::<_, String>(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                ));
+            }
+        }
+        for (b, c, v, label, created) in rows {
+            let Some(vr) = verse_from_row(&b, c, v) else { continue };
+            let id = VerseId::from(vr);
+            tx.execute(
+                "INSERT OR REPLACE INTO bookmarks_v1(verse, label, created, updated) VALUES(?1, ?2, ?3, ?3)",
+                params![id.0, label, created],
+            )?;
+            queue.push((Kind::Bookmark, id, json!(label)));
+        }
+        tx.execute_batch(
+            "DROP TABLE highlights; ALTER TABLE highlights_v1 RENAME TO highlights;
+             DROP TABLE bookmarks; ALTER TABLE bookmarks_v1 RENAME TO bookmarks;",
+        )?;
+        for (kind, id, value) in queue {
+            enqueue(&tx, kind, id, value, t)?;
+        }
+        tx.pragma_update(None, "user_version", 1)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+/// A kind of record kept one per verse, as the outbox and the cache name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Highlight,
+    Bookmark,
+}
+
+impl Kind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Kind::Highlight => "highlight",
+            Kind::Bookmark => "bookmark",
+        }
+    }
+
+    #[cfg(feature = "sync")]
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        [Kind::Highlight, Kind::Bookmark].into_iter().find(|k| k.name() == name)
+    }
+
+    fn table(self) -> &'static str {
+        match self {
+            Kind::Highlight => "highlights",
+            Kind::Bookmark => "bookmarks",
+        }
+    }
+
+    /// The mutation that sets one, and the name of its value in the args and in a conflict answer.
+    pub(crate) fn mutation(self) -> (&'static str, &'static str) {
+        match self {
+            Kind::Highlight => ("library/highlights:set", "color"),
+            Kind::Bookmark => ("library/bookmarks:set", "label"),
+        }
+    }
+}
+
+/// Queues `value` (a colour name or label, `null` to clear) for `verse` in the outbox, against the
+/// `seq` of the copy in the cache. A change already waiting for the verse is replaced and keeps its
+/// place and its `base_seq`: both edits began from that copy. Verses off the canonical grid stay
+/// on this device (the server would refuse them).
+fn enqueue(
+    tx: &rusqlite::Transaction,
+    kind: Kind,
+    verse: VerseId,
+    value: serde_json::Value,
+    t: i64,
+) -> Result<()> {
+    if !verse.is_valid() {
+        return Ok(());
+    }
+    let base: i64 = tx
+        .query_row(&format!("SELECT seq FROM {} WHERE verse = ?1", kind.table()), [verse.0], |r| r.get(0))
+        .optional()?
+        .unwrap_or(0);
+    let payload = json!({ "verse": verse.0, kind.mutation().1: value }).to_string();
+    tx.execute(
+        "INSERT INTO outbox(kind, key, payload, base_seq, created) VALUES(?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(kind, key) DO UPDATE SET payload = excluded.payload, rev = rev + 1, attempts = 0,
+           last_error = NULL, next_at = 0",
+        params![kind.name(), verse.0, payload, base, t],
+    )?;
+    Ok(())
+}
+
+/// Sets (or, for `None`, clears) a highlight in the cache and queues it. Returns whether anything
+/// changed.
+fn put_highlight(
+    tx: &rusqlite::Transaction,
+    v: VerseRef,
+    color: Option<HighlightColor>,
+    created: i64,
+) -> Result<bool> {
+    let id = VerseId::from(v);
+    let t = now();
+    let changed = match color {
+        Some(c) => tx.execute(
+            "INSERT INTO highlights(verse, color, created, updated) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(verse) DO UPDATE SET color = excluded.color, updated = excluded.updated,
+               created = CASE WHEN deleted = 1 THEN excluded.created ELSE created END, deleted = 0",
+            params![id.0, c.to_i64(), created, t],
+        )?,
+        None => tx.execute(
+            "UPDATE highlights SET deleted = 1, updated = ?2 WHERE verse = ?1 AND deleted = 0",
+            params![id.0, t],
+        )?,
+    } > 0;
+    if changed {
+        enqueue(tx, Kind::Highlight, id, json!(color.map(HighlightColor::name)), t)?;
+    }
+    Ok(changed)
+}
+
+/// Sets (or, for `None`, removes) a bookmark in the cache and queues it.
+fn put_bookmark(tx: &rusqlite::Transaction, v: VerseRef, label: Option<&str>, created: i64) -> Result<bool> {
+    let id = VerseId::from(v);
+    let t = now();
+    let changed = match label {
+        Some(label) => tx.execute(
+            "INSERT INTO bookmarks(verse, label, created, updated) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(verse) DO UPDATE SET label = excluded.label, updated = excluded.updated,
+               created = CASE WHEN deleted = 1 THEN excluded.created ELSE created END, deleted = 0",
+            params![id.0, label, created, t],
+        )?,
+        None => tx.execute(
+            "UPDATE bookmarks SET deleted = 1, updated = ?2 WHERE verse = ?1 AND deleted = 0",
+            params![id.0, t],
+        )?,
+    } > 0;
+    if changed {
+        enqueue(tx, Kind::Bookmark, id, json!(label), t)?;
+    }
+    Ok(changed)
+}
+
+/// An edit the server didn't take because another device had changed the record first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncConflict {
+    /// `highlight` or `bookmark`.
+    pub kind: String,
+    pub verse: VerseRef,
+    /// This device's edit and the server's copy that stood, as JSON values (`null` for cleared).
+    pub mine: String,
+    pub theirs: String,
+    /// Unix seconds.
+    pub at: i64,
+}
 
 /// An Ask conversation as Recents lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,51 +417,111 @@ fn verse_from_row(book: &str, chapter: i64, verse: i64) -> Option<VerseRef> {
     Some(VerseRef::new(book, u8::try_from(chapter).ok()?, u8::try_from(verse).ok()?))
 }
 
+/// The verse a cache row's id names. Unlike [`VerseId::verse_ref`] this doesn't check the KJV's
+/// verse counts: a verse only another versification has can still be highlighted on this device.
+fn verse_of(id: i64) -> Option<VerseRef> {
+    let id = u32::try_from(id).ok()?;
+    let book = BookId::new((id / 1_000_000) as usize)?;
+    Some(VerseRef::new(book, u8::try_from(id / 1_000 % 1_000).ok()?, u8::try_from(id % 1_000).ok()?))
+}
+
 impl StudyStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        Self::init(conn)
+        Self::init(connect(path)?)
     }
 
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
-        conn.execute_batch(SCHEMA)?;
+    fn init(mut conn: Connection) -> Result<Self> {
+        migrate(&mut conn)?;
         let mut s = Self {
             conn,
             highlights: HashMap::new(),
             notes: HashMap::new(),
             bookmarks: BTreeMap::new(),
             generation: 1,
+            data_version: 0,
+            on_outbox: None,
         };
+        s.data_version = s.conn.pragma_query_value(None, "data_version", |r| r.get(0))?;
         s.reload()?;
         Ok(s)
+    }
+
+    /// Reads again what the sync engine wrote since the last look (records from the change feed,
+    /// conflict answers). Cheap enough to call every frame; bumps [`generation`](Self::generation)
+    /// when something changed.
+    pub fn refresh(&mut self) -> Result<bool> {
+        let v: i64 = self.conn.pragma_query_value(None, "data_version", |r| r.get(0))?;
+        if v == self.data_version {
+            return Ok(false);
+        }
+        self.data_version = v;
+        self.reload()?;
+        Ok(true)
+    }
+
+    /// Calls `f` after each change queued for the server, so the sync engine sends it at once.
+    pub fn on_outbox(&mut self, f: impl Fn() + Send + 'static) {
+        self.on_outbox = Some(Box::new(f));
+    }
+
+    fn queued(&self) {
+        if let Some(f) = &self.on_outbox {
+            f();
+        }
+    }
+
+    /// Changes made here that the server hasn't confirmed yet.
+    pub fn pending_changes(&self) -> usize {
+        pending(&self.conn).unwrap_or(0)
+    }
+
+    /// Edits the server refused because another device had changed the record since, newest
+    /// first: the server's copy stood and is what this device now shows.
+    pub fn conflicts(&self) -> Vec<SyncConflict> {
+        let Ok(mut st) =
+            self.conn.prepare_cached("SELECT kind, key, mine, theirs, at FROM conflicts ORDER BY id DESC")
+        else {
+            return Vec::new();
+        };
+        st.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .map(|rows| {
+            rows.filter_map(|r| r.ok())
+                .filter_map(|(kind, key, mine, theirs, at)| {
+                    Some(SyncConflict { kind, verse: verse_of(key)?, mine, theirs, at })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Signing out: forgets the library cache (highlights, bookmarks), the outbox, the cursor and
+    /// recorded conflicts, so nothing of this account stays. Wait for the outbox first.
+    pub fn clear_library(&mut self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM highlights; DELETE FROM bookmarks; DELETE FROM outbox; DELETE FROM sync_state;
+             DELETE FROM conflicts;",
+        )?;
+        self.reload()
     }
 
     fn reload(&mut self) -> Result<()> {
         self.highlights.clear();
         self.notes.clear();
         self.bookmarks.clear();
-        let mut st = self.conn.prepare("SELECT book, chapter, verse, color, created FROM highlights")?;
-        let rows = st.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get(4)?,
-            ))
-        })?;
+        let mut st = self.conn.prepare("SELECT verse, color, created FROM highlights WHERE deleted = 0")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get(2)?)))?;
         for row in rows {
-            let (b, c, v, color, created) = row?;
-            if let (Some(vr), Some(color)) = (verse_from_row(&b, c, v), HighlightColor::from_i64(color)) {
+            let (id, color, created) = row?;
+            if let (Some(vr), Some(color)) = (verse_of(id), HighlightColor::from_i64(color)) {
                 self.highlights.insert(vr.key(), (color, created));
             }
         }
@@ -242,19 +542,11 @@ impl StudyStore {
                 self.notes.insert(vr.key(), Note { body, created, updated });
             }
         }
-        let mut st = self.conn.prepare("SELECT book, chapter, verse, label, created FROM bookmarks")?;
-        let rows = st.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-                r.get(4)?,
-            ))
-        })?;
+        let mut st = self.conn.prepare("SELECT verse, label, created FROM bookmarks WHERE deleted = 0")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get(2)?)))?;
         for row in rows {
-            let (b, c, v, label, created) = row?;
-            if let Some(vr) = verse_from_row(&b, c, v) {
+            let (id, label, created) = row?;
+            if let Some(vr) = verse_of(id) {
                 self.bookmarks.insert(vr.key(), Bookmark { label, created });
             }
         }
@@ -283,28 +575,24 @@ impl StudyStore {
         self.bookmarks.contains_key(&v.key())
     }
 
+    /// Highlights a verse (or clears it), and queues the change for the server.
     pub fn set_highlight(&mut self, v: VerseRef, color: Option<HighlightColor>) -> Result<()> {
-        let code = v.book.info().code;
+        let tx = self.conn.transaction()?;
+        let changed = put_highlight(&tx, v, color, now())?;
+        tx.commit()?;
         match color {
             Some(c) => {
-                let created = now();
-                self.conn.execute(
-                    "INSERT INTO highlights(book, chapter, verse, color, created) VALUES(?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(book, chapter, verse) DO UPDATE SET color = excluded.color",
-                    params![code, v.chapter, v.verse, c.to_i64(), created],
-                )?;
-                let created = self.highlights.get(&v.key()).map_or(created, |(_, t)| *t);
+                let created = self.highlights.get(&v.key()).map_or_else(now, |(_, t)| *t);
                 self.highlights.insert(v.key(), (c, created));
             }
             None => {
-                self.conn.execute(
-                    "DELETE FROM highlights WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
-                    params![code, v.chapter, v.verse],
-                )?;
                 self.highlights.remove(&v.key());
             }
         }
         self.generation += 1;
+        if changed {
+            self.queued();
+        }
         Ok(())
     }
 
@@ -331,28 +619,24 @@ impl StudyStore {
         Ok(())
     }
 
+    /// Bookmarks a verse with a label (or removes the bookmark), and queues the change.
     pub fn set_bookmark(&mut self, v: VerseRef, label: Option<&str>) -> Result<()> {
-        let code = v.book.info().code;
+        let tx = self.conn.transaction()?;
+        let changed = put_bookmark(&tx, v, label, now())?;
+        tx.commit()?;
         match label {
             Some(label) => {
-                let t = now();
-                self.conn.execute(
-                    "INSERT INTO bookmarks(book, chapter, verse, label, created) VALUES(?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(book, chapter, verse) DO UPDATE SET label = excluded.label",
-                    params![code, v.chapter, v.verse, label, t],
-                )?;
-                let created = self.bookmarks.get(&v.key()).map_or(t, |b| b.created);
+                let created = self.bookmarks.get(&v.key()).map_or_else(now, |b| b.created);
                 self.bookmarks.insert(v.key(), Bookmark { label: label.to_string(), created });
             }
             None => {
-                self.conn.execute(
-                    "DELETE FROM bookmarks WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
-                    params![code, v.chapter, v.verse],
-                )?;
                 self.bookmarks.remove(&v.key());
             }
         }
         self.generation += 1;
+        if changed {
+            self.queued();
+        }
         Ok(())
     }
 
@@ -790,17 +1074,11 @@ impl StudyStore {
         };
         let tx = self.conn.unchecked_transaction()?;
         for h in &doc.highlights {
-            let v = verse(&h.verse)?;
-            tx.execute(
-                "INSERT INTO highlights(book, chapter, verse, color, created) VALUES(?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(book, chapter, verse) DO UPDATE SET color = excluded.color",
-                params![
-                    v.book.info().code,
-                    v.chapter,
-                    v.verse,
-                    h.color.to_i64(),
-                    parse_rfc3339(&h.created).unwrap_or_else(now)
-                ],
+            put_highlight(
+                &tx,
+                verse(&h.verse)?,
+                Some(h.color),
+                parse_rfc3339(&h.created).unwrap_or_else(now),
             )?;
         }
         for n in &doc.notes {
@@ -819,17 +1097,11 @@ impl StudyStore {
             )?;
         }
         for b in &doc.bookmarks {
-            let v = verse(&b.verse)?;
-            tx.execute(
-                "INSERT INTO bookmarks(book, chapter, verse, label, created) VALUES(?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(book, chapter, verse) DO UPDATE SET label = excluded.label",
-                params![
-                    v.book.info().code,
-                    v.chapter,
-                    v.verse,
-                    b.label,
-                    parse_rfc3339(&b.created).unwrap_or_else(now)
-                ],
+            put_bookmark(
+                &tx,
+                verse(&b.verse)?,
+                Some(&b.label),
+                parse_rfc3339(&b.created).unwrap_or_else(now),
             )?;
         }
         for r in &doc.history {
@@ -866,16 +1138,324 @@ impl StudyStore {
         }
         tx.commit()?;
         self.reload()?;
+        if !doc.highlights.is_empty() || !doc.bookmarks.is_empty() {
+            self.queued();
+        }
         Ok((doc.highlights.len(), doc.notes.len(), doc.bookmarks.len()))
     }
 
     /// Erases every highlight, note, bookmark, plan and the reading history.
+    /// Highlights and bookmarks are cleared through the outbox, so they go from the library too.
     pub fn erase_all(&mut self) -> Result<()> {
-        self.conn.execute_batch(
-            "DELETE FROM highlights; DELETE FROM notes; DELETE FROM bookmarks;
-             DELETE FROM plans; DELETE FROM plan_reads; DELETE FROM reading;",
+        let tx = self.conn.transaction()?;
+        for key in self.highlights.keys().copied().filter_map(VerseRef::from_key) {
+            put_highlight(&tx, key, None, 0)?;
+        }
+        for key in self.bookmarks.keys().copied().filter_map(VerseRef::from_key) {
+            put_bookmark(&tx, key, None, 0)?;
+        }
+        tx.execute_batch(
+            "DELETE FROM notes; DELETE FROM plans; DELETE FROM plan_reads; DELETE FROM reading;",
         )?;
-        self.reload()
+        tx.commit()?;
+        let queued = !self.highlights.is_empty() || !self.bookmarks.is_empty();
+        self.reload()?;
+        if queued {
+            self.queued();
+        }
+        Ok(())
+    }
+}
+
+/// Opens study.sqlite as one of its two connections (the app's and the sync engine's): WAL, and
+/// waiting out the other's writes rather than failing.
+fn connect(path: &Path) -> Result<Connection> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(conn)
+}
+
+fn pending(conn: &Connection) -> Result<usize> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0))? as usize)
+}
+
+/// The sync engine's side of the cache: what it sends from the outbox, what it does with the
+/// answers, and how it applies the change feed. Each function is one transaction.
+#[cfg(feature = "sync")]
+pub(crate) mod cache {
+    use super::*;
+    use serde_json::Value;
+
+    /// A change waiting in the outbox, as the mutation's arguments.
+    #[derive(Debug, Clone)]
+    pub(crate) struct Entry {
+        pub id: i64,
+        pub kind: Kind,
+        pub verse: u32,
+        /// The mutation's arguments, `baseSeq` included.
+        pub args: Value,
+        rev: i64,
+        pub attempts: i64,
+        /// Unix milliseconds before which it isn't tried again (0: now).
+        pub next_at: i64,
+    }
+
+    pub(crate) fn open(path: &Path) -> Result<Connection> {
+        let mut conn = connect(path)?;
+        migrate(&mut conn)?;
+        Ok(conn)
+    }
+
+    pub(crate) fn pending(conn: &Connection) -> Result<usize> {
+        super::pending(conn)
+    }
+
+    /// The oldest change waiting. Changes go strictly in order, so one backing off holds the rest.
+    pub(crate) fn next(conn: &Connection) -> Result<Option<Entry>> {
+        let row = conn
+            .query_row(
+                "SELECT id, kind, key, payload, base_seq, rev, attempts, next_at FROM outbox ORDER BY id LIMIT 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, u32>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, kind, verse, payload, base, rev, attempts, next_at)) = row else { return Ok(None) };
+        let kind = Kind::from_name(&kind).with_context(|| format!("unknown outbox kind {kind}"))?;
+        let mut args: Value = serde_json::from_str(&payload)?;
+        args["baseSeq"] = json!(base);
+        Ok(Some(Entry { id, kind, verse, args, rev, attempts, next_at }))
+    }
+
+    /// When the next change that is backing off falls due, if any is.
+    pub(crate) fn wake_at(conn: &Connection) -> Result<Option<i64>> {
+        Ok(conn.query_row("SELECT MIN(next_at) FROM outbox WHERE next_at > 0", [], |r| r.get(0))?)
+    }
+
+    /// The last error a waiting change got, if any change is failing.
+    pub(crate) fn last_error(conn: &Connection) -> Result<Option<String>> {
+        Ok(conn
+            .query_row(
+                "SELECT last_error FROM outbox WHERE last_error IS NOT NULL ORDER BY id LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The server took the change as `seq`. If it was edited again meanwhile, the newer edit stays
+    /// queued, now against `seq`.
+    pub(crate) fn sent(conn: &mut Connection, e: &Entry, seq: u64) -> Result<()> {
+        let tx = conn.transaction()?;
+        if tx.execute("DELETE FROM outbox WHERE id = ?1 AND rev = ?2", params![e.id, e.rev])? == 0 {
+            tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
+        }
+        tx.execute(
+            &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE verse = ?1", e.kind.table()),
+            params![e.verse, seq as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The server kept its own copy (`theirs`, `null` for a tombstone) because another device
+    /// changed the record after this one's copy: the change is done and the cache takes the
+    /// server's copy. Returns whether that was a real conflict, recorded for the UI. Two cases
+    /// aren't: the server already has this edit (a write that reached it before the connection
+    /// broke, or the same highlight made on both devices), and a record made here, with no copy,
+    /// over a deletion this device never saw, which is sent again against the tombstone.
+    pub(crate) fn conflicted(conn: &mut Connection, e: &Entry, seq: u64, theirs: &Value) -> Result<bool> {
+        let tx = conn.transaction()?;
+        let (payload, base, rev): (String, i64, i64) =
+            tx.query_row("SELECT payload, base_seq, rev FROM outbox WHERE id = ?1", [e.id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+        if rev != e.rev {
+            // Edited again while this was in flight: the next answer settles the newer edit.
+            return Ok(false);
+        }
+        let payload: Value = serde_json::from_str(&payload)?;
+        let mine = &payload[e.kind.mutation().1];
+        if base == 0 && theirs.is_null() && !mine.is_null() {
+            tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+        write_server(&tx, e.kind, e.verse, seq, theirs)?;
+        // A record this device made without having a copy (base 0, as migration uploads) over
+        // one the server already has is skipped, not a conflict: nothing was edited against it.
+        let real = mine != theirs && base > 0;
+        if real {
+            tx.execute(
+                "INSERT INTO conflicts(kind, key, mine, theirs, at) VALUES(?1, ?2, ?3, ?4, ?5)",
+                params![e.kind.name(), e.verse, mine.to_string(), theirs.to_string(), now()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(real)
+    }
+
+    /// The server refused the change: show `error`, and try it again at `next_at`.
+    pub(crate) fn failed(conn: &Connection, e: &Entry, error: &str, next_at: i64) -> Result<()> {
+        conn.execute(
+            "UPDATE outbox SET attempts = attempts + 1, last_error = ?2, next_at = ?3 WHERE id = ?1",
+            params![e.id, error, next_at],
+        )?;
+        Ok(())
+    }
+
+    /// Retry: everything waiting is due now.
+    pub(crate) fn retry_all(conn: &Connection) -> Result<()> {
+        conn.execute("UPDATE outbox SET next_at = 0, last_error = NULL", [])?;
+        Ok(())
+    }
+
+    /// The cursor: the `seq` of the last feed page applied.
+    pub(crate) fn cursor(conn: &Connection) -> Result<u64> {
+        Ok(state(conn, "cursor")?.unwrap_or(0) as u64)
+    }
+
+    pub(crate) fn clock_offset_ms(conn: &Connection) -> Result<i64> {
+        Ok(state(conn, "clock_offset_ms")?.unwrap_or(0))
+    }
+
+    fn state(conn: &Connection, key: &str) -> Result<Option<i64>> {
+        Ok(conn.query_row("SELECT value FROM sync_state WHERE key = ?1", [key], |r| r.get(0)).optional()?)
+    }
+
+    fn set_state(tx: &rusqlite::Transaction, key: &str, value: i64) -> Result<()> {
+        tx.execute(
+            "INSERT INTO sync_state(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Applies one page of the change feed and moves the cursor to `seq`, in one transaction. A
+    /// record with a change of this device's still waiting keeps the local value (the outbox entry
+    /// settles it), but the cache learns the server's `seq`, so that entry conflicts if another
+    /// device moved the record past it. Returns how many records changed what the app shows.
+    pub(crate) fn apply_page(
+        conn: &mut Connection,
+        records: &[FeedRecord],
+        seq: u64,
+        clock_offset_ms: i64,
+    ) -> Result<usize> {
+        let tx = conn.transaction()?;
+        let mut changed = 0;
+        for record in records {
+            let (kind, verse, rseq, value) = match record {
+                FeedRecord::Highlight(h) => {
+                    (Kind::Highlight, h.verse.0, h.seq, h.deleted_at.is_none().then(|| json!(h.color.name())))
+                }
+                FeedRecord::Bookmark(b) => {
+                    (Kind::Bookmark, b.verse.0, b.seq, b.deleted_at.is_none().then(|| json!(b.label)))
+                }
+            };
+            let value = value.unwrap_or(Value::Null);
+            let waiting: Option<i64> = tx
+                .query_row(
+                    "SELECT base_seq FROM outbox WHERE kind = ?1 AND key = ?2",
+                    params![kind.name(), verse],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(base) = waiting {
+                // A record made here without a copy (base 0) over a deletion isn't a conflict:
+                // there was nothing to see.
+                if base == 0 && value.is_null() {
+                    tx.execute(
+                        "UPDATE outbox SET base_seq = ?3 WHERE kind = ?1 AND key = ?2",
+                        params![kind.name(), verse, rseq as i64],
+                    )?;
+                }
+                tx.execute(
+                    &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE verse = ?1", kind.table()),
+                    params![verse, rseq as i64],
+                )?;
+                continue;
+            }
+            let have: Option<i64> = tx
+                .query_row(&format!("SELECT seq FROM {} WHERE verse = ?1", kind.table()), [verse], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if have.is_none_or(|have| (rseq as i64) > have) {
+                write_server(&tx, kind, verse, rseq, &value)?;
+                changed += 1;
+            }
+        }
+        set_state(&tx, "cursor", seq as i64)?;
+        set_state(&tx, "clock_offset_ms", clock_offset_ms)?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// The server dropped tombstones this device hadn't seen: forget the cache (keeping records
+    /// with a change still waiting, which the outbox settles) and pull the library from 0.
+    pub(crate) fn resync(conn: &mut Connection) -> Result<()> {
+        let tx = conn.transaction()?;
+        for kind in [Kind::Highlight, Kind::Bookmark] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {} WHERE verse NOT IN (SELECT key FROM outbox WHERE kind = ?1)",
+                    kind.table()
+                ),
+                [kind.name()],
+            )?;
+        }
+        set_state(&tx, "cursor", 0)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Writes the server's copy of a record into the cache: a value, or a tombstone for `null`
+    /// (kept, with its `seq`, so a later edit here is made against it).
+    fn write_server(
+        tx: &rusqlite::Transaction,
+        kind: Kind,
+        verse: u32,
+        seq: u64,
+        value: &Value,
+    ) -> Result<()> {
+        let t = now();
+        let (column, stored): (&str, rusqlite::types::Value) = match kind {
+            Kind::Highlight => {
+                let color =
+                    value.as_str().and_then(|n| HighlightColor::ALL.into_iter().find(|c| c.name() == n));
+                ("color", color.map_or(0, HighlightColor::to_i64).into())
+            }
+            Kind::Bookmark => ("label", value.as_str().unwrap_or("").to_string().into()),
+        };
+        let deleted = value.is_null() as i64;
+        tx.execute(
+            &format!(
+                "INSERT INTO {table}(verse, {column}, created, updated, seq, deleted) VALUES(?1, ?2, ?3, ?3, ?4, ?5)
+                 ON CONFLICT(verse) DO UPDATE SET {column} = CASE WHEN excluded.deleted = 1 THEN {column}
+                     ELSE excluded.{column} END,
+                   created = CASE WHEN deleted = 1 THEN excluded.created ELSE created END,
+                   updated = excluded.updated, seq = excluded.seq, deleted = excluded.deleted",
+                table = kind.table()
+            ),
+            params![verse, stored, t, seq as i64, deleted],
+        )?;
+        Ok(())
     }
 }
 

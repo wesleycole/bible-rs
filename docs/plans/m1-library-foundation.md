@@ -130,6 +130,19 @@ These gate M1's release, because they can't be fixed once users have libraries:
    - `SyncHandle::status()` (`Synced`, `Syncing(n)`, `Offline(n waiting)`, `SignedOut`, `Error`), an
      `on_change` callback the desktop turns into `ctx.request_repaint()`, and `SyncHandle::call` for
      requests other threads (the Ask tool loop, from M2) send through the backend.
+   Built for highlights and bookmarks (pass 1, October 20). The engine sends nothing until the
+   feed has caught up once, so a device pulls before it uploads. The outbox goes strictly in
+   order: a refused change holds the ones behind it, and the footer shows its error with Retry.
+   The `convex` crate reconnects on its own and never errors a subscription for want of a network,
+   so "offline" comes from its `WebSocketState` channel (`Backend::connected`), and the engine
+   backs off as a whole while offline rather than per change. The cache keeps tombstones (a
+   `deleted` flag and the `seq`) so a later edit is made against them; a record that arrives from
+   the feed is dated when it arrived, since the wire carries no creation time. A device's own
+   record over one the server already has, made without a copy (`baseSeq` 0, as migration
+   uploads), is answered `conflict` and the server's stands without recording a conflict: that is
+   the "skipped" of [Migrating](library.md#migrating-whats-on-the-device). The `convex` crate turns
+   on serde_json's `preserve_order` for the whole build, so the Ask contract's hash and the record
+   generator sort keys themselves (`contract::sorted`).
 4. **`reference::find_all(text) -> Vec<(Range<usize>, Reference)>`**, moved from
    `apps/desktop/src/pages/notes.rs` `mentioned()` and extended to whole chapters and ranges, with the
    existing tests.
