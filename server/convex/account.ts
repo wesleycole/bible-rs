@@ -31,7 +31,7 @@ export const purge = effectServerMutation({
     const left = {
       found: true,
       stripeCustomerId: user.stripeCustomerId,
-      blobPaths: sermons.filter((s) => s.status !== "done").map((s) => s.blobPath),
+      blobPaths: sermons.flatMap((s) => (s.status !== "done" && s.blobPath ? [s.blobPath] : [])),
       assemblyIds: sermons.flatMap((s) => (s.assemblyId ? [s.assemblyId] : []))
     }
     yield* purgeAccount(user._id)

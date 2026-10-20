@@ -53,15 +53,22 @@ export const create = effectServerMutation({
   })
 })
 
+/**
+ * A row of this (the proxy's) flow, with the fields it wrote. A row with an `itemId` belongs to
+ * library/sermons.ts, whose workflow and crons look after it; nothing here touches those.
+ */
+type ProxyRow = Doc<"sermons"> & { recordingId: string; blobPath: string; bytes: number; status: "uploading" | "transcribing" | "done" | "error" }
+const proxyRow = (s: Doc<"sermons"> | null): ProxyRow | null => (s && s.itemId === undefined ? (s as ProxyRow) : null)
+
 const owned = Effect.fnUntraced(function*(clerkId: string, sermonId: string) {
   const ctx = yield* QueryCtx
   const user = yield* Effect.promise(() => userByClerk(ctx, clerkId))
   const id = ctx.db.normalizeId("sermons", sermonId)
-  const sermon = id ? yield* Effect.promise(() => ctx.db.get(id)) : null
+  const sermon = proxyRow(id ? yield* Effect.promise(() => ctx.db.get(id)) : null)
   return user && sermon && sermon.userId === user._id ? sermon : null
 })
 
-const view = (s: Doc<"sermons">) => ({
+const view = (s: ProxyRow) => ({
   sermonId: s._id,
   recordingId: s.recordingId,
   status: s.status,
@@ -106,7 +113,7 @@ export const byAssembly = effectServerQuery({
   args: { assemblyId: v.string() },
   handler: Effect.fn("sermons.byAssembly")(function*({ assemblyId }) {
     const ctx = yield* QueryCtx
-    const s = yield* Effect.promise(() => ctx.db.query("sermons").withIndex("by_assembly", (q) => q.eq("assemblyId", assemblyId)).unique())
+    const s = proxyRow(yield* Effect.promise(() => ctx.db.query("sermons").withIndex("by_assembly", (q) => q.eq("assemblyId", assemblyId)).unique()))
     return s ? view(s) : null
   })
 })
@@ -176,7 +183,9 @@ export const failStuck = effectInternalMutation({
           .query("sermons")
           .withIndex("by_status", (q) => q.eq("status", "uploading").lt("createdAt", now - 2 * HOUR))
           .take(200))
-      ].filter((s) => s.status === "uploading" || (s.transcribingAt ?? s.createdAt) < now - 3 * HOUR)
+      ]
+        .map(proxyRow)
+        .filter((s): s is ProxyRow => s !== null && (s.status === "uploading" || (s.transcribingAt ?? s.createdAt) < now - 3 * HOUR))
     )
     for (const s of stuck) {
       yield* failSermon(s, s.status === "uploading" ? "The upload never finished." : "Transcription took too long.")
@@ -204,7 +213,7 @@ export const expire = effectInternalMutation({
       ctx.db.query("sermons").withIndex("by_status", (q) => q.eq("status", "error").lt("createdAt", now - 7 * DAY)).take(500)
     )
     let deleted = 0
-    for (const s of [...done.filter((s) => (s.doneAt ?? 0) < now - DAY), ...failed]) {
+    for (const s of [...done.filter((s) => (s.doneAt ?? 0) < now - DAY), ...failed].filter((s) => proxyRow(s) !== null)) {
       const transcript = s.transcript
       if (transcript) yield* Effect.promise(() => ctx.storage.delete(transcript))
       yield* Effect.promise(() => ctx.db.delete(s._id))

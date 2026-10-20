@@ -151,18 +151,34 @@ export default defineSchema({
     .index("by_user_at", ["userId", "at"])
     .index("by_at", ["at"]),
 
+  /**
+   * The transcription job of a sermon item (library/sermons.ts): what billing and the webhook see.
+   * `recordingId`, `blobPath` and `bytes` belong to the proxy's flow, which goes with M1b's
+   * desktop half; its rows have no `itemId`.
+   */
   sermons: defineTable({
     userId: v.id("users"),
-    recordingId: v.string(),
-    blobPath: v.string(),
+    itemId: v.optional(v.id("items")),
+    recordingId: v.optional(v.string()),
+    blobPath: v.optional(v.string()),
     durationSec: v.number(),
-    bytes: v.number(),
+    bytes: v.optional(v.number()),
     /** Whether this sermon spends the Free account's one-time trial hour. */
     trial: v.boolean(),
+    /** The uid of the item's `audio` file, named by the bytes' SHA-256; set by `finish` before the bytes are joined. */
+    audio: v.optional(v.string()),
+    workflowId: v.optional(v.string()),
     assemblyId: v.optional(v.string()),
     /** Hash of the per-job secret AssemblyAI echoes back on its webhook. */
     webhookSecretHash: v.optional(v.string()),
-    status: v.union(v.literal("uploading"), v.literal("transcribing"), v.literal("done"), v.literal("error")),
+    status: v.union(
+      v.literal("recording"),
+      v.literal("uploading"),
+      v.literal("waiting"),
+      v.literal("transcribing"),
+      v.literal("done"),
+      v.literal("error")
+    ),
     transcript: v.optional(v.id("_storage")),
     audioSeconds: v.optional(v.number()),
     createdAt: v.number(),
@@ -171,6 +187,7 @@ export default defineSchema({
     error: v.optional(v.string())
   })
     .index("by_user", ["userId"])
+    .index("by_item", ["itemId"])
     .index("by_assembly", ["assemblyId"])
     .index("by_status", ["status", "createdAt"])
     .index("by_transcript", ["transcript"]),

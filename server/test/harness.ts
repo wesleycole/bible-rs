@@ -4,6 +4,7 @@
  * for the vendors.
  */
 import rateLimiter from "@convex-dev/rate-limiter/test"
+import workflow from "@convex-dev/workflow/test"
 import { convexTest } from "convex-test"
 import { Effect, Layer, Stream } from "effect"
 import { HttpRouter, HttpServer } from "effect/http"
@@ -28,6 +29,7 @@ const modules = import.meta.glob("../convex/**/*.ts")
 export const makeConvex = async () => {
   const t = convexTest(schema, modules)
   rateLimiter.register(t)
+  workflow.register(t)
   await t.mutation(internal.admin.seed, {})
   return t
 }
