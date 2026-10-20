@@ -14,7 +14,7 @@ bundled = []
 # Everything that needs the OS or a C library: SQLite, the network (`ureq`), WAV files, imports,
 # the zstd C library and the Keychain, and with them the API client and Ask. Off only for the
 # wasm build (docs/plans/m8-web.md), which decodes with the pure-Rust `ruzstd`.
-native = ["dep:rusqlite", "dep:ureq", "dep:hound", "dep:zip", "dep:flate2", "dep:zstd"]
+native = ["dep:rusqlite", "dep:ureq", "dep:hound", "dep:zip", "dep:flate2", "dep:zstd", "dep:uuid"]
 # The sync engine (sync.rs): the cache, the outbox and the change feed behind `sync::Backend`.
 sync = ["native"]
 # The native Convex backend: the `convex` crate on a current-thread tokio runtime.
@@ -32,7 +32,7 @@ zip = { version = "2", default-features = false, features = ["deflate"], optiona
 flate2 = { version = "1", optional = true }
 ureq = { version = "3", optional = true }
 hound = { version = "3.5", optional = true }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4"], optional = true }
 sha2 = "0.10"
 # rustls, as ureq already uses, rather than the crate's default vendored OpenSSL.
 convex = { version = "0.10", optional = true, default-features = false, features = ["rustls-tls-webpki-roots"] }
@@ -40,11 +40,9 @@ tokio = { version = "1", optional = true, features = ["rt", "time", "sync"] }
 futures = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 
 # The wasm build (the only one without `native`): the pure-Rust zstd decoder in place of the C
-# library, `uuid` drawing randomness through wasm-bindgen (`crypto.getRandomValues`), and
-# `web-time` because `std::time::Instant` panics there (`search` times itself).
+# library, and `web-time` because `std::time::Instant` panics there (`search` times itself).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }
-uuid = { version = "1", features = ["v4", "js"] }
 web-time = "1"
 
 # API keys live in the macOS Keychain; other platforms use a 0600 file.

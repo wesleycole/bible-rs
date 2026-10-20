@@ -53,10 +53,10 @@ What the build needed, all in `crates/core`:
   host installs (`bundled::install`), which the page fills with fetched blobs.
 - `HighlightColor` moved from `study` (native) to `records`, and the clock and civil-date functions
   `study` and `transcribe` share moved to `time.rs`, on `web-time` under wasm.
-- `uuid` takes its randomness from `crypto.getRandomValues` through its own `js` feature, which is
-  one feature on a dependency we have rather than getrandom's `wasm_js` backend and its `RUSTFLAGS`
-  cfg. Nothing on wasm calls it yet (its callers, Ask and the recorder, are native); the feature is
-  what lets the crate compile there, and Ask will need it.
+- `uuid` is native-only for now: every caller (Ask, sign-in, the recorder, the study store) is.
+  Ask on the web brings it back with its own `js` feature (randomness from `crypto.getRandomValues`
+  through wasm-bindgen), which is one feature on a dependency we have rather than getrandom's
+  `wasm_js` backend and its `RUSTFLAGS` cfg; the spike built with it.
 - `crates/web` depends on core with `default-features = false`, and is a workspace member but not a
   default member, so the desktop, CLI and iOS builds are unchanged.
 
