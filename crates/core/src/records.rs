@@ -296,9 +296,9 @@ impl FeedRecord {
     }
 }
 
-/// What a write of a record kept by uid answers (`library/notes.upsert` and `.remove`,
-/// `library/chats.save` and `.remove`). The records are as the feed sends them at their `seq`, so
-/// the writing device holds exactly what every other device gets.
+/// What every library write answers (`library/highlights.set`, `bookmarks.set`, `notes.upsert`
+/// and `.remove`, `chats.save` and `.remove`, `items.updateDetails`). The records are as the feed
+/// sends them at their `seq`, so the writing device holds exactly what every other device gets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum WriteAnswer {

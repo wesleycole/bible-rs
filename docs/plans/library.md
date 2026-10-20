@@ -209,7 +209,7 @@ for the web's wasm build):
   copy had when the edit began. If the server's record has moved past it, the server doesn't overwrite:
   for a note it keeps both, writing the late edit as a new note item with `conflictOf`, and for a
   highlight, bookmark or chat it keeps the server's and answers `conflict`, which the outbox treats as
-  done. The answer (`WriteAnswer`) carries the record that stood (and, for a note, the copy), and an
+  done. Every write's answer (`WriteAnswer`, highlights and bookmarks included) carries the record that stood (and, for a note, the copy), and an
   `ok` carries the record as stored: always exactly what the feed sends at that `seq`, which the
   writing device stores, so its copy (times included) is every other device's. Its own note becomes
   the conflict copy. Clearing a record that is already clear (or absent) answers `ok` with its current `seq` and

@@ -1089,7 +1089,7 @@ pub enum Footer<'a> {
     Status(&'a SyncStatus),
     /// Sync couldn't start.
     Error(&'a str),
-    /// The library consent sheet was declined: the library stays on this Mac.
+    /// The library consent sheet was declined: the library stays on this computer.
     Off,
 }
 
@@ -1106,7 +1106,11 @@ pub fn sync_footer(ui: &mut Ui, p: &Palette, rect: Rect, status: Footer<'_>, act
         Footer::Status(SyncStatus::SignedOut) => return,
         Footer::Status(SyncStatus::Error(e)) => (e.clone(), p.danger, Some(("Retry", Action::RetrySync))),
         Footer::Error(e) => (e.to_string(), p.danger, Some(("Retry", Action::RetrySync))),
-        Footer::Off => ("Only on this Mac".to_string(), p.ink_3, Some(("Turn On Sync", Action::TurnOnSync))),
+        Footer::Off => (
+            if cfg!(target_os = "macos") { "Only on this Mac" } else { "Only on this computer" }.to_string(),
+            p.ink_3,
+            Some(("Turn On Sync", Action::TurnOnSync)),
+        ),
     };
     let painter = ui.painter_at(rect);
     painter.hline(rect.x_range().shrink(LIST_INSET), rect.top() + 0.5, egui::Stroke::new(1.0, p.separator));

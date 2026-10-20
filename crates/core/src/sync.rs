@@ -531,23 +531,9 @@ impl Engine {
             let done = match self.send(&entry) {
                 Ok(answer) => {
                     self.online();
-                    match &entry.key {
-                        cache::Key::Uid(_) => match serde_json::from_value::<WriteAnswer>(answer.clone()) {
-                            Ok(answer) => self.settle(&entry, answer),
-                            Err(_) => self.refused(&entry, &format!("unexpected answer {answer}")),
-                        },
-                        cache::Key::Verse(_) => {
-                            let seq = answer["seq"].as_u64().unwrap_or(0);
-                            self.written = self.written.max(seq);
-                            match answer["result"].as_str() {
-                                Some("ok") => cache::sent(&mut self.conn, &entry, seq, None),
-                                Some("conflict") => {
-                                    self.data_changed = true;
-                                    cache::conflicted(&mut self.conn, &entry, &answer).map(|_| ())
-                                }
-                                _ => self.refused(&entry, &format!("unexpected answer {answer}")),
-                            }
-                        }
+                    match serde_json::from_value::<WriteAnswer>(answer.clone()) {
+                        Ok(answer) => self.settle(&entry, answer),
+                        Err(_) => self.refused(&entry, &format!("unexpected answer {answer}")),
                     }
                 }
                 Err(CallError::Offline(m)) => {
@@ -571,15 +557,20 @@ impl Engine {
         match answer {
             WriteAnswer::Ok { seq, record } => {
                 self.written = self.written.max(seq);
-                self.data_changed = true;
+                self.data_changed |= matches!(entry.key, cache::Key::Uid(_));
                 cache::sent(&mut self.conn, entry, seq, record.as_ref())
             }
             WriteAnswer::Conflict { seq, record, copy } => {
                 // A note's conflict copy is this device's write too.
                 self.written = self.written.max(seq).max(copy.as_ref().map_or(0, FeedRecord::seq));
                 self.data_changed = true;
-                self.fetch_due = true;
-                cache::conflicted_by_uid(&mut self.conn, entry, &record, copy.as_ref()).map(|_| ())
+                match entry.key {
+                    cache::Key::Verse(_) => cache::conflicted(&mut self.conn, entry, &record).map(|_| ()),
+                    cache::Key::Uid(_) => {
+                        self.fetch_due = true;
+                        cache::conflicted_by_uid(&mut self.conn, entry, &record, copy.as_ref()).map(|_| ())
+                    }
+                }
             }
         }
     }
@@ -843,21 +834,11 @@ impl FakeState {
             .records
             .iter()
             .flat_map(|(kind, rs)| {
-                rs.iter().filter(|(_, r)| r.0 > after).map(move |(verse, (seq, value, deleted))| {
-                    let field = if *kind == "highlight" { "color" } else { "label" };
-                    let mut r = json!({
-                        "type": kind, "uid": format!("{}-{verse}", &kind[..1]), "seq": seq, "verse": verse,
-                        field: value,
-                    });
-                    if *deleted {
-                        r["deletedAt"] = json!(1);
-                    }
-                    if let Some(created) = self.created.get(&(*kind, *verse)) {
-                        r["createdAt"] = json!(created);
-                    }
-                    r
-                })
+                rs.iter()
+                    .filter(|(_, r)| r.0 > after)
+                    .filter_map(|(verse, _)| self.verse_record(kind, *verse))
             })
+            .map(|r| serde_json::to_value(r).unwrap_or_default())
             .collect();
         let by_uid =
             self.items.values().filter(|i| i.seq > after).map(|i| FeedRecord::Item(Box::new(i.clone())));
@@ -880,6 +861,22 @@ impl FakeState {
     }
 
     /// `highlights.set` and `bookmarks.set`, with `convex/lib/conflict.ts`'s rule.
+    /// The highlight or bookmark on `verse` as the feed sends it.
+    fn verse_record(&self, kind: &str, verse: u32) -> Option<FeedRecord> {
+        let (seq, value, deleted) = self.records.get(kind)?.get(&verse)?;
+        let field = if kind == "highlight" { "color" } else { "label" };
+        let mut r = json!({
+            "type": kind, "uid": format!("{}-{verse}", &kind[..1]), "seq": seq, "verse": verse, field: value,
+        });
+        if *deleted {
+            r["deletedAt"] = json!(1);
+        }
+        if let Some(created) = self.created.get(&(kind, verse)) {
+            r["createdAt"] = json!(created);
+        }
+        serde_json::from_value(r).ok()
+    }
+
     fn set(&mut self, kind: &'static str, field: &str, args: &Value) -> Result<Value, CallError> {
         let verse = args["verse"].as_u64().and_then(|v| u32::try_from(v).ok()).map(VerseId);
         let Some(verse) = verse.filter(|v| v.is_valid()) else {
@@ -888,16 +885,15 @@ impl FakeState {
         let value = args[field].as_str().map(str::to_string);
         let base = args["baseSeq"].as_u64();
         let stored = self.records.get(kind).and_then(|rs| rs.get(&verse.0)).cloned();
-        if let (Some((seq, v, deleted)), Some(base)) = (&stored, base)
+        if let (Some((seq, ..)), Some(base)) = (&stored, base)
             && *seq > base
         {
-            let created = self.created.get(&(kind, verse.0));
-            return Ok(
-                json!({ "result": "conflict", "seq": seq, field: (!deleted).then_some(v), "createdAt": created }),
-            );
+            let record = self.verse_record(kind, verse.0).expect("stored");
+            return Ok(answer(WriteAnswer::Conflict { seq: *seq, record, copy: None }));
         }
         if value.is_none() && stored.as_ref().is_none_or(|s| s.2) {
-            return Ok(json!({ "result": "ok", "seq": stored.map_or(0, |s| s.0) }));
+            let seq = stored.map_or(0, |s| s.0);
+            return Ok(answer(WriteAnswer::Ok { seq, record: self.verse_record(kind, verse.0) }));
         }
         self.seq += 1;
         let seq = self.seq;
@@ -911,7 +907,7 @@ impl FakeState {
         };
         self.records.entry(kind).or_default().insert(verse.0, record);
         self.wrote();
-        Ok(json!({ "result": "ok", "seq": seq }))
+        Ok(answer(WriteAnswer::Ok { seq, record: self.verse_record(kind, verse.0) }))
     }
 
     fn wrote(&mut self) {

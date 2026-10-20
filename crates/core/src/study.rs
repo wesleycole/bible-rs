@@ -563,7 +563,8 @@ fn chapter_spans(from: VerseId, to: VerseId) -> Vec<(u32, u32, u32, u32)> {
 }
 
 /// A kind of synced record, as the outbox and the cache name it: highlights and bookmarks are
-/// kept one per verse, notes (items) and chats by uid.
+/// kept one per verse, items and chats by uid. `Note` is every item, not only notes: the outbox
+/// sends a sermon's or page's change as `items.updateDetails` (its stored name stays "note").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Highlight,
@@ -1908,15 +1909,22 @@ pub(crate) mod cache {
     }
 
     /// The server kept its own copy of a highlight or bookmark because another device changed it
-    /// after this one's copy: the change is done and the cache takes the server's copy (in
-    /// `answer`). Returns whether that was a real conflict, recorded for the UI.
+    /// after this one's copy: the change is done and the cache takes the server's copy, `record`.
+    /// Returns whether that was a real conflict, recorded for the UI.
     ///
     /// Two cases aren't: the server already has this edit (a write that reached it before the
     /// connection broke, or the same highlight made on both devices), and a record made here, with
     /// no copy, over a deletion this device never saw, which is sent again against the tombstone.
-    pub(crate) fn conflicted(conn: &mut Connection, e: &Entry, answer: &Value) -> Result<bool> {
+    pub(crate) fn conflicted(conn: &mut Connection, e: &Entry, record: &FeedRecord) -> Result<bool> {
         let Key::Verse(verse) = &e.key else { anyhow::bail!("{} is kept by uid", e.kind.name()) };
-        let seq = answer["seq"].as_u64().unwrap_or(0);
+        let (seq, created, theirs) = match record {
+            FeedRecord::Highlight(h) => {
+                (h.seq, h.created_at, h.deleted_at.is_none().then(|| json!(h.color.name())))
+            }
+            FeedRecord::Bookmark(b) => (b.seq, b.created_at, b.deleted_at.is_none().then(|| json!(b.label))),
+            _ => anyhow::bail!("a {} answer that isn't one", e.kind.name()),
+        };
+        let theirs = &theirs.unwrap_or(Value::Null);
         let offset = clock_offset_ms(conn)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let (rev, payload, base): (i64, String, i64) =
@@ -1929,14 +1937,14 @@ pub(crate) mod cache {
         }
         let payload: Value = serde_json::from_str(&payload)?;
         let field = e.kind.mutation().1;
-        let (mine, theirs) = (&payload[field], &answer[field]);
+        let mine = &payload[field];
         if base == 0 && theirs.is_null() && !mine.is_null() {
             tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
             tx.commit()?;
             return Ok(false);
         }
         tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
-        let created = local_time(answer["createdAt"].as_u64(), offset);
+        let created = local_time(created, offset);
         write_server(&tx, e.kind, *verse, seq, theirs, created)?;
         // Base 0 included: an edit made before the feed first caught up has no copy either, and
         // losing it silently is what conflicts exist to prevent. Migration lands here too, and

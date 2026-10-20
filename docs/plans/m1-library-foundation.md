@@ -267,10 +267,16 @@ library consent sheet.
 
 ## Owed
 
-Before M1 ships: a generated answer type for the verse-keyed writes (`highlights.set`,
-`bookmarks.set`), so the engine reads no answer JSON by hand.
+Owed: the production proxy's `/v1/me` has no `library` until production Convex
+(`expert-rabbit-665`) runs fc08a8d's `users.me`. The proxy passes it through, and today's proxy
+calls functions whose shapes changed, so the proxy and production Convex deploy together, after the
+production Clerk instance exists (before any library data does, [backend.md](backend.md)).
 
-Done since (October 20): the consent sheet, the notes UI and `items.updateDetails` (above); the
+Done since (October 20): `highlights.set` and `bookmarks.set` answer the same
+generated `WriteAnswer` as the uid-keyed writes, `ok` with the stored record (none for clearing what
+was never there) and `conflict` with the record that stood, so the engine reads no write answer by
+hand (only `sync.now`'s `serverTime`); the server must be deployed before clients that expect it.
+Also the consent sheet, the notes UI and `items.updateDetails` (above); the
 handlers' `satisfies … as` casts became annotated return types; `lib/purge.ts` no longer claims
 tests set `Clock` (they fake `Date`, because the sweeps compare Convex's `_creationTime`); and
 `local_time` takes the server's second and moves it by the offset rounded to whole seconds, instead

@@ -1,5 +1,5 @@
 //! The library consent sheet (docs/plans/backend.md, "Privacy and consent"): shown once, signed in,
-//! before the library syncs. Accepting starts sync; "Keep on This Mac" leaves the library here,
+//! before the library syncs. Accepting starts sync; "Keep on This Mac" (\"…Computer\" off macOS) leaves the library here,
 //! unsynced, until the user turns sync on from the sidebar footer, which shows the sheet again.
 
 use eframe::egui::{self, FontId, Order, Rect, Sense, Stroke, pos2, vec2};
@@ -67,7 +67,7 @@ pub fn show(ctx: &egui::Context, p: &Palette) -> Outcome {
         let ok_label = "Turn On Sync";
         let ok_w = widgets::primary_button_width(ui, ok_label, false);
         let ok = Rect::from_min_size(pos2(sheet.right() - PAD - ok_w, cy - 16.0), vec2(ok_w, 32.0));
-        let no_label = "Keep on This Mac";
+        let no_label = if cfg!(target_os = "macos") { "Keep on This Mac" } else { "Keep on This Computer" };
         let no_w = widgets::plain_button_width(ui, no_label);
         let no = Rect::from_min_size(pos2(ok.left() - 10.0 - no_w, cy - 16.0), vec2(no_w, 32.0));
         if widgets::plain_button(ui, p, no, no_label, egui::Id::new("consent-decline")).clicked() {
