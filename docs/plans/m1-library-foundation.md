@@ -19,7 +19,8 @@ These gate M1's release, because they can't be fixed once users have libraries:
    instance for the "Linger" application on `auth.linger.app`, with Apple, Google and email. A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
-   script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`), the proxy's `CLERK_*`
+   script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
+   `server/scripts/clerk-test-token.ts`, the proxy's `CLERK_*`
    variables and Convex's `CLERK_JWT_ISSUER`. Activate Clerk's Convex integration.
 2. **Three spikes, two days each:**
    - **Tokens** (done, October 19): a desktop OAuth access token and a Clerk session token for the
@@ -79,14 +80,16 @@ These gate M1's release, because they can't be fixed once users have libraries:
      rebuild the item's `anchors` index rows; a stale `baseSeq` writes the edit as a new note with
      `conflictOf`;
    - `library/highlights.set({ verse, color | null, baseSeq })`, `library/bookmarks.set({ verse, label | null, baseSeq })`;
-     a stale `baseSeq` keeps the server's and answers `conflict`;
+     a stale `baseSeq` keeps the server's and answers `conflict`; clearing what is already clear
+     answers `ok` with the record's current `seq` (0 for none) and consumes no sequence number;
    - `library/chats.save({ uid, title, fileUid, baseSeq })`, `library/chats.remove({ uid })`: the
      conversation JSON is uploaded and attached first as a `chat` file owned by the chat, so it counts
      toward storage;
    - `library/items.updateDetails({ uid, title?, details?, sermonUid?, offsetMs?, baseSeq })`.
 7. **The change feed:** `library/sync.changes({ after })` returns every synced record with `seq > after`,
    tombstones included, in `seq` order, up to 500 records or 2 MB, with the last `seq` and the server's
-   time, or `resync` when `after` is below `userLibrary.purgedThrough`. Records are in the generated
+   time, or `resync` when `0 < after < userLibrary.purgedThrough` (a device at 0 has nothing to
+   delete). Records are in the generated
    shape (items with their `anchors` and `files` arrays, file `url`s, `uid`s, no `_id`s).
 8. **Files:** `library/files.uploadUrl()` and `library/files.attach({ uid, ownerUid, role, storageId,
    sha256, partIndex?, page? })`, which checks the storage limit through `Allowance`, refuses with

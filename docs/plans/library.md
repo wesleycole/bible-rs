@@ -194,7 +194,8 @@ for the web's wasm build):
 - **Pull: one change feed.** `library/sync.changes({ after })` returns records of every type with
   `seq > after`, tombstones included, in `seq` order, up to 500 records or 2 MB, whichever comes first,
   with the highest `seq` returned and the server's time; or `resync` if `after` is below
-  `purgedThrough`. Because every record has its own `seq`, a page can end anywhere without skipping. The engine subscribes, applies a page to the cache in one SQLite
+  `purgedThrough` and above 0 (a device starting from 0 has no copies to delete, so it just pulls
+  what is there). Because every record has its own `seq`, a page can end anywhere without skipping. The engine subscribes, applies a page to the cache in one SQLite
   transaction, stores the new cursor and subscribes again. Convex re-runs the query when any of those
   rows change, so a photo saved on the iPhone reaches the Mac within a second.
 - **Push: the outbox.** Every local write goes to an `outbox` table first, then to an idempotent
@@ -205,7 +206,8 @@ for the web's wasm build):
   copy had when the edit began. If the server's record has moved past it, the server doesn't overwrite:
   for a note it keeps both, writing the late edit as a new note item with `conflictOf`, and for a
   highlight, bookmark or chat it keeps the server's and answers `conflict`, which the outbox treats as
-  done. One person edits their own notes, so this is rare, but a late offline edit silently replacing
+  done. Clearing a record that is already clear (or absent) answers `ok` with its current `seq` and
+  consumes no sequence number. One person edits their own notes, so this is rare, but a late offline edit silently replacing
   a newer one would be data loss. The notes and Recents pages say "edited on another device" when the
   cache replaces a record the user has open, and show a conflict copy beside the note it collided with.
 - **Server time.** Times that cross devices (when a recording started, when a slide was taken) are

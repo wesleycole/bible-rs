@@ -13,8 +13,9 @@ import { createHash, randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-const FAPI = "https://elegant-mink-67.clerk.accounts.dev"
-const CLIENT_ID = "XDg0tXKW3CgO9rJy"
+// The same overrides and defaults as crates/core/src/auth.rs (OAuthConfig::from_env).
+const FAPI = (process.env.LINGER_CLERK_URL?.trim() || "https://elegant-mink-67.clerk.accounts.dev").replace(/\/+$/, "")
+const CLIENT_ID = process.env.LINGER_OAUTH_CLIENT_ID?.trim() || "XDg0tXKW3CgO9rJy"
 const EMAIL = "amp+clerk_test@example.com"
 const CODE = "424242"
 const REDIRECT = "http://127.0.0.1:53682/callback"
