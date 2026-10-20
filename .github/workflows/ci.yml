@@ -85,7 +85,9 @@ jobs:
       # setup-uv publishes exact version tags only; installs dmgbuild for the DMG layout.
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Tests
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace
+          cargo test -p linger-core --features apple-audio
       - name: Universal app, DMG and zip (ad-hoc signed; release.yml signs and notarizes)
         run: scripts/release-macos.sh --ad-hoc
       - name: Startup and scrolling (glow)
