@@ -16,7 +16,53 @@ use serde_json::{Map, Value, json};
 
 use crate::books::{BOOKS, BookId, ChapterIdx, VerseRef};
 use crate::contract::sorted;
-use crate::study::HighlightColor;
+
+// A highlight's colour is part of the synced schema, so it lives here (not with the SQLite
+// store) and builds for the web. Not a doc comment: that would land in the generated schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HighlightColor {
+    Yellow,
+    Green,
+    Blue,
+    Pink,
+    Purple,
+    Orange,
+}
+
+impl HighlightColor {
+    /// In key order: 1–6 apply these, 0 clears. The stored value is the index, so new colours
+    /// only ever go at the end.
+    pub const ALL: [HighlightColor; 6] = [
+        HighlightColor::Yellow,
+        HighlightColor::Green,
+        HighlightColor::Blue,
+        HighlightColor::Pink,
+        HighlightColor::Purple,
+        HighlightColor::Orange,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HighlightColor::Yellow => "yellow",
+            HighlightColor::Green => "green",
+            HighlightColor::Blue => "blue",
+            HighlightColor::Pink => "pink",
+            HighlightColor::Purple => "purple",
+            HighlightColor::Orange => "orange",
+        }
+    }
+
+    #[cfg(feature = "native")]
+    pub(crate) fn from_i64(v: i64) -> Option<Self> {
+        Self::ALL.get(usize::try_from(v).ok()?).copied()
+    }
+
+    #[cfg(feature = "native")]
+    pub(crate) fn to_i64(self) -> i64 {
+        Self::ALL.iter().position(|c| *c == self).unwrap() as i64
+    }
+}
 
 /// A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 +
 /// verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon

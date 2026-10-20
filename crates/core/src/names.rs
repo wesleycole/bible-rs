@@ -121,7 +121,7 @@ pub struct Names {
 
 impl Names {
     pub fn decode(compressed: &[u8]) -> Result<Self> {
-        let raw = zstd::decode_all(compressed).context("decompressing the names")?;
+        let raw = crate::format::decompress_all(compressed).context("decompressing the names")?;
         Self::parse(std::str::from_utf8(&raw).context("the names aren't UTF-8")?)
     }
 
@@ -163,17 +163,16 @@ impl Names {
         Self { entities, by_id, by_name, by_strong }
     }
 
-    /// The bundled names, decoded the first time they're asked for.
-    #[cfg(feature = "bundled")]
+    /// The bundled names ([`bundled::NAMES`](crate::bundled::NAMES)), decoded the first time
+    /// they're asked for. An error (the web hasn't fetched them yet) isn't kept.
     pub fn bundled() -> Result<&'static Names> {
         use std::sync::OnceLock;
-        static BYTES: &[u8] =
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/names/names.zst"));
-        static DECODED: OnceLock<std::result::Result<Names, String>> = OnceLock::new();
-        DECODED
-            .get_or_init(|| Names::decode(BYTES).map_err(|e| format!("{e:#}")))
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        static DECODED: OnceLock<Names> = OnceLock::new();
+        if let Some(n) = DECODED.get() {
+            return Ok(n);
+        }
+        let decoded = Names::decode(&crate::bundled::bytes(crate::bundled::NAMES)?)?;
+        Ok(DECODED.get_or_init(|| decoded))
     }
 
     pub fn len(&self) -> usize {

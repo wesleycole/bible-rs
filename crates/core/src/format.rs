@@ -25,6 +25,8 @@ const MAGIC: &[u8; 4] = b"BIBL";
 const VERSION: u16 = 1;
 
 /// Serializes a translation. `level` is the zstd level (19 for bundled data, ~9 for imports).
+/// Encoding needs the zstd C library, so it is native-only; every build decodes.
+#[cfg(feature = "native")]
 pub fn encode(t: &Translation, level: i32) -> Result<Vec<u8>> {
     let mut body = Vec::with_capacity(t.text.len() + t.text.len() / 4);
     // Re-pack text, marks and spans in verse order so that starts are implicit.
@@ -204,11 +206,31 @@ pub fn decode(bytes: &[u8]) -> Result<Translation> {
 
 fn decompress(data: &[u8], len: usize) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(len);
-    zstd::stream::read::Decoder::with_buffer(data)?.take(len as u64 + 1).read_to_end(&mut out)?;
+    decoder(data)?.take(len as u64 + 1).read_to_end(&mut out)?;
     ensure!(out.len() == len, "decompressed size mismatch");
     Ok(out)
 }
 
+/// A whole zstd frame, decoded: the Ask data files (`crossrefs`, `names`, `original`).
+pub fn decompress_all(data: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    decoder(data)?.read_to_end(&mut out)?;
+    Ok(out)
+}
+
+/// The zstd C library natively; the pure-Rust `ruzstd` otherwise (it decodes the same frames,
+/// a few times slower: see docs/plans/m8-web.md for the measured numbers).
+#[cfg(feature = "native")]
+fn decoder(data: &[u8]) -> Result<impl Read + '_> {
+    Ok(zstd::stream::read::Decoder::with_buffer(data)?)
+}
+
+#[cfg(not(feature = "native"))]
+fn decoder(data: &[u8]) -> Result<impl Read + '_> {
+    ruzstd::decoding::StreamingDecoder::new(data).map_err(|e| anyhow::anyhow!("zstd: {e}"))
+}
+
+#[cfg(feature = "native")]
 fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
     out.extend_from_slice(&(b.len() as u32).to_le_bytes());
     out.extend_from_slice(b);

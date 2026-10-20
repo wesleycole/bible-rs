@@ -5,7 +5,8 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench(c: &mut Criterion) {
-    let bytes = linger_core::bundled::bytes("kjv").unwrap();
+    let bytes = linger_core::bundled::translation_bytes("kjv").unwrap();
+    let bytes: &[u8] = &bytes;
     c.bench_function("load/decode KJV (.bbl → model)", |b| {
         b.iter(|| black_box(linger_core::format::decode(black_box(bytes)).unwrap()))
     });

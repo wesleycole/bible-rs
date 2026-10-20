@@ -440,7 +440,7 @@ impl DiskCache {
         policy: CachePolicy,
     ) -> Result<Option<(Translation, Option<String>)>> {
         let conn = self.conn.lock().unwrap();
-        let cutoff = crate::study::now() - policy.max_age_secs;
+        let cutoff = crate::time::now() - policy.max_age_secs;
         conn.execute("DELETE FROM chapters WHERE translation = ?1 AND fetched < ?2", params![id, cutoff])?;
         let row: Option<(Vec<u8>, Option<String>)> = conn
             .query_row(
@@ -473,7 +473,7 @@ impl DiskCache {
         conn.execute(
             "INSERT OR REPLACE INTO chapters(translation, chapter, fetched, verses, payload, fums)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, c.0, crate::study::now(), t.verse_count() as i64, bytes, fums],
+            params![id, c.0, crate::time::now(), t.verse_count() as i64, bytes, fums],
         )?;
         // Evict the oldest other chapters until the stored text is within the provider's limits.
         loop {
@@ -498,7 +498,7 @@ impl DiskCache {
     /// The chapters kept for a translation and still fresh, the most recently fetched first.
     pub fn chapters(&self, id: &str, policy: CachePolicy) -> Vec<ChapterIdx> {
         let conn = self.conn.lock().unwrap();
-        let cutoff = crate::study::now() - policy.max_age_secs;
+        let cutoff = crate::time::now() - policy.max_age_secs;
         let Ok(mut st) = conn.prepare(
             "SELECT chapter FROM chapters WHERE translation = ?1 AND fetched >= ?2 ORDER BY fetched DESC, rowid DESC",
         ) else {
@@ -538,7 +538,7 @@ impl DailyBudget {
     }
 
     fn today() -> i64 {
-        crate::study::now().div_euclid(86_400)
+        crate::time::now().div_euclid(86_400)
     }
 
     /// Requests made today.

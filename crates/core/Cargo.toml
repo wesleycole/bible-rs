@@ -7,11 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["bundled"]
-# Embed the public-domain translations from data/translations into the binary.
+default = ["bundled", "native"]
+# Embed the public-domain translations and the Ask data from data/ into the binary. Without it
+# the bytes come from a `bundled::Source` installed at runtime (the web fetches them).
 bundled = []
+# Everything that needs the OS or a C library: SQLite, the network (`ureq`), WAV files, imports,
+# the zstd C library and the Keychain. Off for the wasm build (docs/plans/m8-web.md), which
+# decodes with the pure-Rust `ruzstd` and reaches the network through an `api::Http` the page
+# provides.
+native = ["dep:rusqlite", "dep:ureq", "dep:hound", "dep:zip", "dep:flate2", "dep:zstd"]
 # The sync engine (sync.rs): the cache, the outbox and the change feed behind `sync::Backend`.
-sync = []
+sync = ["native"]
 # The native Convex backend: the `convex` crate on a current-thread tokio runtime.
 convex = ["sync", "dep:convex", "dep:tokio", "dep:futures"]
 
@@ -21,18 +27,26 @@ serde.workspace = true
 serde_json.workspace = true
 schemars = "1"
 memchr.workspace = true
-zstd.workspace = true
-rusqlite = { version = "0.40", features = ["bundled"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
-flate2 = "1"
-ureq = "3"
-hound = "3.5"
+zstd = { workspace = true, optional = true }
+# The decoder for builds without the zstd C library (wasm); also the encoder-free fallback.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+flate2 = { version = "1", optional = true }
+ureq = { version = "3", optional = true }
+hound = { version = "3.5", optional = true }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 # rustls, as ureq already uses, rather than the crate's default vendored OpenSSL.
 convex = { version = "0.10", optional = true, default-features = false, features = ["rustls-tls-webpki-roots"] }
 tokio = { version = "1", optional = true, features = ["rt", "time", "sync"] }
 futures = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+
+# On wasm32 `uuid` draws randomness through wasm-bindgen (`crypto.getRandomValues`) and
+# `std::time::Instant` panics, so `search` times itself with `web-time` there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["v4", "js"] }
+web-time = "1"
 
 # API keys live in the macOS Keychain; other platforms use a 0600 file.
 [target.'cfg(target_os = "macos")'.dependencies]

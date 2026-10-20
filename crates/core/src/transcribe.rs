@@ -7,20 +7,28 @@
 //! transcript is saved beside the recording as `transcript.json`, the job is deleted from
 //! AssemblyAI, which deletes the uploaded audio with it: the service keeps nothing.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-use crate::api::{Api, ApiError};
 use crate::books::{BookId, ChapterIdx};
 use crate::recording::{self, Details, Manifest, Source};
 
+// The transcript types build everywhere (Ask's sermon tools read them); transcribing itself
+// needs the network and WAV files, so it's native-only.
+#[cfg(feature = "native")]
+use {
+    crate::api::{Api, ApiError},
+    anyhow::{Context, Result, anyhow, bail},
+    serde_json::{Value, json},
+    std::io::Read,
+    std::time::{Duration, Instant},
+};
+
+#[cfg(feature = "native")]
 const API: &str = "https://api.assemblyai.com/v2";
 /// Longer than any sermon takes to transcribe (a few minutes for an hour of audio).
+#[cfg(feature = "native")]
 const GIVE_UP_AFTER: Duration = Duration::from_secs(2 * 60 * 60);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,7 +88,7 @@ impl Transcript {
 
 /// "Oct 19, 2026", from Unix seconds.
 pub fn day(unix: i64) -> String {
-    let (y, m, d) = crate::study::civil_from_days(unix.div_euclid(86_400));
+    let (y, m, d) = crate::time::civil_from_days(unix.div_euclid(86_400));
     const MONTHS: [&str; 12] =
         ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     format!("{} {d}, {y}", MONTHS[(m as usize).clamp(1, 12) - 1])
@@ -178,11 +186,13 @@ pub fn parse_clock(s: &str) -> Option<u64> {
     Some(total * 1000)
 }
 
+#[cfg(feature = "native")]
 #[derive(Clone)]
 pub struct AssemblyAi {
     key: String,
 }
 
+#[cfg(feature = "native")]
 impl AssemblyAi {
     /// The key from `LINGER_ASSEMBLYAI_KEY`, `ASSEMBLYAI_API_KEY` or `ASSEMBLY_AI_API_KEY`.
     pub fn from_env() -> Option<Self> {
@@ -287,6 +297,7 @@ impl AssemblyAi {
 /// The joined WAV goes straight to the signed upload URL the proxy hands out (not through the
 /// proxy), the proxy starts the AssemblyAI job, and the transcript is polled for every 5 s.
 /// `status` hears "Preparing", "Uploading", "Transcribing".
+#[cfg(feature = "native")]
 pub fn transcribe_via_proxy(
     api: &Api,
     data_dir: &Path,
@@ -318,12 +329,14 @@ pub fn transcribe_via_proxy(
 
 /// With [`About`] from the manifest as it is now: the user may have named the sermon while it was
 /// being transcribed.
+#[cfg(feature = "native")]
 fn with_latest(data_dir: &Path, t: Transcript, manifest: &Manifest) -> Transcript {
     let m = recording::load(data_dir, &manifest.id);
     t.with_manifest(m.as_ref().unwrap_or(manifest))
 }
 
 /// A Free account past its trial: say what Pro adds rather than the bare refusal.
+#[cfg(feature = "native")]
 fn plan_message(e: anyhow::Error) -> anyhow::Error {
     match e.downcast_ref::<ApiError>() {
         Some(ApiError::Upgrade { plan_required: true, upgrade, .. }) => {
@@ -337,6 +350,7 @@ fn plan_message(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
+#[cfg(feature = "native")]
 fn upload_and_transcribe(
     api: &Api,
     wav: &Path,
@@ -405,6 +419,7 @@ fn upload_and_transcribe(
     }
 }
 
+#[cfg(feature = "native")]
 fn save(data_dir: &Path, t: &Transcript) -> Result<()> {
     let p = path(data_dir, &t.recording_id);
     let tmp = p.with_extension("json.tmp");
@@ -414,6 +429,7 @@ fn save(data_dir: &Path, t: &Transcript) -> Result<()> {
 }
 
 /// The recording's chunks as one WAV file at `out`.
+#[cfg(feature = "native")]
 fn join_chunks(dir: &Path, m: &Manifest, out: &Path) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 1,
@@ -434,6 +450,7 @@ fn join_chunks(dir: &Path, m: &Manifest, out: &Path) -> Result<()> {
 }
 
 /// The speaker turns of a finished job; one segment of its whole text when it has none.
+#[cfg(feature = "native")]
 fn segments(v: &Value) -> Vec<Segment> {
     let turns: Vec<Segment> = v["utterances"]
         .as_array()
@@ -463,6 +480,7 @@ fn segments(v: &Value) -> Vec<Segment> {
     }
 }
 
+#[cfg(feature = "native")]
 fn json_body(
     resp: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>,
     what: &str,

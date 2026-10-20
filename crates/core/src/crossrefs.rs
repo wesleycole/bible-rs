@@ -36,7 +36,7 @@ pub struct CrossRefs {
 
 impl CrossRefs {
     pub fn decode(compressed: &[u8]) -> Result<Self> {
-        let raw = zstd::decode_all(compressed).context("decompressing the cross-references")?;
+        let raw = crate::format::decompress_all(compressed).context("decompressing the cross-references")?;
         Self::parse(std::str::from_utf8(&raw).context("the cross-references aren't UTF-8")?)
     }
 
@@ -70,17 +70,16 @@ impl CrossRefs {
         Ok(Self { links })
     }
 
-    /// The bundled cross-references, decoded the first time they're asked for.
-    #[cfg(feature = "bundled")]
+    /// The bundled cross-references ([`bundled::CROSSREFS`](crate::bundled::CROSSREFS)), decoded
+    /// the first time they're asked for. An error (the web hasn't fetched them yet) isn't kept.
     pub fn bundled() -> Result<&'static CrossRefs> {
         use std::sync::OnceLock;
-        static BYTES: &[u8] =
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/crossrefs/crossrefs.zst"));
-        static DECODED: OnceLock<std::result::Result<CrossRefs, String>> = OnceLock::new();
-        DECODED
-            .get_or_init(|| CrossRefs::decode(BYTES).map_err(|e| format!("{e:#}")))
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        static DECODED: OnceLock<CrossRefs> = OnceLock::new();
+        if let Some(c) = DECODED.get() {
+            return Ok(c);
+        }
+        let decoded = CrossRefs::decode(&crate::bundled::bytes(crate::bundled::CROSSREFS)?)?;
+        Ok(DECODED.get_or_init(|| decoded))
     }
 
     pub fn len(&self) -> usize {

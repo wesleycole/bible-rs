@@ -37,26 +37,9 @@ pub const DEV_TOKEN_KEY: &str = "dev-clerk-token";
 /// Refresh this long before the access token expires.
 const EARLY: Duration = Duration::from_secs(60);
 
-/// A bearer token for Linger's proxy.
-pub trait TokenSource: Send + Sync {
-    /// A token that should be valid now, refreshed first if it's about to expire.
-    fn token(&self) -> Result<String>;
-    /// A fresh token after the proxy rejected the current one; an error means sign in again.
-    fn refresh(&self) -> Result<String>;
-}
-
-/// One fixed token: the dev Settings field, or `LINGER_API_TOKEN`. It can't be refreshed.
-pub struct StaticToken(pub String);
-
-impl TokenSource for StaticToken {
-    fn token(&self) -> Result<String> {
-        Ok(self.0.clone())
-    }
-
-    fn refresh(&self) -> Result<String> {
-        bail!("the token was rejected")
-    }
-}
+// A bearer token for Linger's proxy. The trait every client implements lives with the API
+// client, which builds for the web too.
+pub use crate::api::{StaticToken, TokenSource};
 
 /// Where the OAuth endpoints are, and as which client.
 #[derive(Debug, Clone, PartialEq, Eq)]

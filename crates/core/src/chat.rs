@@ -678,26 +678,17 @@ impl Tools {
 
 /// The Hebrew and Greek text, decoded the first time a tool needs it.
 fn original() -> Result<&'static Original> {
-    #[cfg(feature = "bundled")]
-    return Original::bundled();
-    #[cfg(not(feature = "bundled"))]
-    bail!("this build has no Hebrew or Greek text")
+    Original::bundled()
 }
 
 /// The cross-references, decoded the first time a tool needs them.
 fn crossrefs() -> Result<&'static CrossRefs> {
-    #[cfg(feature = "bundled")]
-    return CrossRefs::bundled();
-    #[cfg(not(feature = "bundled"))]
-    bail!("this build has no cross-references")
+    CrossRefs::bundled()
 }
 
 /// The people and places, decoded the first time a tool needs them.
 fn names() -> Result<&'static Names> {
-    #[cfg(feature = "bundled")]
-    return Names::bundled();
-    #[cfg(not(feature = "bundled"))]
-    bail!("this build has no people and places")
+    Names::bundled()
 }
 
 /// Who or what `name` names, within `passage`; everyone and everything named in `passage`
@@ -916,7 +907,6 @@ fn lexicon(o: &Original, word: &str) -> Result<Value> {
 /// "λόγος (logos)" for a word the model looks up by Strong's number; the query itself when it
 /// isn't one the lexicon knows (or the text isn't loaded yet).
 pub fn word_label(query: &str) -> String {
-    #[cfg(feature = "bundled")]
     if let Ok(o) = Original::bundled()
         && let Some(e) = o.lookup(query).first()
     {
@@ -928,7 +918,6 @@ pub fn word_label(query: &str) -> String {
 /// "Elijah" for a person or place the model looks up by id or Strong's number; the query itself
 /// otherwise.
 pub fn name_label(query: &str) -> String {
-    #[cfg(feature = "bundled")]
     if (query.contains('@') || original::normalize_strong(query).is_some())
         && let Ok(n) = Names::bundled()
         && let Some(e) = n.lookup(query).first()

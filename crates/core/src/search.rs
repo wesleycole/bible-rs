@@ -11,7 +11,12 @@
 //! On the KJV (4.3 MB) a single-term query takes well under a millisecond; see `benches/`.
 
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use memchr::memmem;
 

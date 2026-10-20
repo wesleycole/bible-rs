@@ -111,7 +111,8 @@ pub struct Entry<'a> {
 
 impl Original {
     pub fn decode(compressed: &[u8]) -> Result<Self> {
-        let raw = zstd::decode_all(compressed).context("decompressing the original-language text")?;
+        let raw =
+            crate::format::decompress_all(compressed).context("decompressing the original-language text")?;
         Self::parse(String::from_utf8(raw).context("the original-language text isn't UTF-8")?)
     }
 
@@ -187,17 +188,16 @@ impl Original {
         Ok(o)
     }
 
-    /// The bundled text, decoded the first time it's asked for (~0.2 s).
-    #[cfg(feature = "bundled")]
+    /// The bundled text ([`bundled::ORIGINAL`](crate::bundled::ORIGINAL)), decoded the first
+    /// time it's asked for (~0.2 s). An error (the web hasn't fetched it yet) isn't kept.
     pub fn bundled() -> Result<&'static Original> {
         use std::sync::OnceLock;
-        static BYTES: &[u8] =
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/original/original.zst"));
-        static DECODED: OnceLock<std::result::Result<Original, String>> = OnceLock::new();
-        DECODED
-            .get_or_init(|| Original::decode(BYTES).map_err(|e| format!("{e:#}")))
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        static DECODED: OnceLock<Original> = OnceLock::new();
+        if let Some(o) = DECODED.get() {
+            return Ok(o);
+        }
+        let decoded = Original::decode(&crate::bundled::bytes(crate::bundled::ORIGINAL)?)?;
+        Ok(DECODED.get_or_init(|| decoded))
     }
 
     pub fn word_count(&self) -> usize {

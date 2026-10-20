@@ -131,6 +131,7 @@ fn write(dir: &Path, m: &Manifest) -> Result<()> {
 
 /// Writes one recording: call [`push`](Self::push) with samples as they arrive, then
 /// [`finish`](Self::finish).
+#[cfg(feature = "native")]
 pub struct ChunkWriter {
     dir: PathBuf,
     manifest: Manifest,
@@ -140,6 +141,7 @@ pub struct ChunkWriter {
     before: u64,
 }
 
+#[cfg(feature = "native")]
 impl ChunkWriter {
     pub fn create(data_dir: &Path, source: Source) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
@@ -148,7 +150,7 @@ impl ChunkWriter {
         let manifest = Manifest {
             id,
             source,
-            started_at: crate::study::now(),
+            started_at: crate::time::now(),
             ended_at: None,
             sample_rate: SAMPLE_RATE,
             chunks: Vec::new(),
@@ -218,7 +220,7 @@ impl ChunkWriter {
     /// Closes the last chunk and marks the recording finished.
     pub fn finish(mut self) -> Result<Manifest> {
         self.close_chunk()?;
-        self.manifest.ended_at = Some(crate::study::now());
+        self.manifest.ended_at = Some(crate::time::now());
         self.write_manifest()?;
         Ok(self.manifest)
     }
@@ -243,6 +245,7 @@ impl ChunkWriter {
     }
 }
 
+#[cfg(feature = "native")]
 fn chunk_name(index: u32) -> String {
     format!("chunk-{index:04}.wav")
 }
