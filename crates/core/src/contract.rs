@@ -75,14 +75,29 @@ pub mod direct {
     pub const EFFORT: &str = "medium";
 }
 
-/// The contract's content, without its hash.
+/// The contract's content, without its hash, with every object's keys sorted.
 pub fn body() -> Value {
-    json!({
+    sorted(json!({
         "version": VERSION,
         "max_rounds": MAX_ROUNDS,
         "system": SYSTEM,
         "tools": Tools::definitions(),
-    })
+    }))
+}
+
+/// `v` with every object's keys in sorted order. serde_json keeps keys sorted only without its
+/// `preserve_order` feature, which the `convex` crate turns on for the whole build, so anything
+/// hashed or generated sorts explicitly.
+pub fn sorted(v: Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+        other => other,
+    }
 }
 
 /// SHA-256 (hex) of [`body`] as compact JSON with sorted keys.
@@ -100,6 +115,7 @@ pub fn file_name() -> String {
 pub fn file() -> String {
     let mut v = body();
     v["sha256"] = Value::String(sha256());
+    let v = sorted(v);
     let mut s = serde_json::to_string_pretty(&v).expect("the contract serializes");
     s.push('\n');
     s
@@ -129,8 +145,10 @@ mod tests {
         assert_eq!(keys, ["max_rounds", "sha256", "system", "tools", "version"]);
         let mut rest = v.clone();
         rest.as_object_mut().unwrap().remove("sha256");
-        let digest: String =
-            Sha256::digest(serde_json::to_vec(&rest).unwrap()).iter().map(|b| format!("{b:02x}")).collect();
+        let digest: String = Sha256::digest(serde_json::to_vec(&sorted(rest)).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         assert_eq!(v["sha256"], digest.as_str());
     }
 }

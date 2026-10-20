@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::books::{BOOKS, BookId, ChapterIdx, VerseRef};
+use crate::contract::sorted;
 use crate::study::HighlightColor;
 
 /// A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 +
@@ -136,10 +137,16 @@ pub struct RecordSchema {
 pub fn schemas() -> Vec<RecordSchema> {
     let mut generator = SchemaSettings::draft2020_12().with(|s| s.inline_subschemas = true).into_generator();
     vec![
-        RecordSchema { name: "Highlight", schema: generator.root_schema_for::<Highlight>().to_value() },
-        RecordSchema { name: "Bookmark", schema: generator.root_schema_for::<Bookmark>().to_value() },
-        RecordSchema { name: "FeedRecord", schema: generator.root_schema_for::<FeedRecord>().to_value() },
-        RecordSchema { name: "Changes", schema: generator.root_schema_for::<Changes>().to_value() },
+        RecordSchema {
+            name: "Highlight",
+            schema: sorted(generator.root_schema_for::<Highlight>().to_value()),
+        },
+        RecordSchema { name: "Bookmark", schema: sorted(generator.root_schema_for::<Bookmark>().to_value()) },
+        RecordSchema {
+            name: "FeedRecord",
+            schema: sorted(generator.root_schema_for::<FeedRecord>().to_value()),
+        },
+        RecordSchema { name: "Changes", schema: sorted(generator.root_schema_for::<Changes>().to_value()) },
     ]
 }
 
