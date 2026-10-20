@@ -148,6 +148,28 @@ fn a_record_keeps_its_exact_date_on_another_device_after_an_idle_gap() {
 }
 
 #[test]
+fn a_wrong_stored_clock_offset_never_dates_what_the_feed_brings() {
+    let server = FakeServer::new();
+    let mut a = Device::new("skew-a");
+    a.start(&server);
+    a.settle(&server);
+    a.store.set_highlight(verse(7, 7), Some(HighlightColor::Green)).unwrap();
+    a.settle(&server);
+    // B's last connection measured an offset that is now wrong (another network, a clock fixed).
+    let b_dir = std::env::temp_dir().join(format!("linger-sync-{}-skew-b", std::process::id()));
+    let _ = std::fs::remove_dir_all(&b_dir);
+    let mut b = Device::open(b_dir.clone());
+    rusqlite::Connection::open(b_dir.join("study.sqlite"))
+        .unwrap()
+        .execute("INSERT OR REPLACE INTO sync_state(key, value) VALUES('clock_offset_ms', -5000)", [])
+        .unwrap();
+    b.start(&server);
+    b.settle(&server);
+    let dated = |d: &Device| d.store.highlights_dated().into_iter().find(|h| h.0 == verse(7, 7)).unwrap().2;
+    assert_eq!(dated(&b), dated(&a));
+}
+
+#[test]
 fn a_stale_edit_becomes_a_conflict_and_the_newer_one_stands() {
     let server = FakeServer::new();
     let (mut a, mut b) = (Device::new("a3"), Device::new("b3"));

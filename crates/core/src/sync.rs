@@ -176,6 +176,7 @@ pub fn start(data_dir: &Path, backend: Box<dyn Backend>, tokens: Arc<dyn TokenSo
         connected: true,
         feed_error: None,
         clock_known: false,
+        held: None,
         token_due: None,
         data_changed: false,
     };
@@ -299,6 +300,9 @@ struct Engine {
     /// The clock offset was measured on this connection; changes wait for it, since they carry
     /// creation times moved into server time.
     clock_known: bool,
+    /// A feed page that arrived before the clock was measured, held until it is: pages carry
+    /// creation times, and the stored offset may be another connection's, or none.
+    held: Option<(u64, Value)>,
     token_due: Option<Instant>,
     /// The cache changed since the last `on_change`.
     data_changed: bool,
@@ -331,12 +335,20 @@ impl Engine {
             self.connected = connected;
             if !connected {
                 self.offline.get_or_insert_with(|| "Can't reach Linger's server".into());
-            } else if self.caught_up_once {
+            } else {
                 if !self.clock_known && self.feed_error.is_none() {
                     self.measure_clock();
                 }
                 if self.clock_known {
-                    self.drain();
+                    if let Some((after, value)) = self.held.take()
+                        && after == self.subscribed
+                        && let Err(e) = self.apply(value)
+                    {
+                        self.feed_error = Some(format!("{e:#}"));
+                    }
+                    if self.caught_up_once {
+                        self.drain();
+                    }
                 }
             }
             if self.token_due.is_some_and(|due| Instant::now() >= due) {
@@ -381,9 +393,12 @@ impl Engine {
     fn handle(&mut self, event: Event) -> bool {
         match event {
             Event::Feed(after, _) if after != self.subscribed => {}
-            Event::Feed(_, Ok(value)) => {
+            Event::Feed(after, Ok(value)) => {
                 self.online();
-                if let Err(e) = self.apply(value) {
+                if !self.clock_known {
+                    // The latest page replaces any held one: it is the subscription's whole answer.
+                    self.held = Some((after, value));
+                } else if let Err(e) = self.apply(value) {
                     self.feed_error = Some(format!("{e:#}"));
                 }
             }

@@ -553,7 +553,7 @@ impl OAuthSession {
                 // sign-in prompt) rather than this error on every call.
                 self.store.delete(REFRESH_KEY)?;
                 *access = None;
-                Err(e.context("sign in to Linger again"))
+                Err(e.context("not signed in: the sign-in ended; sign in again"))
             }
             Err(e) => Err(e),
         }
