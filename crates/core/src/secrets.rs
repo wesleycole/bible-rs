@@ -10,7 +10,6 @@ use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct SecretStore {
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     file: PathBuf,
 }
 
@@ -21,6 +20,22 @@ impl SecretStore {
 
     pub fn backend_name(&self) -> &'static str {
         if cfg!(target_os = "macos") { "macOS Keychain" } else { "local secrets file (mode 0600)" }
+    }
+
+    /// An exclusive lock across processes on this data directory, held until the file is
+    /// dropped: for a read, decide and write of the store that must not interleave with another
+    /// process's (the sign-in's token grant).
+    pub fn lock(&self) -> Result<std::fs::File> {
+        if let Some(dir) = self.file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.file.with_file_name("secrets.lock"))?;
+        f.lock()?;
+        Ok(f)
     }
 
     /// Stores a value; an empty value deletes it.

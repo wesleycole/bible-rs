@@ -253,13 +253,30 @@ fn post_form(url: &str, body: String) -> Result<(u16, String)> {
     Ok((status, resp.body_mut().read_to_string().unwrap_or_default()))
 }
 
+/// Clerk refused the grant itself (`invalid_grant`): the refresh token is dead, and nothing but
+/// signing in again brings the session back.
+#[derive(Debug)]
+pub struct InvalidGrant(pub String);
+
+impl std::fmt::Display for InvalidGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sign-in failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidGrant {}
+
 fn token_request(cfg: &OAuthConfig, pairs: &[(&str, &str)]) -> Result<Tokens> {
     let (status, text) = post_form(&cfg.endpoint("/oauth/token"), form(pairs))?;
     if status != 200 {
-        let why = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
+        let body = serde_json::from_str::<serde_json::Value>(&text).ok();
+        let why = body
+            .as_ref()
             .and_then(|v| v["error_description"].as_str().or(v["error"].as_str()).map(str::to_string))
             .unwrap_or_else(|| format!("HTTP {status}"));
+        if status == 400 && body.as_ref().is_some_and(|v| v["error"] == "invalid_grant") {
+            return Err(InvalidGrant(why).into());
+        }
         bail!("sign-in failed: {why}");
     }
     serde_json::from_str(&text).context("unreadable reply from the sign-in service")
@@ -500,21 +517,46 @@ impl TokenSource for OAuthSession {
             *access = Some((t.clone(), until));
             return Ok(t);
         }
-        self.grant(&mut access)
+        self.grant(&mut access, None)
     }
 
     fn refresh(&self) -> Result<String> {
-        self.grant(&mut self.access.lock().unwrap_or_else(|e| e.into_inner()))
+        let mut access = self.access.lock().unwrap_or_else(|e| e.into_inner());
+        // The token the proxy rejected: the one in use, or failing that the stored one.
+        let rejected = access
+            .as_ref()
+            .map(|(t, _)| t.clone())
+            .or_else(|| Saved::load(&self.store).and_then(|s| s.access));
+        self.grant(&mut access, rejected)
     }
 }
 
 impl OAuthSession {
-    /// Trades the stored refresh token for new tokens. The caller holds the access lock, so the
-    /// threads sharing this session (the UI and sync) never run two grants at once.
-    fn grant(&self, access: &mut Option<(String, Instant)>) -> Result<String> {
+    /// Trades the stored refresh token for new tokens, unless another process already has: under
+    /// a lock across processes, it reads the store again and uses a stored token that is still
+    /// good and isn't `rejected`. Clerk revokes a refresh token's whole family when one is used
+    /// twice, so two processes must never send the same one. The caller holds the access lock,
+    /// so the threads sharing this session (the UI and sync) don't run two grants either.
+    fn grant(&self, access: &mut Option<(String, Instant)>, rejected: Option<String>) -> Result<String> {
+        let _lock = self.store.lock().context("couldn't lock the sign-in")?;
         let saved = Saved::load(&self.store).context("sign in to Linger")?;
-        let tokens = refresh_tokens(&self.cfg, &saved.refresh)?;
-        self.keep_in(access, tokens)
+        if let Some((t, until)) = saved.access()
+            && Some(&t) != rejected.as_ref()
+        {
+            *access = Some((t.clone(), until));
+            return Ok(t);
+        }
+        match refresh_tokens(&self.cfg, &saved.refresh) {
+            Ok(tokens) => self.keep_in(access, tokens),
+            Err(e) if e.is::<InvalidGrant>() => {
+                // The session is dead for good: forget it, so every caller sees signed out (the
+                // sign-in prompt) rather than this error on every call.
+                self.store.delete(REFRESH_KEY)?;
+                *access = None;
+                Err(e.context("sign in to Linger again"))
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -650,6 +692,9 @@ mod tests {
             ("/oauth/token", Some("refresh_token")) if form.contains("refresh_token=rt-1") => {
                 (200, r#"{"access_token":"at-2","refresh_token":"rt-2","expires_in":3600}"#.into())
             }
+            ("/oauth/token", Some("refresh_token")) if form.contains("refresh_token=rt-2") => {
+                (200, r#"{"access_token":"at-3","refresh_token":"rt-3","expires_in":3600}"#.into())
+            }
             ("/oauth/token/revoke", _) => (200, "{}".into()),
             _ => (400, r#"{"error":"invalid_grant","error_description":"no such grant"}"#.into()),
         });
@@ -690,7 +735,7 @@ mod tests {
         assert_eq!(session.refresh().unwrap(), "at-2");
         assert_eq!(Saved::load(&store).unwrap().refresh, "rt-2");
         let restored = OAuthSession::restore(cfg.clone(), store.clone()).unwrap();
-        assert!(restored.refresh().unwrap_err().to_string().contains("no such grant"));
+        assert_eq!(restored.refresh().unwrap(), "at-3");
 
         session.sign_out().unwrap();
         assert_eq!(store.get(REFRESH_KEY), None);
@@ -698,7 +743,7 @@ mod tests {
         let seen = seen.lock().unwrap();
         let (path, form) = seen.last().unwrap();
         assert_eq!(path, "/oauth/token/revoke");
-        assert_eq!(query_value(form, "token").as_deref(), Some("rt-2"));
+        assert_eq!(query_value(form, "token").as_deref(), Some("rt-3"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -738,6 +783,43 @@ mod tests {
         store.set(REFRESH_KEY, "rt-1").unwrap();
         assert_eq!(start().token().unwrap(), "at-2");
         assert_eq!(seen.lock().unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Two processes (here two sessions, as two starts are) on one store.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn two_starts_past_expiry_make_one_grant_between_them_and_a_dead_token_signs_out() {
+        let (cfg, seen) = mock_clerk(|_, form| {
+            // Slow enough that both starts are inside the grant at once without the lock.
+            std::thread::sleep(Duration::from_millis(200));
+            match query_value(form, "refresh_token").as_deref() {
+                Some("rt-1") => {
+                    (200, r#"{"access_token":"at-2","refresh_token":"rt-2","expires_in":3600}"#.into())
+                }
+                _ => (400, r#"{"error":"invalid_grant","error_description":"reused"}"#.into()),
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("linger-auth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SecretStore::new(&dir);
+        let saved =
+            Saved { refresh: "rt-1".into(), access: Some("at-1".into()), exp: unix_now().as_secs() + 30 };
+        store.set(REFRESH_KEY, &serde_json::to_string(&saved).unwrap()).unwrap();
+        let starts: Vec<_> = (0..2)
+            .map(|_| {
+                let session = OAuthSession::restore(cfg.clone(), store.clone()).unwrap();
+                std::thread::spawn(move || session.token().unwrap())
+            })
+            .collect();
+        let tokens: Vec<String> = starts.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(tokens, ["at-2", "at-2"]);
+        assert_eq!(seen.lock().unwrap().len(), 1, "one grant between them");
+
+        // A refresh token Clerk refuses is forgotten: the next start is signed out.
+        let session = OAuthSession::restore(cfg.clone(), store.clone()).unwrap();
+        assert!(session.refresh().unwrap_err().chain().any(|e| e.is::<InvalidGrant>()));
+        assert!(OAuthSession::restore(cfg, store).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

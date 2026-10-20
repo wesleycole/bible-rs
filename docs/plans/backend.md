@@ -183,9 +183,13 @@ submission.
      grant; a grant happens only within a minute of expiry or after a 401, and its answer is
      written before the new token is used, because Clerk rotates the refresh token on every grant
      and a process killed in between would otherwise leave a dead one. The UI and sync threads
-     share one session, which holds one grant at a time. Two processes starting inside the same pre-expiry minute
-     can both grant with one refresh token; the second's start fails on Clerk's rotation, and its
-     next start succeeds with the pair the first stored. That is a known limit, not fixed.
+     share one session, and a grant runs under a lock across processes (`secrets.lock` in the data
+     directory) that is held from reading the store to writing it: the second process finds the
+     first one's new pair and makes no grant, which matters because Clerk revokes a refresh
+     token's whole family when one is used twice. A refused grant (`invalid_grant`) forgets the
+     session, so the app shows the sign-in prompt. Known limit: a process killed between Clerk's
+     answer and the write still loses the session, a sub-second window in the last minute of a
+     day-long token, with no recovery but signing in again.
 
 ### Verification
 
