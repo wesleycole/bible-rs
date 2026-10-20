@@ -248,6 +248,35 @@ describe("library.notes", () => {
   })
 })
 
+describe("library.items.updateDetails", () => {
+  it("sets a page's sermon and details, answers the stored record, refuses a missing sermon, and keeps a newer write", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    await ann.mutation(api.library.notes.upsert, { uid: "page", text: "Slide", anchors: [] })
+    const userId = (await t.run((ctx) => ctx.db.query("users").withIndex("by_clerk", (q) => q.eq("clerkId", "user_ann")).unique()))!._id
+    await t.run((ctx) =>
+      ctx.db.insert("items", { userId, uid: "sermon", seq: 2, kind: "sermon", title: "", status: "ready", unreviewed: false, files: [], anchors: [], capturedAt: 0 })
+    )
+    expect((await errorOf(ann.mutation(api.library.items.updateDetails, { uid: "page", sermonUid: "nope", baseSeq: 1 }))).type).toBe("invalid_request")
+    expect((await errorOf(ann.mutation(api.library.items.updateDetails, { uid: "page", sermonUid: "page", baseSeq: 1 }))).type).toBe("invalid_request")
+    const details = { title: "Romans 8", speaker: "A. Preacher", startedAt: 1_000 }
+    const set = await ann.mutation(api.library.items.updateDetails, { uid: "page", sermonUid: "sermon", offsetMs: 90_000, details, baseSeq: 1 })
+    // Sequence numbers come from the user's counter, which the inserted sermon didn't move.
+    expect(set).toEqual({ result: "ok", seq: 2, record: (await page(t, "user_ann", 1)).records.find((r) => r.uid === "page") })
+    expect(set).toMatchObject({ record: { sermonUid: "sermon", offsetMs: 90_000, details, text: "Slide" } })
+    // The same again writes nothing; a stale one keeps what stands.
+    expect(await ann.mutation(api.library.items.updateDetails, { uid: "page", sermonUid: "sermon", offsetMs: 90_000, baseSeq: 2 })).toEqual(set)
+    expect(await ann.mutation(api.library.items.updateDetails, { uid: "page", sermonUid: null, baseSeq: 1 })).toMatchObject({
+      result: "conflict",
+      seq: 2,
+      record: { sermonUid: "sermon" }
+    })
+    const cleared = await ann.mutation(api.library.items.updateDetails, { uid: "page", sermonUid: null, offsetMs: null, details: null, baseSeq: 2 })
+    expect(cleared).toMatchObject({ result: "ok", seq: 3 })
+    expect(Object.keys((cleared as { record: object }).record)).not.toContain("sermonUid")
+  })
+})
+
 describe("library.chats and files", () => {
   const upload = (t: TestConvex, text: string) =>
     t.run(async (ctx) => {

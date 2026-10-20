@@ -2,7 +2,8 @@
  * Deleting what Linger holds (docs/plans/backend.md, "Deletion"): an account, in steps of at most
  * STEP records, ending with the `users` row; library tombstones older than 30 days, raising each
  * user's `purgedThrough` past them; and stored blobs nothing points at. Every step reads the time
- * from `Clock`, so tests set it rather than faking `Date`.
+ * from `Clock`. (Tests still fake `Date`: the documents' `_creationTime` the sweeps compare against
+ * comes from Convex, not from `Clock`.)
  */
 import { Clock, Context, Effect, Layer } from "effect"
 import type { Doc, Id, TableNames } from "../_generated/dataModel.js"

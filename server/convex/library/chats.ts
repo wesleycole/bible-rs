@@ -32,7 +32,7 @@ const find = Effect.fnUntraced(function*(uid: string) {
 
 export const save = effectMutation({
   args: SaveArgs,
-  handler: Effect.fn("chats.save")(function*(args) {
+  handler: Effect.fn("chats.save")(function*(args): Effect.fn.Return<WriteAnswer, InvalidRequest, MutationCtx | CurrentUser | Sequence | Files> {
     const files = yield* Files
     const file = yield* files.get(args.fileUid)
     if (!file || file.role !== "chat" || file.ownerUid !== args.uid) {
@@ -44,11 +44,11 @@ export const save = effectMutation({
       false,
       args.baseSeq
     )
-    if (decision.kind === "unchanged") return { result: "ok", seq: decision.seq, record: yield* asRecord("chat", stored!) } satisfies WriteAnswer as WriteAnswer
+    if (decision.kind === "unchanged") return { result: "ok", seq: decision.seq, record: yield* asRecord("chat", stored!) }
     if (decision.kind === "conflict") {
       // The losing upload is nobody's now.
       if (stored!.fileUid !== args.fileUid) yield* files.remove(args.fileUid)
-      return { result: "conflict", seq: decision.seq, record: yield* asRecord("chat", stored!) } satisfies WriteAnswer as WriteAnswer
+      return { result: "conflict", seq: decision.seq, record: yield* asRecord("chat", stored!) }
     }
     const ctx = yield* MutationCtx
     const { userId } = yield* CurrentUser
@@ -65,25 +65,25 @@ export const save = effectMutation({
       id = yield* Effect.promise(() => ctx.db.insert("chats", { userId, uid: args.uid, createdAt: args.createdAt ?? now, ...fields }))
     }
     const written = (yield* Effect.promise(() => ctx.db.get(id)))!
-    return { result: "ok", seq, record: yield* asRecord("chat", written) } satisfies WriteAnswer as WriteAnswer
+    return { result: "ok", seq, record: yield* asRecord("chat", written) }
   })
 })
 
 export const remove = effectMutation({
   args: RemoveArgs,
-  handler: Effect.fn("chats.remove")(function*(args) {
+  handler: Effect.fn("chats.remove")(function*(args): Effect.fn.Return<WriteAnswer, never, MutationCtx | CurrentUser | Sequence | Files> {
     const stored = yield* find(args.uid)
     const decision = decideByUid(stored && { seq: stored.seq, deleted: stored.deletedAt !== undefined, same: false }, true, args.baseSeq)
     if (decision.kind === "unchanged") {
-      return { result: "ok", seq: decision.seq, ...(stored ? { record: yield* asRecord("chat", stored) } : {}) } satisfies WriteAnswer as WriteAnswer
+      return { result: "ok", seq: decision.seq, ...(stored ? { record: yield* asRecord("chat", stored) } : {}) }
     }
-    if (decision.kind === "conflict") return { result: "conflict", seq: decision.seq, record: yield* asRecord("chat", stored!) } satisfies WriteAnswer as WriteAnswer
+    if (decision.kind === "conflict") return { result: "conflict", seq: decision.seq, record: yield* asRecord("chat", stored!) }
     const ctx = yield* MutationCtx
     const seq = yield* (yield* Sequence).next
     const deletedAt = yield* Clock.currentTimeMillis
     yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, updatedAt: deletedAt, title: "", url: "", bytes: 0 }))
     yield* (yield* Files).remove(stored!.fileUid)
     const removed = (yield* Effect.promise(() => ctx.db.get(stored!._id)))!
-    return { result: "ok", seq, record: yield* asRecord("chat", removed) } satisfies WriteAnswer as WriteAnswer
+    return { result: "ok", seq, record: yield* asRecord("chat", removed) }
   })
 })

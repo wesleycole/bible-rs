@@ -32,6 +32,7 @@ import type * as library_bookmarks from "../library/bookmarks.js";
 import type * as library_chats from "../library/chats.js";
 import type * as library_files from "../library/files.js";
 import type * as library_highlights from "../library/highlights.js";
+import type * as library_items from "../library/items.js";
 import type * as library_notes from "../library/notes.js";
 import type * as library_purge from "../library/purge.js";
 import type * as library_sync from "../library/sync.js";
@@ -74,6 +75,7 @@ declare const fullApi: ApiFromModules<{
   "library/chats": typeof library_chats;
   "library/files": typeof library_files;
   "library/highlights": typeof library_highlights;
+  "library/items": typeof library_items;
   "library/notes": typeof library_notes;
   "library/purge": typeof library_purge;
   "library/sync": typeof library_sync;

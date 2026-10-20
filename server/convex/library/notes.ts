@@ -87,7 +87,7 @@ const write = Effect.fnUntraced(function*(
 
 export const upsert = effectMutation({
   args: UpsertArgs,
-  handler: Effect.fn("notes.upsert")(function*(args) {
+  handler: Effect.fn("notes.upsert")(function*(args): Effect.fn.Return<WriteAnswer, InvalidRequest, MutationCtx | CurrentUser | Sequence | Anchors> {
     if (args.text.length > MAX_TEXT) return yield* new InvalidRequest({ message: "That note is too long." })
     yield* (yield* Anchors).check(args.anchors)
     const stored = yield* find(args.uid)
@@ -99,10 +99,10 @@ export const upsert = effectMutation({
     )
     switch (decision.kind) {
       case "unchanged":
-        return { result: "ok", seq: decision.seq, record: yield* asRecord("item", stored!) } satisfies WriteAnswer as WriteAnswer
+        return { result: "ok", seq: decision.seq, record: yield* asRecord("item", stored!) }
       case "write": {
         const written = yield* write(args.uid, stored, args)
-        return { result: "ok", seq: written.seq, record: yield* asRecord("item", written) } satisfies WriteAnswer as WriteAnswer
+        return { result: "ok", seq: written.seq, record: yield* asRecord("item", written) }
       }
       case "conflict": {
         // The edit is kept as its own note. Its uid comes from the edit's, so a retry finds it.
@@ -113,7 +113,7 @@ export const upsert = effectMutation({
           seq: decision.seq,
           record: yield* asRecord("item", stored!),
           copy: yield* asRecord("item", copy)
-        } satisfies WriteAnswer as WriteAnswer
+        }
       }
     }
   })
@@ -121,13 +121,13 @@ export const upsert = effectMutation({
 
 export const remove = effectMutation({
   args: RemoveArgs,
-  handler: Effect.fn("notes.remove")(function*(args) {
+  handler: Effect.fn("notes.remove")(function*(args): Effect.fn.Return<WriteAnswer, InvalidRequest, MutationCtx | CurrentUser | Sequence | Anchors> {
     const stored = yield* find(args.uid)
     const decision = decideByUid(stored && { seq: stored.seq, deleted: stored.deletedAt !== undefined, same: false }, true, args.baseSeq)
     if (decision.kind === "unchanged") {
-      return { result: "ok", seq: decision.seq, ...(stored ? { record: yield* asRecord("item", stored) } : {}) } satisfies WriteAnswer as WriteAnswer
+      return { result: "ok", seq: decision.seq, ...(stored ? { record: yield* asRecord("item", stored) } : {}) }
     }
-    if (decision.kind === "conflict") return { result: "conflict", seq: decision.seq, record: yield* asRecord("item", stored!) } satisfies WriteAnswer as WriteAnswer
+    if (decision.kind === "conflict") return { result: "conflict", seq: decision.seq, record: yield* asRecord("item", stored!) }
     const ctx = yield* MutationCtx
     const seq = yield* (yield* Sequence).next
     const deletedAt = yield* Clock.currentTimeMillis
@@ -135,6 +135,6 @@ export const remove = effectMutation({
     yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, updatedAt: deletedAt, text: "", title: "", anchors: [] }))
     yield* (yield* Anchors).rebuild(stored!._id, [])
     const removed = (yield* Effect.promise(() => ctx.db.get(stored!._id)))!
-    return { result: "ok", seq, record: yield* asRecord("item", removed) } satisfies WriteAnswer as WriteAnswer
+    return { result: "ok", seq, record: yield* asRecord("item", removed) }
   })
 })
