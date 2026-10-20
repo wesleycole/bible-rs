@@ -209,7 +209,10 @@ fn a_refused_change_shows_the_error_and_retry_sends_it() {
     server.fail_next(sync::CallError::Refused("the library is full".into()));
     a.store.set_bookmark(verse(1, 1), Some("x")).unwrap();
     let sync = a.sync.as_ref().unwrap();
-    eventually(|| sync.status() == SyncStatus::Error("the library is full".into()));
+    eventually(|| sync.status() != SyncStatus::Synced);
+    let started = Instant::now();
+    assert_eq!(sync.wait_idle(Duration::from_secs(30)), Err(SyncStatus::Error("the library is full".into())));
+    assert!(started.elapsed() < Duration::from_secs(5), "an error ends the wait at once");
     sync.retry();
     a.settle(&server);
     assert_eq!(server.bookmark(VerseId::from(verse(1, 1))).unwrap().1, "x");

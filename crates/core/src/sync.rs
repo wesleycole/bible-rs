@@ -227,13 +227,16 @@ impl SyncHandle {
     }
 
     /// Waits until the outbox is empty and the feed is caught up; returns the cursor, or the
-    /// status at `timeout`.
+    /// status at `timeout`, or at once on an error, which waiting doesn't mend (a refusal, or a
+    /// sign-in that ended).
     pub fn wait_idle(&self, timeout: Duration) -> Result<u64, SyncStatus> {
         let deadline = Instant::now() + timeout;
         let mut state = self.lock();
         loop {
-            if state.status == SyncStatus::Synced {
-                return Ok(state.cursor);
+            match &state.status {
+                SyncStatus::Synced => return Ok(state.cursor),
+                SyncStatus::Error(_) => return Err(state.status.clone()),
+                _ => {}
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
