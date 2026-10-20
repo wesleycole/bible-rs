@@ -29,7 +29,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 
 use crate::auth::{self, TokenSource};
-use crate::records::{Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, VerseId};
+use crate::records::{Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, VerseId, WriteAnswer};
 use crate::study::cache;
 
 /// The change feed's query.
@@ -531,17 +531,23 @@ impl Engine {
             let done = match self.send(&entry) {
                 Ok(answer) => {
                     self.online();
-                    let seq = answer["seq"].as_u64().unwrap_or(0);
-                    // A note's conflict copy is this device's write too.
-                    self.written = self.written.max(seq).max(answer["copySeq"].as_u64().unwrap_or(0));
-                    match answer["result"].as_str() {
-                        Some("ok") => cache::sent(&mut self.conn, &entry, seq),
-                        Some("conflict") => {
-                            self.data_changed = true;
-                            self.fetch_due = true;
-                            cache::conflicted(&mut self.conn, &entry, &answer).map(|_| ())
+                    match &entry.key {
+                        cache::Key::Uid(_) => match serde_json::from_value::<WriteAnswer>(answer.clone()) {
+                            Ok(answer) => self.settle(&entry, answer),
+                            Err(_) => self.refused(&entry, &format!("unexpected answer {answer}")),
+                        },
+                        cache::Key::Verse(_) => {
+                            let seq = answer["seq"].as_u64().unwrap_or(0);
+                            self.written = self.written.max(seq);
+                            match answer["result"].as_str() {
+                                Some("ok") => cache::sent(&mut self.conn, &entry, seq, None),
+                                Some("conflict") => {
+                                    self.data_changed = true;
+                                    cache::conflicted(&mut self.conn, &entry, &answer).map(|_| ())
+                                }
+                                _ => self.refused(&entry, &format!("unexpected answer {answer}")),
+                            }
                         }
-                        _ => self.refused(&entry, &format!("unexpected answer {answer}")),
                     }
                 }
                 Err(CallError::Offline(m)) => {
@@ -555,6 +561,25 @@ impl Engine {
             if let Err(e) = done {
                 self.feed_error = Some(format!("{e:#}"));
                 return;
+            }
+        }
+    }
+
+    /// Takes the server's answer to a note's or chat's write: the records it holds, as the feed
+    /// will send them, become this device's.
+    fn settle(&mut self, entry: &cache::Entry, answer: WriteAnswer) -> Result<()> {
+        match answer {
+            WriteAnswer::Ok { seq, record } => {
+                self.written = self.written.max(seq);
+                self.data_changed = true;
+                cache::sent(&mut self.conn, entry, seq, record.as_ref())
+            }
+            WriteAnswer::Conflict { seq, record, copy } => {
+                // A note's conflict copy is this device's write too.
+                self.written = self.written.max(seq).max(copy.as_ref().map_or(0, FeedRecord::seq));
+                self.data_changed = true;
+                self.fetch_due = true;
+                cache::conflicted_by_uid(&mut self.conn, entry, &record, copy.as_ref()).map(|_| ())
             }
         }
     }
@@ -901,20 +926,24 @@ impl FakeState {
         let stored = self.items.get(&uid).map(|i| {
             (i.seq, i.deleted_at.is_some(), i.text.as_deref() == Some(text.as_str()) && i.anchors == anchors)
         });
-        Ok(match decide_by_uid(stored, false, base) {
-            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
+        Ok(answer(match decide_by_uid(stored, false, base) {
+            ByUid::Unchanged(seq) => WriteAnswer::Ok { seq, record: self.item(&uid) },
             ByUid::Write => {
-                json!({ "result": "ok", "seq": self.write_note(&uid, &text, anchors, captured, None) })
+                let seq = self.write_note(&uid, &text, anchors, captured, None);
+                WriteAnswer::Ok { seq, record: self.item(&uid) }
             }
             ByUid::Conflict(seq) => {
                 let copy = format!("{uid}-c{}", base.unwrap_or(0));
-                let copy_seq = match self.items.get(&copy) {
-                    Some(c) => c.seq,
-                    None => self.write_note(&copy, &text, anchors, captured, Some(&uid)),
-                };
-                json!({ "result": "conflict", "seq": seq, "copyUid": copy, "copySeq": copy_seq, "record": self.items[&uid] })
+                if !self.items.contains_key(&copy) {
+                    self.write_note(&copy, &text, anchors, captured, Some(&uid));
+                }
+                WriteAnswer::Conflict {
+                    seq,
+                    record: self.item(&uid).expect("stored"),
+                    copy: self.item(&copy),
+                }
             }
-        })
+        }))
     }
 
     fn write_note(
@@ -970,12 +999,24 @@ impl FakeState {
         seq
     }
 
+    /// The item `uid` as the feed sends it.
+    fn item(&self, uid: &str) -> Option<FeedRecord> {
+        self.items.get(uid).map(|i| FeedRecord::Item(Box::new(i.clone())))
+    }
+
+    /// The chat `uid` as the feed sends it.
+    fn chat(&self, uid: &str) -> Option<FeedRecord> {
+        self.chats.get(uid).map(|c| FeedRecord::Chat(c.clone()))
+    }
+
     fn remove_note(&mut self, args: &Value) -> Result<Value, CallError> {
         let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
         let stored = self.items.get(&uid).map(|i| (i.seq, i.deleted_at.is_some(), false));
-        Ok(match decide_by_uid(stored, true, args["baseSeq"].as_u64()) {
-            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
-            ByUid::Conflict(seq) => json!({ "result": "conflict", "seq": seq, "record": self.items[&uid] }),
+        Ok(answer(match decide_by_uid(stored, true, args["baseSeq"].as_u64()) {
+            ByUid::Unchanged(seq) => WriteAnswer::Ok { seq, record: self.item(&uid) },
+            ByUid::Conflict(seq) => {
+                WriteAnswer::Conflict { seq, record: self.item(&uid).expect("stored"), copy: None }
+            }
             ByUid::Write => {
                 let seq = self.next_seq();
                 let i = self.items.get_mut(&uid).expect("stored");
@@ -988,9 +1029,9 @@ impl FakeState {
                     Vec::new(),
                 );
                 self.wrote();
-                json!({ "result": "ok", "seq": seq })
+                WriteAnswer::Ok { seq, record: self.item(&uid) }
             }
-        })
+        }))
     }
 
     /// `files.attach`, idempotent by uid, checking the bytes' SHA-256.
@@ -1027,14 +1068,14 @@ impl FakeState {
         let same = stored
             .as_ref()
             .map(|c| (c.seq, c.deleted_at.is_some(), c.file_uid == file_uid && c.title == title));
-        Ok(match decide_by_uid(same, false, args["baseSeq"].as_u64()) {
-            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
+        Ok(answer(match decide_by_uid(same, false, args["baseSeq"].as_u64()) {
+            ByUid::Unchanged(seq) => WriteAnswer::Ok { seq, record: self.chat(&uid) },
             ByUid::Conflict(seq) => {
                 let stored = stored.expect("stored");
                 if stored.file_uid != file_uid {
                     self.files.remove(file_uid);
                 }
-                json!({ "result": "conflict", "seq": seq, "record": stored })
+                WriteAnswer::Conflict { seq, record: FeedRecord::Chat(stored), copy: None }
             }
             ByUid::Write => {
                 let seq = self.next_seq();
@@ -1057,19 +1098,21 @@ impl FakeState {
                     url: format!("fake://storage/{storage}"),
                     bytes,
                 };
-                self.chats.insert(uid, chat);
+                self.chats.insert(uid.clone(), chat);
                 self.wrote();
-                json!({ "result": "ok", "seq": seq })
+                WriteAnswer::Ok { seq, record: self.chat(&uid) }
             }
-        })
+        }))
     }
 
     fn remove_chat(&mut self, args: &Value) -> Result<Value, CallError> {
         let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
         let stored = self.chats.get(&uid).map(|c| (c.seq, c.deleted_at.is_some(), false));
-        Ok(match decide_by_uid(stored, true, args["baseSeq"].as_u64()) {
-            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
-            ByUid::Conflict(seq) => json!({ "result": "conflict", "seq": seq, "record": self.chats[&uid] }),
+        Ok(answer(match decide_by_uid(stored, true, args["baseSeq"].as_u64()) {
+            ByUid::Unchanged(seq) => WriteAnswer::Ok { seq, record: self.chat(&uid) },
+            ByUid::Conflict(seq) => {
+                WriteAnswer::Conflict { seq, record: self.chat(&uid).expect("stored"), copy: None }
+            }
             ByUid::Write => {
                 let seq = self.next_seq();
                 let c = self.chats.get_mut(&uid).expect("stored");
@@ -1078,10 +1121,14 @@ impl FakeState {
                 let file = c.file_uid.clone();
                 self.files.remove(&file);
                 self.wrote();
-                json!({ "result": "ok", "seq": seq })
+                WriteAnswer::Ok { seq, record: self.chat(&uid) }
             }
-        })
+        }))
     }
+}
+
+fn answer(a: WriteAnswer) -> Value {
+    serde_json::to_value(a).expect("an answer serializes")
 }
 
 /// One device's connection to a [`FakeServer`].

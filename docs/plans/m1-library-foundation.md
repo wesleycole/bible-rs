@@ -68,10 +68,12 @@ These gate M1's release, because they can't be fixed once users have libraries:
    As built (pass 2): `lib/allowance.ts` holds every plan check, count and reservation (Ask rounds,
    sermon seconds, storage) and the `/v1/me` summary; `effectServerMutation` / `Query` / `Action`
    (with `ServerCaller`) and `effectInternalMutation` wrap the proxy's and the crons' functions. On
-   them so far: `usage.*`, `users.me`, `sermons.create` / `markDone` / `fail` / `failStuck`,
-   `account.purge` and `library/purge`. A denial is still returned as the `Denial` value the proxy
-   maps, not thrown. Still plain, and next: `entitlements.upsert`, `webhooks.*`, the rest of
-   `sermons.*`, `users.setStripeCustomer` / `billingProfile`, `maintenance.*` and `admin.*`.
+   them so far: `usage.*`, `users.me`, every `sermons.*`, `account.purge` and `library/purge`, all
+   reading time from `Clock`. Purging is a `Purge` service (`lib/purge.ts`: an account's next step,
+   the tombstone sweep, the orphaned-blob sweep) whose steps are Effect functions, not one
+   `Effect.promise` around an imperative body. A denial is still returned as the `Denial` value the
+   proxy maps, not thrown. Still plain, and next: `entitlements.upsert`, `webhooks.*`,
+   `users.setStripeCustomer` / `billingProfile`, `maintenance.*` and `admin.*`.
 3. **The generated schema.** `crates/core/src/records.rs` defines every synced record and `VerseId`;
    `cargo xtask schema` writes `server/shared/records.ts` (an Effect `Schema` and a Convex validator
    per record), `server/convex/lib/canon.json` (verses per chapter), the cache's column list and core's
@@ -112,7 +114,10 @@ These gate M1's release, because they can't be fixed once users have libraries:
    Built: `plans` gains `storageBytes` (1 GB Free, 25 GB Pro) and `keepAudio`, optional in the schema
    until `admin:seed` (which now fills fields a plan row lacks) has run on every deployment; a file
    over the limit is refused `too_large` and isn't attached. Its upload stays in `_storage`,
-   because deleting it inside the failing mutation is rolled back; nothing counts it.
+   because deleting it inside the failing mutation is rolled back; nothing counts it, and a daily
+   cron (08:15 UTC, `library/purge.orphans`) deletes blobs more than a day old that no `files` row
+   or sermon transcript points at, looking back three days (indexes `files.by_storage`,
+   `sermons.by_transcript`).
 10. **Purge and tombstones.** Replace `account.purge` with the scheduled chain (`library/purge.step`, 500
     records a run) over every user table and file, ending with the `users` row
     ([backend.md](backend.md#deletion)). A daily cron hard-deletes tombstones older than 30 days with their
@@ -178,10 +183,13 @@ These gate M1's release, because they can't be fixed once users have libraries:
    differ the conflict is recorded like any other, so an edit is never lost unannounced. The `convex` crate turns
    on serde_json's `preserve_order` for the whole build, so the Ask contract's hash and the record
    generator sort keys themselves (`contract::sorted`).
-   Notes, chats and files follow (pass 2, October 20). A conflict answer carries the server's record,
-   so the cache shows what stood at once; for a note it also names the copy (`copyUid`, `copySeq`),
-   and this device's note becomes that copy (an edit made while the first was in flight goes on as an
-   edit of the copy). A chat's conflict keeps the server's and isn't listed (a conflict names a verse).
+   Notes, chats and files follow (pass 2, October 20). Every answer to a note or chat write is a
+   `WriteAnswer` (records.rs, generated into `shared/records.ts`): `ok` with the stored record, or
+   `conflict` with the record that stood and, for a note edit, the conflict `copy`. Each record is
+   exactly what the feed sends at its `seq`, and the writing device stores it (unless the note was
+   edited again in flight), so its row, times included, equals every other device's; this device's
+   note becomes the server's copy (an edit made while the first was in flight goes on as an edit of
+   the copy). Saving a note's unchanged text is no write at all. A chat's conflict keeps the server's and isn't listed (a conflict names a verse).
    A chat is saved by uploading its conversation as a `chat` file named from the chat's uid and the
    bytes' SHA-256, so a retry attaches the same file and an unchanged one isn't uploaded again. Chats
    from another device are listed at once and their conversations fetched eagerly, like text files,

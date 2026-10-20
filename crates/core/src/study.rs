@@ -439,10 +439,14 @@ fn own_notes(conn: &Connection) -> Result<HashMap<u32, Note>> {
     let rows = st.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
     })?;
-    let notes: Vec<(String, i64, i64, Item)> = rows
-        .filter_map(|r| r.ok())
-        .filter_map(|(uid, c, u, record)| Some((uid, c, u, serde_json::from_str::<Item>(&record).ok()?)))
-        .collect();
+    // A record this build can't parse is skipped; a failing read is an error.
+    let mut notes: Vec<(String, i64, i64, Item)> = Vec::new();
+    for row in rows {
+        let (uid, c, u, record) = row?;
+        if let Ok(item) = serde_json::from_str::<Item>(&record) {
+            notes.push((uid, c, u, item));
+        }
+    }
     let live = notes.iter().map(|n| n.0.clone()).collect();
     let mut out = HashMap::new();
     for (uid, created, updated, item) in notes {
@@ -473,6 +477,10 @@ fn write_note(
             enqueue_uid(tx, Kind::Note, &own.uid, updated)?;
         }
         return Ok(None);
+    }
+    if let Some(own) = own.filter(|n| n.body == body) {
+        // Nothing changed: no write, and the edit time stays the server's.
+        return Ok(Some(own.clone()));
     }
     let (uid, created) = own.map_or_else(|| (new_uid(), created), |n| (n.uid.clone(), n.created));
     let mut item = load_item(tx, &uid)?.unwrap_or_else(|| note_item(&uid, VerseId::from(v), body, created));
@@ -910,7 +918,7 @@ impl StudyStore {
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let standing = write_note(&tx, own.as_ref(), v, body, t, t)?;
         tx.commit()?;
-        let changed = own.is_some() || standing.is_some();
+        let changed = own != standing;
         match standing {
             Some(n) => self.notes.insert(v.key(), n),
             None => self.notes.remove(&v.key()),
@@ -1731,135 +1739,178 @@ pub(crate) mod cache {
     }
 
     /// The server took the change as `seq`. If it was edited again meanwhile, the newer edit stays
-    /// queued, now against `seq`.
-    pub(crate) fn sent(conn: &mut Connection, e: &Entry, seq: u64) -> Result<()> {
+    /// queued, now against `seq`; if not, a note or chat takes `record`, the server's copy as the
+    /// feed sends it, so this device holds what every other one gets (its times included).
+    pub(crate) fn sent(
+        conn: &mut Connection,
+        e: &Entry,
+        seq: u64,
+        record: Option<&FeedRecord>,
+    ) -> Result<()> {
+        let offset = clock_offset_ms(conn)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if tx.execute("DELETE FROM outbox WHERE id = ?1 AND rev = ?2", params![e.id, e.rev])? == 0 {
+        let done = tx.execute("DELETE FROM outbox WHERE id = ?1 AND rev = ?2", params![e.id, e.rev])? > 0;
+        if !done {
             tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
         }
-        match &e.key {
-            Key::Verse(verse) => tx.execute(
-                &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE verse = ?1", e.kind.table()),
-                params![verse, seq as i64],
-            )?,
-            Key::Uid(uid) => tx.execute(
-                &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE uid = ?1", e.kind.table()),
-                params![uid, seq as i64],
-            )?,
-        };
+        match (&e.key, record) {
+            (Key::Uid(_), Some(record)) if done => put_server(&tx, record, offset)?,
+            (Key::Verse(verse), _) => {
+                tx.execute(
+                    &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE verse = ?1", e.kind.table()),
+                    params![verse, seq as i64],
+                )?;
+            }
+            (Key::Uid(uid), _) => {
+                tx.execute(
+                    &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE uid = ?1", e.kind.table()),
+                    params![uid, seq as i64],
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(())
     }
 
-    /// The server kept its own copy because another device changed the record after this one's
-    /// copy: the change is done and the cache takes the server's copy (in `answer`). Returns
-    /// whether that was a real conflict, recorded for the UI.
+    /// Writes the server's copy of a note or chat (as the feed or a write's answer sends it) into
+    /// the cache, dated by the server's times. Highlights and bookmarks go through `write_server`.
+    fn put_server(tx: &Connection, record: &FeedRecord, clock_offset_ms: i64) -> Result<()> {
+        match record {
+            FeedRecord::Item(item) => {
+                let created = local_time(Some(item.captured_at), clock_offset_ms).unwrap_or_else(now);
+                let updated = local_time(item.updated_at, clock_offset_ms).unwrap_or_else(now);
+                put_item(tx, item, created, updated)
+            }
+            FeedRecord::Chat(chat) => write_chat(tx, chat, clock_offset_ms),
+            FeedRecord::Highlight(_) | FeedRecord::Bookmark(_) => Ok(()),
+        }
+    }
+
+    /// The server kept its own copy of a highlight or bookmark because another device changed it
+    /// after this one's copy: the change is done and the cache takes the server's copy (in
+    /// `answer`). Returns whether that was a real conflict, recorded for the UI.
     ///
-    /// For a highlight or bookmark two cases aren't: the server already has this edit (a write
-    /// that reached it before the connection broke, or the same highlight made on both devices),
-    /// and a record made here, with no copy, over a deletion this device never saw, which is sent
-    /// again against the tombstone. For a note the edit isn't lost: the server kept it as a
-    /// conflict copy (`copyUid`), which this device's note becomes. A chat's is lost, as for a
-    /// highlight, and not recorded (a conflict names a verse).
+    /// Two cases aren't: the server already has this edit (a write that reached it before the
+    /// connection broke, or the same highlight made on both devices), and a record made here, with
+    /// no copy, over a deletion this device never saw, which is sent again against the tombstone.
     pub(crate) fn conflicted(conn: &mut Connection, e: &Entry, answer: &Value) -> Result<bool> {
+        let Key::Verse(verse) = &e.key else { anyhow::bail!("{} is kept by uid", e.kind.name()) };
         let seq = answer["seq"].as_u64().unwrap_or(0);
         let offset = clock_offset_ms(conn)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let rev: i64 = tx.query_row("SELECT rev FROM outbox WHERE id = ?1", [e.id], |r| r.get(0))?;
-        let real = match (&e.key, e.kind) {
-            (Key::Verse(verse), _) => {
-                if rev != e.rev {
-                    // Edited again while this was in flight: the next answer settles the newer edit.
-                    return Ok(false);
-                }
-                let (payload, base): (String, i64) =
-                    tx.query_row("SELECT payload, base_seq FROM outbox WHERE id = ?1", [e.id], |r| {
-                        Ok((r.get(0)?, r.get(1)?))
-                    })?;
-                let payload: Value = serde_json::from_str(&payload)?;
-                let field = e.kind.mutation().1;
-                let (mine, theirs) = (&payload[field], &answer[field]);
-                if base == 0 && theirs.is_null() && !mine.is_null() {
-                    tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
-                    tx.commit()?;
-                    return Ok(false);
-                }
-                tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
-                let created = local_time(answer["createdAt"].as_u64(), offset);
-                write_server(&tx, e.kind, *verse, seq, theirs, created)?;
-                // Base 0 included: an edit made before the feed first caught up has no copy either,
-                // and losing it silently is what conflicts exist to prevent. Migration lands here
-                // too, and says so when the server's copy differs.
-                (mine != theirs).then(|| (*verse, mine.to_string(), theirs.to_string()))
-            }
-            (Key::Uid(uid), Kind::Note) => {
-                let mine = load_item(&tx, uid)?;
-                let theirs: Option<Item> = serde_json::from_value(answer["record"].clone()).ok();
-                let removing = e.name == "library/notes:remove";
-                match (answer["copyUid"].as_str(), &mine) {
-                    (Some(copy), Some(mine)) if !removing => {
-                        // This device's note becomes the copy the server kept, with the same text.
-                        let (created, updated): (i64, i64) =
-                            tx.query_row("SELECT created, updated FROM items WHERE uid = ?1", [uid], |r| {
-                                Ok((r.get(0)?, r.get(1)?))
-                            })?;
-                        tx.execute("DELETE FROM items WHERE uid = ?1", [copy])?;
-                        let item = Item {
-                            uid: copy.into(),
-                            seq: answer["copySeq"].as_u64().unwrap_or(0),
-                            conflict_of: Some(uid.clone()),
-                            ..mine.clone()
-                        };
-                        put_item(&tx, &item, created, updated)?;
-                        if rev != e.rev {
-                            // Edited again in flight: the newer text goes on as an edit of the copy.
-                            tx.execute(
-                                "UPDATE outbox SET key = ?2, base_seq = ?3 WHERE id = ?1",
-                                params![e.id, copy, item.seq as i64],
-                            )?;
-                        } else {
-                            tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
-                        }
-                    }
-                    _ => {
-                        tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
-                    }
-                }
-                if let Some(theirs) = &theirs {
-                    let created = local_time(Some(theirs.captured_at), offset).unwrap_or_else(now);
-                    let updated = local_time(theirs.updated_at, offset).unwrap_or_else(now);
-                    put_item(&tx, theirs, created, updated)?;
-                }
-                let text = |i: Option<&Item>| match i {
-                    Some(i) if i.deleted_at.is_none() => json!(i.text.as_deref().unwrap_or("")),
-                    _ => Value::Null,
-                };
-                let mine_text = if removing { Value::Null } else { text(mine.as_ref()) };
-                let theirs_text = text(theirs.as_ref());
-                let verse = mine.as_ref().and_then(|m| m.anchors.first()).map(|a| a.from.0);
-                verse
-                    .filter(|_| mine_text != theirs_text)
-                    .map(|v| (v, mine_text.to_string(), theirs_text.to_string()))
-            }
-            (Key::Uid(_), _) => {
-                if rev != e.rev {
-                    return Ok(false);
-                }
-                tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
-                if let Ok(chat) = serde_json::from_value::<Chat>(answer["record"].clone()) {
-                    write_chat(&tx, &chat, offset)?;
-                }
-                None
-            }
-        };
-        if let Some((verse, mine, theirs)) = &real {
-            tx.execute(
-                "INSERT INTO conflicts(kind, key, mine, theirs, at) VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![e.kind.name(), verse, mine, theirs, now()],
-            )?;
+        let (rev, payload, base): (i64, String, i64) =
+            tx.query_row("SELECT rev, payload, base_seq FROM outbox WHERE id = ?1", [e.id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+        if rev != e.rev {
+            // Edited again while this was in flight: the next answer settles the newer edit.
+            return Ok(false);
+        }
+        let payload: Value = serde_json::from_str(&payload)?;
+        let field = e.kind.mutation().1;
+        let (mine, theirs) = (&payload[field], &answer[field]);
+        if base == 0 && theirs.is_null() && !mine.is_null() {
+            tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+        let created = local_time(answer["createdAt"].as_u64(), offset);
+        write_server(&tx, e.kind, *verse, seq, theirs, created)?;
+        // Base 0 included: an edit made before the feed first caught up has no copy either, and
+        // losing it silently is what conflicts exist to prevent. Migration lands here too, and
+        // says so when the server's copy differs.
+        let real = mine != theirs;
+        if real {
+            record_conflict(&tx, e.kind, *verse, &mine.to_string(), &theirs.to_string())?;
         }
         tx.commit()?;
-        Ok(real.is_some())
+        Ok(real)
+    }
+
+    /// The server kept its own copy of a note or chat (`record`) because another device changed
+    /// it after this one's copy. A note edit isn't lost: the server kept it as a conflict copy
+    /// (`copy`), which this device's note becomes, and the conflict is recorded for the UI. A
+    /// chat's is lost, as for a highlight, and not recorded (a conflict names a verse). Returns
+    /// whether it was recorded.
+    pub(crate) fn conflicted_by_uid(
+        conn: &mut Connection,
+        e: &Entry,
+        record: &FeedRecord,
+        copy: Option<&FeedRecord>,
+    ) -> Result<bool> {
+        let Key::Uid(uid) = &e.key else { anyhow::bail!("{} is kept by verse", e.kind.name()) };
+        let offset = clock_offset_ms(conn)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let rev: i64 = tx.query_row("SELECT rev FROM outbox WHERE id = ?1", [e.id], |r| r.get(0))?;
+        if e.kind != Kind::Note {
+            if rev != e.rev {
+                return Ok(false);
+            }
+            tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+            put_server(&tx, record, offset)?;
+            tx.commit()?;
+            return Ok(false);
+        }
+        let mine = load_item(&tx, uid)?;
+        let removing = e.name == "library/notes:remove";
+        match (copy, &mine) {
+            (Some(FeedRecord::Item(copy)), Some(mine)) if !removing => {
+                tx.execute("DELETE FROM items WHERE uid = ?1", [&copy.uid])?;
+                if rev != e.rev {
+                    // Edited again in flight: the newer text goes on as an edit of the copy.
+                    let updated: i64 =
+                        tx.query_row("SELECT updated FROM items WHERE uid = ?1", [uid], |r| r.get(0))?;
+                    let created = local_time(Some(copy.captured_at), offset).unwrap_or_else(now);
+                    let edited = Item {
+                        title: mine.title.clone(),
+                        text: mine.text.clone(),
+                        anchors: mine.anchors.clone(),
+                        ..(**copy).clone()
+                    };
+                    put_item(&tx, &edited, created, updated)?;
+                    tx.execute(
+                        "UPDATE outbox SET key = ?2, base_seq = ?3 WHERE id = ?1",
+                        params![e.id, copy.uid, copy.seq as i64],
+                    )?;
+                } else {
+                    put_server(&tx, &FeedRecord::Item(copy.clone()), offset)?;
+                    tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+                }
+            }
+            _ => {
+                tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+            }
+        }
+        put_server(&tx, record, offset)?;
+        let theirs = match record {
+            FeedRecord::Item(i) => Some(&**i),
+            _ => None,
+        };
+        let text = |i: Option<&Item>| match i {
+            Some(i) if i.deleted_at.is_none() => json!(i.text.as_deref().unwrap_or("")),
+            _ => Value::Null,
+        };
+        let mine_text = if removing { Value::Null } else { text(mine.as_ref()) };
+        let theirs_text = text(theirs);
+        let verse = mine.as_ref().and_then(|m| m.anchors.first()).map(|a| a.from.0);
+        let real = match verse {
+            Some(v) if mine_text != theirs_text => {
+                record_conflict(&tx, e.kind, v, &mine_text.to_string(), &theirs_text.to_string())?;
+                true
+            }
+            _ => false,
+        };
+        tx.commit()?;
+        Ok(real)
+    }
+
+    fn record_conflict(tx: &Connection, kind: Kind, verse: u32, mine: &str, theirs: &str) -> Result<()> {
+        tx.execute(
+            "INSERT INTO conflicts(kind, key, mine, theirs, at) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![kind.name(), verse, mine, theirs, now()],
+        )?;
+        Ok(())
     }
 
     /// The server refused the change: show `error`, and try it again at `next_at`.
@@ -1932,16 +1983,14 @@ pub(crate) mod cache {
                 ),
                 FeedRecord::Item(item) => {
                     if newer_by_uid(&tx, Kind::Note, &item.uid, item.seq)? {
-                        let created = local_time(Some(item.captured_at), clock_offset_ms).unwrap_or_else(now);
-                        let updated = local_time(item.updated_at, clock_offset_ms).unwrap_or_else(now);
-                        put_item(&tx, item, created, updated)?;
+                        put_server(&tx, record, clock_offset_ms)?;
                         changed += 1;
                     }
                     continue;
                 }
                 FeedRecord::Chat(chat) => {
                     if newer_by_uid(&tx, Kind::Chat, &chat.uid, chat.seq)? {
-                        write_chat(&tx, chat, clock_offset_ms)?;
+                        put_server(&tx, record, clock_offset_ms)?;
                         changed += 1;
                     }
                     continue;
@@ -2017,7 +2066,7 @@ pub(crate) mod cache {
         tx.execute(
             "INSERT INTO chats(title, created, updated, messages, api, ord, uid, seq, deleted, file_uid, url, fetched)
              VALUES(?1, ?2, ?3, '[]', '', ?4, ?5, ?6, ?7, ?8, ?9, 0)
-             ON CONFLICT(uid) DO UPDATE SET title = excluded.title, updated = excluded.updated,
+             ON CONFLICT(uid) DO UPDATE SET title = excluded.title, created = excluded.created, updated = excluded.updated,
                ord = excluded.ord, seq = excluded.seq, deleted = excluded.deleted,
                fetched = CASE WHEN file_uid IS excluded.file_uid THEN fetched ELSE 0 END,
                file_uid = excluded.file_uid, url = excluded.url",
@@ -2266,15 +2315,14 @@ fn all_notes(conn: &Connection) -> Result<Vec<AnyNote>> {
     let rows = st.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
     })?;
-    let mut out: Vec<AnyNote> = rows
-        .filter_map(|r| r.ok())
-        .filter_map(|(uid, created, updated, record)| {
-            let item: Item = serde_json::from_str(&record).ok()?;
-            let verse = verse_of(item.anchors.first()?.from.0 as i64)?;
-            let body = item.text.unwrap_or_default();
-            Some(AnyNote { verse, uid, body, created, updated, conflict_of: item.conflict_of })
-        })
-        .collect();
+    let mut out = Vec::new();
+    for row in rows {
+        let (uid, created, updated, record) = row?;
+        let Ok(item) = serde_json::from_str::<Item>(&record) else { continue };
+        let Some(verse) = item.anchors.first().and_then(|a| verse_of(a.from.0 as i64)) else { continue };
+        let body = item.text.unwrap_or_default();
+        out.push(AnyNote { verse, uid, body, created, updated, conflict_of: item.conflict_of });
+    }
     out.sort_by_key(|n| n.verse);
     Ok(out)
 }

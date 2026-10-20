@@ -385,6 +385,54 @@ fn a_note_syncs_and_a_stale_edit_is_kept_beside_the_newer_one() {
     assert_eq!(c.note(verse(3, 16)).unwrap().body, "Love, endlessly");
 }
 
+/// The notes a device's backup lists, by uid, with their text and times to the second.
+fn exported_notes(d: &Device) -> Vec<serde_json::Value> {
+    let export: serde_json::Value =
+        serde_json::from_str(&d.store.export_json("KJV", |_| None).unwrap()).unwrap();
+    let mut notes = export["notes"].as_array().unwrap().clone();
+    notes.sort_by_key(|n| n["uid"].to_string());
+    notes
+}
+
+#[test]
+fn the_writer_holds_the_same_note_as_every_other_device_times_included() {
+    let server = FakeServer::new();
+    let (mut a, mut b) = (Device::new("same-a"), Device::new("same-b"));
+    a.start(&server);
+    b.start(&server);
+    a.store.set_note(verse(3, 17), "Not to condemn").unwrap();
+    a.settle(&server);
+    b.settle(&server);
+
+    // An edit made offline reaches the server a second later, which stamps the edit time.
+    a.stop();
+    a.store.set_note(verse(3, 17), "Not to condemn, but to save").unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    a.start(&server);
+    a.settle(&server);
+    b.settle(&server);
+    assert_eq!(exported_notes(&a), exported_notes(&b));
+
+    // A stale edit becomes a conflict copy, made by the server a second after the edit.
+    b.stop();
+    a.store.set_note(verse(3, 17), "That the world might be saved").unwrap();
+    a.settle(&server);
+    b.store.set_note(verse(3, 17), "Through him (stale)").unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    b.start(&server);
+    b.settle(&server);
+    a.settle(&server);
+    let notes = exported_notes(&a);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert_eq!(notes, exported_notes(&b));
+
+    // Saving the same text again changes nothing, here or anywhere.
+    std::thread::sleep(Duration::from_millis(1100));
+    a.store.set_note(verse(3, 17), "That the world might be saved").unwrap();
+    assert_eq!(a.store.pending_changes(), 0);
+    assert_eq!(exported_notes(&a), notes);
+}
+
 #[test]
 fn a_conversation_saved_on_one_device_opens_on_the_other() {
     use linger_core::chat::Message;
