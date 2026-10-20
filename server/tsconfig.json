@@ -16,5 +16,5 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["api", "src", "test", "scripts"]
+  "include": ["api", "src", "shared", "test", "scripts"]
 }

@@ -60,8 +60,8 @@ signed-in user can't turn Linger's account into a general-purpose Claude endpoin
 | Sermons through the proxy: Blob upload, AssemblyAI, webhook, trial hour, 10 Pro hours | Built; **moves to Convex in M1b** | `server/src/routes/Json.ts`, `SermonFlow.ts`, `convex/sermons.ts` |
 | Ask consent sheet (desktop) | Built; text changes in M1 | `apps/desktop/src/ask_panel.rs` |
 | Load test (1,000 concurrent streams against a mock Gateway) | Built | `server/scripts/load-test.ts` |
-| Effect inside Convex handlers; one `Allowance` service for every limit | Missing: M1 | `convex/lib/effect.ts` |
-| Record schema generated from Rust (`cargo xtask schema`) | Missing: M1 | `shared/records.ts`, `convex/lib/canon.json` |
+| Effect inside Convex handlers (`effectQuery` / `effectMutation`, `ConvexCtx` services, shared errors, `Sequence`) | Built for `highlights`; `Allowance` and the rest in M1 | `convex/lib/effect.ts`, `shared/Errors.ts` |
+| Record schema generated from Rust (`cargo xtask schema`), with the drift test | Built for `Highlight` and `Bookmark`; the other records in M1 | `crates/core/src/records.rs`, `shared/records.ts`, `convex/lib/canon.json` |
 | iOS sign-in, StoreKit purchase, account deletion | Missing: M3 | |
 | On-device transcription for Free | Missing: M5 | |
 | `cargo xtask eval-ask` | Missing: M2 | |

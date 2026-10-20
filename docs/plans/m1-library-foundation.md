@@ -26,14 +26,16 @@ These gate M1's release, because they can't be fixed once users have libraries:
      a dev deployment, call a `whoami` query with each token through the `convex` crate, and confirm
      one `tokenIdentifier`. Check that `set_auth_callback` refetches on reconnect and that `set_auth`
      can swap a token before it expires.
-   - **Effect in Convex:** `highlights.set` written on `convex/lib/effect.ts` (below) beside the same
-     mutation written plainly, measured on a dev deployment for bundle size and the execution time
-     Convex reports. Pass: the Effect version adds under 50 ms and the bundle stays well inside Convex's
-     limit. Fail: find the import that pulls the bundle up (only what `shared/` and `lib/effect.ts`
-     import counts) before building on it. Effect is the decision; the spike sizes it.
-   - **The schema generator:** `cargo xtask schema` end to end for one record (`highlights`): the Rust
-     type, the generated validator and Effect `Schema`, the cache column, the FFI type, and the drift
-     test.
+   - **Effect in Convex** (done, October 19): `highlights.set` on `convex/lib/effect.ts` beside the
+     same mutation written plainly (`library/spike.ts`). In convex-test the Effect handler runs at
+     0.11–0.15 ms median against 0.08 ms plain, so the overhead is under a tenth of a millisecond a
+     call; the anonymous local deployment bundles and serves the functions. Still to measure on a
+     dev deployment: the bundle size Convex reports and its own execution time, before `spike.ts` is
+     deleted. Effect is the decision; the spike sized it.
+   - **The schema generator** (done, October 19): `cargo xtask schema` end to end for `Highlight` and
+     `Bookmark`: the Rust types, the generated validator fields and Effect `Schema`s, `canon.json`,
+     and the drift tests in `records.rs`. Still to add: the cache's column list, the FFI types, and
+     core's `ApiError` from the server's error list.
 
 ## Convex
 

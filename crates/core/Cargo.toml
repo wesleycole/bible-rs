@@ -15,6 +15,7 @@ bundled = []
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+schemars = "1"
 memchr.workspace = true
 zstd.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }

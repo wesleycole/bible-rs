@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::books::{BookId, ChapterIdx, VerseRef};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum HighlightColor {
     Yellow,

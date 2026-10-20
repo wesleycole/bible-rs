@@ -10,6 +10,9 @@
 //! `cargo xtask contract` writes `server/src/contract/ask-v<N>.json` from linger-core (see
 //! `linger_core::contract`).
 //!
+//! `cargo xtask schema` writes `server/shared/records.ts` and `server/convex/lib/canon.json` from
+//! linger-core's record types (see `linger_core::records`).
+//!
 //! Downloads the public-domain USFM sources pinned below from eBible.org (into `.sources/`),
 //! verifies their SHA-256, converts them with the same USFM importer users get, and writes
 //! `data/translations/<id>.bbl`. Set `XTASK_ACCEPT_UPDATED_SOURCES=1` to accept a newer upstream
@@ -131,6 +134,17 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Some("schema") => {
+            // The synced records and the canonical grid, generated from linger-core's types so the
+            // Convex validators, the Effect schemas and the apps can't drift apart.
+            let ts = root.join("server/shared/records.ts");
+            std::fs::create_dir_all(ts.parent().unwrap())?;
+            std::fs::write(&ts, linger_core::records::records_ts())?;
+            let canon = root.join("server/convex/lib/canon.json");
+            std::fs::write(&canon, linger_core::records::canon_json())?;
+            println!("wrote {} and {}", ts.display(), canon.display());
+            Ok(())
+        }
         Some("missing") => {
             // Lists verses present in the first translation but absent from the others.
             let load = |id: &str| -> Result<linger_core::Translation> {
@@ -246,7 +260,7 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: cargo run -p xtask -- build-data [ids…] | build-original | build-crossrefs | build-names | fetch [ids…] | contract"
+                "usage: cargo run -p xtask -- build-data [ids…] | build-original | build-crossrefs | build-names | fetch [ids…] | contract | schema"
             );
             std::process::exit(2)
         }

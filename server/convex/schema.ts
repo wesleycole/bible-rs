@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
+import { BookmarkFields, HighlightFields } from "../shared/records.js"
 
 /** Token prices for one model, in micro-dollars per million tokens. */
 export const prices = v.object({
@@ -175,5 +176,23 @@ export default defineSchema({
     receivedAt: v.number()
   })
     .index("by_source_event", ["source", "eventId"])
-    .index("by_received", ["receivedAt"])
+    .index("by_received", ["receivedAt"]),
+
+  // The library (M1). Synced records are the generated shapes plus the owner; every one is
+  // indexed by [userId, seq] for the change feed.
+  highlights: defineTable({ userId: v.id("users"), ...HighlightFields })
+    .index("by_user_seq", ["userId", "seq"])
+    .index("by_user_verse", ["userId", "verse"]),
+
+  bookmarks: defineTable({ userId: v.id("users"), ...BookmarkFields })
+    .index("by_user_seq", ["userId", "seq"])
+    .index("by_user_verse", ["userId", "verse"]),
+
+  /** One row per user: the write sequence, the oldest `seq` still deliverable, and the storage counter. */
+  userLibrary: defineTable({
+    userId: v.id("users"),
+    seq: v.number(),
+    purgedThrough: v.number(),
+    storageBytes: v.number()
+  }).index("by_user", ["userId"])
 })
