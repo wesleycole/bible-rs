@@ -390,7 +390,14 @@ inside `Effect.promise`; then the proxy becomes a `Context.Service` like the ven
   sometimes never reported Synced: the cause is the bench's environment and the app's account
   lifecycle, not the engine (CLI syncs, which never ask `/v1/me`, always caught up). The bench points
   `LINGER_API_URL` at a closed port, which the app treats as unreachable, not signed out. On timeout
-  the probe prints the engine's status, the account's state and both errors. `server/scripts/time-writes.ts` makes 100
+  the probe prints the engine's status, the account's state and both errors. Confirmed on the Linux
+  orb (6a88938, fresh local backend): without `LINGER_API_URL`, 4 of 12 launches failed, every one
+  `signed_in:false` with "Your session ended. Sign in again." and its cursor already past the write;
+  with the closed port, 12 of 12 caught up (median ~114 ms). The engine was never at fault.
+  Linux, `SYNC=1 RUNS=20` under Xvfb on 12908fa: first frame built 77.2 / presented 108.1 / wall
+  115.8 ms without sync, 77.1 / 108.3 / 115.5 ms with it (−0.1%, +0.2%, −0.3%); caught up a median
+  113.8 ms after the first frame (101.0–168.5). A plain run right after moved with the floor by ~4%,
+  so the in-run alternation is the comparison to trust. `server/scripts/time-writes.ts` makes 100
   `highlights.set` writes there and reports Convex's own `executionTime` from the log stream
   (median and p95, in the job summary). Departure: it is the local backend's time, not a cloud
   deployment's; on this Mac 50 writes took a median of 19 ms and a p95 of 40 ms.
@@ -402,9 +409,9 @@ prover timed five edits from another device with the window uncovered and frontm
 write and the window's repaint both landed 0.019–0.024 s after the writer's sync returned (and
 0.019 s visible but not frontmost), editor, list and "Edited on another device just now" current;
 the earlier "lag" was a window covered by a call, which macOS doesn't draw. For the fifth,
-offline reading, notes and Recents work, and start-up with sync on is no slower on this Mac
-(`RUNS=4`, see Tests); `RUNS=20` on both machines settles it. Nothing from Tests is open but that
-rerun; the load test is deferred. Parked for the cut-over push: the production defaults in `auth.rs`, production Convex
+offline reading, notes and Recents work, and start-up with sync on is within 0.3% of start-up
+without it on Linux (`RUNS=20`, see Tests): closed, pending only the Mac's `RUNS=20`. Nothing from
+Tests is open but that; the load test is deferred. Parked for the cut-over push: the production defaults in `auth.rs`, production Convex
 and the proxy (the production Clerk instance and its OAuth application exist).
 
 - A note written on one Mac appears on another within a second, and survives editing on both while one
