@@ -13,9 +13,18 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Library") {
-                    LabeledContent("Sync", value: library.syncState.label)
-                    if case .error = library.syncState {
-                        Button("Retry", action: library.retry)
+                    if library.consent == false {
+                        LabeledContent("Sync", value: "Only on this iPhone")
+                        Button("Turn On Sync") {
+                            // The consent sheet shows over the reader, not over this sheet.
+                            dismiss()
+                            library.answerConsent(nil)
+                        }
+                    } else {
+                        LabeledContent("Sync", value: library.syncState.label)
+                        if case .error = library.syncState {
+                            Button("Retry", action: library.retry)
+                        }
                     }
                     if let error = library.error {
                         Text(error).foregroundStyle(.red)

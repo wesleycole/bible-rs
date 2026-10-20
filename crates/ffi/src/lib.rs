@@ -26,8 +26,9 @@ mod study;
 
 pub use account::{Account, AccountError, AccountInfo};
 pub use study::{
-    HighlightColor, LibrarySync, Note, Study, StudyObserver, SyncObserver, SyncState, TokenProvider,
-    VerseMarks, VerseNote, VerseRef, highlight_colors,
+    ChatMessage, ChatSummary, ConsentText, HighlightColor, LibrarySync, Note, Study, StudyObserver,
+    SyncObserver, SyncState, TokenProvider, VerseMarks, VerseNote, VerseRef, highlight_colors,
+    library_consent_text,
 };
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -326,6 +327,36 @@ pub fn reference_segments(text: String) -> Vec<TextSegment> {
     out
 }
 
+/// A piece of an answer from Ask.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum CitationSegment {
+    Text {
+        text: String,
+    },
+    /// A `{{John 3:16}}` citation.
+    Verse {
+        reference: Reference,
+    },
+    /// A moment in a recorded sermon: its id (or the id's first characters) and where.
+    Sermon {
+        id: String,
+        at_ms: u64,
+    },
+}
+
+/// Splits an answer at its `{{…}}` citations.
+#[uniffi::export]
+pub fn citation_segments(text: String) -> Vec<CitationSegment> {
+    linger_core::chat::segments(&text)
+        .into_iter()
+        .map(|s| match s {
+            linger_core::chat::Segment::Text(text) => CitationSegment::Text { text },
+            linger_core::chat::Segment::Verse(r) => CitationSegment::Verse { reference: r.into() },
+            linger_core::chat::Segment::Sermon { id, at_ms } => CitationSegment::Sermon { id, at_ms },
+        })
+        .collect()
+}
+
 impl From<reference::Reference> for Reference {
     fn from(r: reference::Reference) -> Self {
         Self { book: r.book.0, chapter: r.chapter, verse: r.verse, verse_end: r.verse_end }
@@ -420,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn splits_text_at_references() {
+    fn splits_text_at_references_and_citations() {
         let rom = Reference { book: 44, chapter: 8, verse: Some(28), verse_end: None };
         let jn = Reference { book: 42, chapter: 3, verse: None, verse_end: None };
         assert_eq!(
@@ -431,6 +462,16 @@ mod tests {
                 TextSegment::Text { text: " and ".into() },
                 TextSegment::Reference { text: "John 3".into(), reference: jn },
                 TextSegment::Text { text: ".".into() },
+            ]
+        );
+        assert_eq!(
+            citation_segments("As {{Romans 8:28}} says, {{sermon 1a2b3c4d 12:30}}{{not one}}".into()),
+            [
+                CitationSegment::Text { text: "As ".into() },
+                CitationSegment::Verse { reference: rom },
+                CitationSegment::Text { text: " says, ".into() },
+                CitationSegment::Sermon { id: "1a2b3c4d".into(), at_ms: 750_000 },
+                CitationSegment::Text { text: "{{not one}}".into() },
             ]
         );
     }

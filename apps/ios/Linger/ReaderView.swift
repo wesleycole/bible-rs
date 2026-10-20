@@ -9,6 +9,7 @@ struct ReaderView: View {
     @State private var noteVerse: VerseRef?
     @State private var showingNotes = false
     @State private var showingSettings = false
+    @State private var showingRecents = false
 
     var body: some View {
         NavigationStack {
@@ -38,6 +39,15 @@ struct ReaderView: View {
             }
             .sheet(isPresented: $showingNotes) {
                 NotesList(library: library) { verse in model.go(book: verse.book, chapter: verse.chapter) }
+            }
+            .sheet(isPresented: $showingRecents) {
+                NavigationStack {
+                    RecentsList(library: library) { r in
+                        model.go(book: r.book, chapter: r.chapter)
+                        showingRecents = false
+                    }
+                    .toolbar { Button("Done") { showingRecents = false } }
+                }
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView(library: library)
@@ -125,6 +135,7 @@ struct ReaderView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu("Account", systemImage: "person.crop.circle") {
                 Button("Notes", systemImage: "note.text") { showingNotes = true }
+                Button("Recents", systemImage: "clock") { showingRecents = true }
                 Button("Settings", systemImage: "gearshape") { showingSettings = true }
             }
         }

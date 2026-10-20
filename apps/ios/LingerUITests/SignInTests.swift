@@ -16,7 +16,9 @@ final class SignInTests: XCTestCase {
         let email = app.descendants(matching: .any)["clerk.auth.start.identifier"].firstMatch
         XCTAssertTrue(email.waitForExistence(timeout: 15), "Clerk's sign-in sheet didn't open")
         email.tap()
-        let remembered = (app.textFields["clerk.auth.start.identifier"].value as? String) ?? ""
+        let field = app.textFields["clerk.auth.start.identifier"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "the email field didn't take focus")
+        let remembered = (field.value as? String) ?? ""
         if remembered != address {
             app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: remembered.count) + address)
         }
@@ -32,6 +34,9 @@ final class SignInTests: XCTestCase {
         // The code field has focus.
         app.typeText("424242")
 
+        // The library consent sheet, unless this device already answered it.
+        let consent = app.buttons["Turn On Sync"]
+        if consent.waitForExistence(timeout: 10) { consent.tap() }
         XCTAssertTrue(app.searchFields["Go to a reference"].waitForExistence(timeout: 20), "the reader didn't appear")
     }
 }

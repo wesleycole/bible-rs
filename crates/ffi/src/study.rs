@@ -176,6 +176,40 @@ impl From<SyncStatus> for SyncState {
     }
 }
 
+const CONSENT_KEY: &str = "library_consent";
+
+/// A saved Ask conversation, as Recents lists it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ChatSummary {
+    pub id: i64,
+    pub title: String,
+    /// Unix seconds of the last answer.
+    pub updated: i64,
+}
+
+/// One message of a saved conversation; the assistant's text carries `{{…}}` citations.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ChatMessage {
+    pub from_user: bool,
+    pub text: String,
+}
+
+/// What the library consent sheet says (core's `privacy`, as on the desktop).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ConsentText {
+    pub title: String,
+    pub points: Vec<String>,
+}
+
+#[uniffi::export]
+pub fn library_consent_text() -> ConsentText {
+    use linger_core::privacy::{LIBRARY_CONSENT_POINTS, LIBRARY_CONSENT_TITLE};
+    ConsentText {
+        title: LIBRARY_CONSENT_TITLE.into(),
+        points: LIBRARY_CONSENT_POINTS.map(String::from).to_vec(),
+    }
+}
+
 /// Highlights, bookmarks and notes, kept in `data_dir/study.sqlite`.
 #[derive(uniffi::Object)]
 pub struct Study {
@@ -262,6 +296,37 @@ impl Study {
                 note: n.into(),
             })
             .collect()
+    }
+
+    /// Recents: saved Ask conversations, the most recently answered first.
+    pub fn chats(&self) -> Vec<ChatSummary> {
+        self.lock()
+            .chats()
+            .into_iter()
+            .map(|c| ChatSummary { id: c.id, title: c.title, updated: c.updated })
+            .collect()
+    }
+
+    /// A saved conversation's messages; `None` if it is gone or (synced from another device) its
+    /// file hasn't arrived yet.
+    pub fn chat(&self, id: i64) -> Option<Vec<ChatMessage>> {
+        let chat = self.lock().chat(id)?;
+        Some(
+            chat.messages
+                .into_iter()
+                .map(|m| ChatMessage { from_user: m.role == linger_core::chat::Role::User, text: m.text })
+                .collect(),
+        )
+    }
+
+    /// The answer to the library consent sheet on this device: `None` until it has been shown.
+    /// Sync runs only after `Some(true)`.
+    pub fn library_consent(&self) -> Option<bool> {
+        self.lock().setting(CONSENT_KEY).map(|v| v == "yes")
+    }
+
+    pub fn set_library_consent(&self, accepted: bool) -> Result<(), BibleError> {
+        self.lock().set_setting(CONSENT_KEY, if accepted { "yes" } else { "no" }).map_err(failed)
     }
 
     /// Changes made here that the server hasn't confirmed yet.
@@ -511,6 +576,25 @@ mod tests {
             ]
         );
         assert_eq!(b.study.notes()[0].reference, "Romans 8:28");
+
+        // Recents: a conversation saved on one device opens on the other.
+        let messages = [
+            linger_core::chat::Message::user("Who wrote Romans?"),
+            linger_core::chat::Message::assistant("Paul; see {{Romans 1:1}}."),
+        ];
+        a.study.write(|s| s.save_chat(None, "Romans", &messages, "[]").map(drop).map_err(failed)).unwrap();
+        eventually("the conversation on b", || {
+            b.study.chats().first().and_then(|c| b.study.chat(c.id)).is_some_and(|m| m.len() == 2)
+        });
+        let id = b.study.chats()[0].id;
+        assert_eq!(b.study.chats()[0].title, "Romans");
+        assert_eq!(
+            b.study.chat(id).unwrap(),
+            [
+                ChatMessage { from_user: true, text: "Who wrote Romans?".into() },
+                ChatMessage { from_user: false, text: "Paul; see {{Romans 1:1}}.".into() },
+            ]
+        );
         assert_eq!(a.sync.as_ref().unwrap().wait_idle(5_000), SyncState::Synced);
         assert_eq!(a.study.pending_changes(), 0);
     }
@@ -531,6 +615,19 @@ mod tests {
         assert!(
             server.bookmark(linger_core::records::VerseId::from(core_verse(ROM_8_28).unwrap())).is_some()
         );
+    }
+
+    #[test]
+    fn library_consent_is_unanswered_until_set_and_survives_a_reopen() {
+        let server = FakeServer::new();
+        let a = Device::new("consent", &server);
+        assert_eq!(a.study.library_consent(), None);
+        a.study.set_library_consent(false).unwrap();
+        assert_eq!(a.study.library_consent(), Some(false));
+        a.study.set_library_consent(true).unwrap();
+        a.study.clear_library().unwrap();
+        let reopened = Study::new(a.dir.to_string_lossy().into_owned(), None).unwrap();
+        assert_eq!(reopened.library_consent(), Some(true), "sign-out keeps the device's answer");
     }
 
     #[test]

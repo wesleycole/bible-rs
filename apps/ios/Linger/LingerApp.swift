@@ -35,5 +35,8 @@ private struct Root: View {
             }
         }
         .task(id: clerk.user?.id) { library.signedIn(clerk.user != nil) }
+        .sheet(isPresented: .constant(clerk.user != nil && library.consent == nil)) {
+            ConsentSheet(library: library)
+        }
     }
 }

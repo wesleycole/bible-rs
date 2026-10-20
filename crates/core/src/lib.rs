@@ -27,6 +27,7 @@ pub mod names;
 pub mod online;
 pub mod original;
 pub mod plans;
+pub mod privacy;
 pub mod recording;
 pub mod records;
 pub mod reference;

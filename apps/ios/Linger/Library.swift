@@ -14,6 +14,9 @@ final class Library {
     /// The account's plan and allowances, from the proxy.
     private(set) var account: AccountInfo?
     private(set) var error: String?
+    /// The answer to the library consent sheet: nil until it has been shown. Sync runs only after yes.
+    private(set) var consent: Bool?
+    private var signedIn = false
     fileprivate var sync: LibrarySync?
     private let relay = Relay()
     private let proxy = Account(baseUrl: Config.apiURL, tokens: ClerkTokens())
@@ -25,7 +28,15 @@ final class Library {
             study = nil
             self.error = message(of: error)
         }
+        consent = study?.libraryConsent()
         relay.library = self
+    }
+
+    /// The library consent sheet's answer; Turn On Sync asks again with nil.
+    func answerConsent(_ accepted: Bool?) {
+        if let accepted { write { try $0.setLibraryConsent(accepted: accepted) } }
+        consent = accepted
+        signedIn(signedIn)
     }
 
     /// The marks on a chapter's verses, by verse number.
@@ -45,10 +56,12 @@ final class Library {
         }
     }
 
-    /// Syncs while Clerk has a user; stops (keeping the cache and what's waiting) when it hasn't.
+    /// Syncs while Clerk has a user and the library consent was given; stops (keeping the cache and
+    /// what's waiting) otherwise.
     func signedIn(_ signedIn: Bool) {
+        self.signedIn = signedIn
         guard let study else { return }
-        if !signedIn {
+        if !signedIn || consent != true {
             sync = nil
             account = nil
             syncState = .signedOut

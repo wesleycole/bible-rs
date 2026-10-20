@@ -17,13 +17,7 @@ pub enum Outcome {
     Decline,
 }
 
-const POINTS: [&str; 3] = [
-    "Your notes, highlights, bookmarks and Recents are stored in Linger's cloud, so they're on all \
-     your devices.",
-    "Photos you add are read by Anthropic's Claude, and recordings are transcribed by AssemblyAI. \
-     Neither keeps them or trains on them.",
-    "You can export your library or delete it with your account at any time.",
-];
+use linger_core::privacy::{LIBRARY_CONSENT_POINTS as POINTS, LIBRARY_CONSENT_TITLE};
 
 pub fn show(ctx: &egui::Context, p: &Palette) -> Outcome {
     let screen = ctx.content_rect();
@@ -51,8 +45,16 @@ pub fn show(ctx: &egui::Context, p: &Palette) -> Outcome {
         ui.allocate_rect(sheet, Sense::hover());
         p.shadows.modal.paint(&painter, sheet, 16.0);
         painter.rect_filled(sheet, 16.0, p.surface);
-        let title = "Your library, on all your devices";
-        text(&painter, x, sheet.top() + 16.0, 20.0, title, theme::ui_semibold(15.0), p.ink, false);
+        text(
+            &painter,
+            x,
+            sheet.top() + 16.0,
+            20.0,
+            LIBRARY_CONSENT_TITLE,
+            theme::ui_semibold(15.0),
+            p.ink,
+            false,
+        );
         painter.hline(sheet.x_range(), sheet.top() + 51.5, Stroke::new(1.0, p.separator));
         let mut y = sheet.top() + 72.0;
         for g in galleys {

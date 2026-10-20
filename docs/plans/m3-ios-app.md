@@ -85,6 +85,9 @@ translations), and that the app launches to text as fast as now.
    anything the study store refuses.
 7. **Consent sheets:** the library sheet at first sign-in and the Ask sheet at first question
    ([backend.md](backend.md#privacy-and-consent)).
+   M3a has the library sheet (its words are core's `privacy`, shared with the desktop); the Ask
+   sheet comes with Ask, since the iPhone asks no questions in M3a. Recents is read-only until then:
+   conversations from the Mac, with verse citations that open their chapter.
 8. **Sync status** in the library tab, as on the desktop.
 9. **Handoff basics:** opening a citation link from the Mac isn't in scope; reading position sync is M6.
 
