@@ -15,11 +15,10 @@ and ask about it; move between devices and pick up where you were.
    `NSMenuItem.importFromDeviceIdentifier`. The image arrives on the pasteboard and goes into the photo
    flow.
 2. **Drag-and-drop and a file picker** on macOS and Linux (egui's dropped files; `rfd` for the picker).
-3. **Image preparation** in core: decode (HEIC through ImageIO on macOS; JPEG and PNG everywhere with the
-   `image` crate), orient, resize to 2,048 px, encode JPEG, make the thumbnail.
+3. **Image preparation** in core, the M4 module, gaining HEIC decoding through ImageIO on macOS.
 4. **Marks on the Mac:** an egui canvas over the photo for circle, underline and highlight with the
-   trackpad or mouse, saved in Linger's stroke format and rendered into `photoMarked` by the shared
-   renderer from M4.
+   trackpad or mouse; its raw points go to core's converter from M4 and are rendered into
+   `photoMarked` by the shared renderer.
 5. Then the same submit, extraction and review as M4. Book pages stay behind the same release-build
    switch as on iOS until the lawyer answers ([README](README.md#roadmap)).
 

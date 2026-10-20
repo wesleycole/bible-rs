@@ -15,20 +15,23 @@ aren't gated.
 ## Convex
 
 1. **Records:** `sources` joins the synced records ([library.md](library.md#the-data-model)), with
-   `library/sources.upsert`. Items gain `pages` (each page's `text`, `pageText?`, `useWholePage`, `focus`,
-   `printedPage?` and `marks`) and `unreviewed`; `files.role` gains `photo`, `photoMarked` and `thumbnail`,
-   with `page`; `chunks` gains `page` and `unreviewed`.
+   `library/sources.upsert`. Items gain `pages` (each page's `useWholePage`, `focus`, `printedPage?`
+   and `marks`) and `unreviewed`; the pages' `text` and `pageText` are the item's `text` file
+   ([library.md](library.md#the-data-model)); `files.role` gains `photo`, `photoMarked` and
+   `thumbnail`, with `page`; `chunks` gains `page` and `unreviewed`.
 2. **The flow:** `library/photos.begin({ uid, kind, pageCount, sourceUid?, sermonUid?, offsetMs? })`
    creates the item as `uploading`; each page's files attach through `files.attach` (with the storage
-   check); `library/photos.submit({ uid, pages: [{ page, marks? }] })` checks every page is attached, checks the photo
-   allowance (one photo per page) and the per-minute rate limit, counts the pages in `usage.photos`, makes
-   the item `processing` and starts extraction.
+   check); `library/photos.submit({ uid, pages: [{ page, marks? }] })` checks every page is
+   attached, asks `Allowance` for one photo per page (which checks the month's allowance and the
+   per-minute rate limit and counts them in `usage.photos`), makes the item `processing` and starts
+   extraction.
 3. **Extraction workflow**, one step per page: a Gateway call with `zeroDataRetention`, the
    `extract-handwriting` or `extract-print` model row by kind, the clean `photo` and, for a marked page,
    the `photoMarked` render, and a JSON schema for `{ kind, text, focus: [{ text, mark }], references,
    title?, runningHead?, printedPage? }` ([library.md](library.md#photos)). References are validated
    against the grid. Then:
-   - the proposal is stored in the item's `pages`, and the item becomes `review` with `unreviewed: true`;
+   - the proposal is written to the item's `text` file, the focus passages to `pages`, and the item
+     becomes `review` with `unreviewed: true`;
    - it is chunked provisionally (focus passages as their own chunks), so Ask can use it at once;
    - a ledger row with `kind: extract` per page.
 
@@ -39,16 +42,22 @@ aren't gated.
 5. **`library/photos.approve({ uid, pages: [{ page, text, useWholePage }], references, sourceUid?, title? })`**
    saves the user's corrections, keeps `pageText` only for pages with `useWholePage` (and uses it as that
    page's text), makes the item `ready`, clears `unreviewed`, and re-chunks and re-anchors it. A page set of three or more pages then gets a digest ([library.md](library.md#the-digest-step)).
-6. **Allowance:** `plans.photosPerMonth` ([backend.md](backend.md#plans-and-limits)), `usage.photos`,
-   `/v1/me` `library.photosLeft`, and a rate-limiter bucket (30 photos a minute).
+6. **Allowance**, in the `Allowance` service ([backend.md](backend.md#effect-in-convex)):
+   `plans.photosPerMonth` ([backend.md](backend.md#plans-and-limits)), `usage.photos`, `/v1/me`
+   `library.photosLeft`, and a rate-limiter bucket (30 photos a minute).
 7. **The purge chain** covers `sources`.
 
 ## linger-core
 
-- **Marks:** Linger's stroke format (normalized 0–1 points, pen kind, colour), simplification to at most
-  2,000 points a page, and **one renderer** (`tiny-skia`) that draws `photoMarked` from a photo and its
+- **Marks:** conversion from raw platform strokes (PencilKit's points on iOS, egui's on the Mac in M6)
+  to Linger's stroke format (normalized 0–1 points, pen kind, colour), simplification to at most 2,000
+  points a page, and **one renderer** (`tiny-skia`) that draws `photoMarked` from a photo and its
   marks. iOS and the Mac both use it, so the same strokes always render the same way.
-- **Through the FFI:** the renderer, `photos.begin` / `submit` / `approve` through the outbox, and
+- **Image preparation** (the core module M6 also uses): decode JPEG and PNG with the `image` crate,
+  orient, resize to 2,048 px on the long edge, encode JPEG, make the 400 px thumbnail.
+- **`photos::Capture`:** the sequence begin → attach each page's files → submit, driven by core through
+  the outbox, so no platform orders it differently; and `approve`.
+- **Through the FFI:** raw strokes in, prepared images and renders out, `Capture`, `approve`, and
   sources.
 
 ## The iOS app
@@ -57,9 +66,10 @@ aren't gated.
    (`AVCaptureSession`), the document scanner for pages (`VNDocumentCameraViewController`; a multi-page
    scan is one item), and import from Photos. The kind picker remembers the last choice.
 2. **Marks:** a PencilKit canvas over each page, with circle, underline and highlight tools and undo.
-   PencilKit strokes are converted to Linger's format, and `photoMarked` is drawn by the shared renderer.
-3. **Upload** through the outbox: each page as JPEG at 2,048 px on the long edge, its marked render and a
-   400 px thumbnail. Works offline; the item shows "Waiting to upload".
+   PencilKit's strokes cross the FFI as raw points; core converts them and draws `photoMarked`.
+3. **Upload:** Swift hands core each page's captured JPEG bytes; core prepares the 2,048 px page, the
+   marked render and the thumbnail and queues them through `Capture`. Works offline; the item shows
+   "Waiting to upload".
 4. **Review:** each page (pinch to zoom) beside its proposed text with the marked passages highlighted.
    Edit the text, confirm, remove or add references (with the reference picker), choose or create the
    source (book title and author, remembered), and for a marked page choose "Use the whole page" if

@@ -57,9 +57,11 @@ signed-in user can't turn Linger's account into a general-purpose Claude endpoin
 | Account deletion (`DELETE /v1/account`, Clerk webhook purge) | Built | `server/src/routes/Json.ts`, `convex/account.ts` |
 | StoreKit verification, App Store notifications, nightly reconcile | Built (server) | `server/src/services/AppStore.ts`, `routes/Webhooks.ts` |
 | Stripe Checkout, Portal and webhook; desktop purchase round-trip | Built | `server/src/services/Stripe.ts`, `crates/core/src/api.rs` |
-| Sermons through the proxy: Blob upload, AssemblyAI, webhook, trial hour, 10 Pro hours | Built; **moves to Convex in M1** | `server/src/routes/Json.ts`, `SermonFlow.ts`, `convex/sermons.ts` |
+| Sermons through the proxy: Blob upload, AssemblyAI, webhook, trial hour, 10 Pro hours | Built; **moves to Convex in M1b** | `server/src/routes/Json.ts`, `SermonFlow.ts`, `convex/sermons.ts` |
 | Ask consent sheet (desktop) | Built; text changes in M1 | `apps/desktop/src/ask_panel.rs` |
 | Load test (1,000 concurrent streams against a mock Gateway) | Built | `server/scripts/load-test.ts` |
+| Effect inside Convex handlers; one `Allowance` service for every limit | Missing: M1 | `convex/lib/effect.ts` |
+| Record schema generated from Rust (`cargo xtask schema`) | Missing: M1 | `shared/records.ts`, `convex/lib/canon.json` |
 | iOS sign-in, StoreKit purchase, account deletion | Missing: M3 | |
 | On-device transcription for Free | Missing: M5 | |
 | `cargo xtask eval-ask` | Missing: M2 | |
@@ -254,18 +256,23 @@ server/                          Vercel project root (Root Directory = server)
       Webhooks.ts                /v1/webhooks/{apple,stripe,clerk}
     services/                    AppConfig, Auth, Store (Convex), Gateway, Background, AppStore, Stripe
     contract/ask-v<N>.json       GENERATED from Rust: system prompt, tools, version, digest
-    Errors.ts  SseMeter.ts  AskRequest.ts  Contract.ts
+    SseMeter.ts  AskRequest.ts  Contract.ts
+  shared/                        M1: what the proxy and convex/ both import
+    Errors.ts                    the error contract (moved from src/): the one list of error types
+    records.ts                   GENERATED from Rust: an Effect Schema and a Convex validator per record
   convex/
     schema.ts  auth.config.ts (M1)  users.ts  usage.ts  entitlements.ts  account.ts  webhooks.ts
     admin.ts  maintenance.ts  crons.ts  rateLimits.ts  convex.config.ts
-    sermons.ts                   transcription jobs (moves to the library workflow in M1)
-    library/                     M1+: items, notes, files, sync, sermons, photos, search, purge
+    sermons.ts                   transcription jobs (moves to the library workflow in M1b)
+    library/                     M1+: items, notes, files, sync, allowance, sermons, photos, search, purge
+    lib/effect.ts                M1: runs an Effect handler inside a Convex function (below)
     lib/server.ts                serverQuery/serverMutation/serverAction (server secret)
     lib/user.ts                  M1: userQuery/userMutation/userAction (Clerk identity)
+    lib/canon.json               GENERATED from Rust: verses per chapter
   test/                          @effect/vitest and convex-test suites; a mock Gateway
 ```
 
-M1 removes `services/Blob.ts`, `services/Transcriber.ts`, `routes/DevBlob.ts`, `SermonFlow.ts`, the
+M1b removes `services/Blob.ts`, `services/Transcriber.ts`, `routes/DevBlob.ts`, `SermonFlow.ts`, the
 `/v1/sermons` handlers (the routes answer `409` for one release, so old builds say "Update Linger"),
 `/v1/webhooks/assemblyai` and `/v1/internal/cleanup`, as sermons move into Convex. Sermon tests move to convex-test.
 
@@ -282,6 +289,8 @@ M1 removes `services/Blob.ts`, `services/Transcriber.ts`, `routes/DevBlob.ts`, `
   so settlement runs on success, failure and client abort, and `waitUntil` for work after the response.
 - **Not `effect/ai` for Ask.** The client parses raw Anthropic events, and thinking blocks with
   signatures and tool-use deltas must round-trip exactly.
+- **The same rules hold inside `convex/`** ([Effect in Convex](#effect-in-convex)): a handler is an
+  Effect program over services, not a chain of awaits on `ctx`.
 
 ### The Ask contract
 
@@ -379,8 +388,11 @@ when signed in, after a purchase and when Ask opens, and shows it in Settings â†
 
 ### Errors
 
-Every JSON error is `{ "error": { "type", "message", "upgrade"?, "retryAfter"? } }`. Convex library
-functions throw `ConvexError`s with the same `type`s, so the apps handle both the same way.
+Every JSON error is `{ "error": { "type", "message", "upgrade"?, "retryAfter"? } }`. The error classes
+live in `shared/Errors.ts` (M1): the proxy encodes them as HTTP statuses, and a Convex handler fails
+with the same classes, which `lib/effect.ts` turns into a `ConvexError` carrying the same `type`.
+`cargo xtask schema` generates core's `ApiError` from the same list, so a type the server can send is
+one the apps can match, and a new one can't be added on one side only.
 
 | Status | type | Client behaviour |
 |---|---|---|
@@ -407,6 +419,34 @@ functions throw `ConvexError`s with the same `type`s, so the apps handle both th
   retried on their own). Design every action to finish within 10 minutes: Convex's docs give both 10
   and 30.
 
+### Effect in Convex
+
+Convex handlers are Effect programs, so the library's rules get the same services, schemas and typed
+errors as the proxy. `convex/lib/effect.ts` (M1) provides:
+
+- **`ConvexCtx`**, a service holding the handler's `ctx` (`db`, `storage`, `scheduler`, `auth`; in
+  actions `runQuery`, `runMutation`, `runAction`). Handlers ask for it; nothing reaches `ctx` another
+  way.
+- **`CurrentUser`**, provided by `userQuery` / `userMutation` / `userAction` from the Clerk identity,
+  and **`ServerCaller`** by the `server*` wrappers. A function provides one or the other, never both.
+- **`effectQuery`, `effectMutation` and `effectAction`**: the wrappers decode `args` with the generated
+  `Schema` from `shared/records.ts`, run the handler with `Effect.runPromise`, and turn a failure from
+  `shared/Errors.ts` into a `ConvexError` with that `type`. Anything else is a defect and is rethrown,
+  so Convex logs it as the bug it is.
+- **The domain services**, each a `Context.Service` with a live layer over `ConvexCtx` and a test layer:
+  - `Allowance`: every check, count and reservation (Ask rounds, sermon seconds, photos, storage) and
+    the one place `plans`, `usage` and `reservations` are read and written. The proxy's `beginRound`
+    and the apps' `photos.submit` both go through it, so there is one definition of "allowed".
+  - `Sequence`: the per-user `seq` and the `storageBytes` counter ([library.md](library.md#the-sync-engine)).
+  - `Files`, `Anchors`, `Chunks`: upload URLs and attachment, the per-chapter index, and rebuilding
+    chunks from an item's text.
+- **Pure modules with no `ctx` at all** for chunking, reciprocal-rank fusion, reference checking against
+  `canon.json`, anchor splitting and conflict detection, tested without convex-test.
+
+Convex's limits still apply: a mutation's own code finishes within 1 s, and the function bundle has a
+size limit. The M1 spike measures a `userMutation` on Effect against today's plain version before the
+library is built on it, and the measurement joins CI.
+
 Billing tables (`convex/schema.ts`); the library's tables are in [library.md](library.md#the-data-model):
 
 | Table | Purpose |
@@ -429,10 +469,10 @@ in the future); otherwise Free. `grant` rows cover comps, press and family (`adm
 Crons (`convex/crons.ts`):
 - Every 5 minutes: sweep reservations older than 15 minutes and charge them.
 - Hourly: fail transcription jobs stuck over 3 hours and clean up their vendor state; check on jobs
-  whose webhook is late (M1).
+  whose webhook is late, and finish recordings whose device died (M1b).
 - Daily: reconcile App Store subscriptions; prune `questions` (7 days), `ledger` (13 months) and
   `webhookEvents` (30 days); hard-delete library tombstones older than 30 days with their files (M1).
-- M1 removes the 24-hour transcript expiry: transcripts are library files now.
+- M1b removes the 24-hour transcript expiry: transcripts are library files now.
 
 ## Payments and entitlements
 
@@ -472,8 +512,8 @@ privacy labels and consent sheets follow it.
 - **Every model call is zero-retention and never used for training.** Ask, photo reading and digests go
   through the Gateway with `zeroDataRetention: true`, only to models and providers that support it.
   AssemblyAI deletes its job (audio and transcript) when the transcript is stored. **Its written
-  no-training commitment is a condition of shipping M1**; if AssemblyAI won't give one, cloud
-  transcription moves to a provider that will before M1 ships.
+  no-training commitment is a condition of shipping M1b**; if AssemblyAI won't give one, cloud
+  transcription moves to a provider that will before M1b ships.
 - **Consent sheets.**
   - **Library (M1, at first sign-in after the update, and in onboarding):** your library is stored in
     Linger's cloud so it's on all your devices; photos you add are read by Claude, and recordings
@@ -516,8 +556,9 @@ privacy labels and consent sheets follow it.
 - **Convex** (`convex-test`, run in-process by the same suites): concurrent `beginRound` at the
   boundary never over-admits; idempotent entitlement upserts; webhook dedupe. M1 adds the library:
   `canRead` refuses another user's records, the change feed returns tombstones and respects cursors,
-  outbox mutations are idempotent by `uid`, the purge chain deletes everything, and the sermon workflow
-  settles real durations.
+  outbox mutations are idempotent by `uid`, a stale `baseSeq` makes a conflict copy, and the purge
+  chain deletes everything. M1b adds the sermon workflow settling real durations and the join action
+  being byte-exact.
 - **Contract drift:** the `linger-core` test, and the server's digest check at load.
 - **Load:** 1,000 concurrent Ask streams against a mock Gateway (`pnpm load-test`), every reservation
   settled. M1 adds a sync load test: 1,000 clients subscribed to the change feed while 100 write.
@@ -551,13 +592,13 @@ privacy labels and consent sheets follow it.
   `STRIPE_PRICE_YEARLY`, `STRIPE_RETURN_URL`.
 - Web (M8): `LINGER_WEB_ORIGINS` for CORS.
 - Observability (M9): `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT`.
-- Removed in M1: `ASSEMBLYAI_API_KEY`, `BLOB_DRIVER`, `BLOB_READ_WRITE_TOKEN`, `BLOB_STORE_ID`,
+- Removed in M1b: `ASSEMBLYAI_API_KEY`, `BLOB_DRIVER`, `BLOB_READ_WRITE_TOKEN`, `BLOB_STORE_ID`,
   `LOCAL_BLOB_DIR`.
 
 **Convex environment** (`npx convex env set`):
 - `LINGER_SERVER_SECRET`; `LINGER_PROXY_URL` (for the Apple reconcile callback).
 - `CLERK_JWT_ISSUER` (M1, for `auth.config.ts`).
-- `ASSEMBLYAI_API_KEY` (M1) and `AI_GATEWAY_API_KEY` (M2, for digests and extraction). These are short,
+- `ASSEMBLYAI_API_KEY` (M1b) and `AI_GATEWAY_API_KEY` (M2, for digests and extraction). These are short,
   non-streaming calls, so a key is simpler than routing each through the proxy.
 
 **The apps ship only public values:** the proxy URL, the Convex URL, Clerk's publishable key and
@@ -570,8 +611,10 @@ them in M1).
 |---|---|---|
 | Can a paid Linger offer the ESV, NLT, NET and API.Bible integrations, and users' own API.Bible keys? Confirm the letters were sent, and chase answers | Crossway, Tyndale, bible.org, API.Bible | Their return to release builds |
 | Is a user's own photo of a copyrighted book, sent to Claude for their private study, acceptable to rely on? And sermon audio? | Lawyer | Any public (non-TestFlight) release of M4's book-page capture |
-| Does AssemblyAI commit in writing to no training on customer audio? | AssemblyAI | M1 release |
+| Does AssemblyAI commit in writing to no training on customer audio? | AssemblyAI | M1b release |
 | Does a real Mac OAuth token get the same Convex `tokenIdentifier` as an iOS session token? | M1, with real tokens | M1 |
 | Do Clerk passkeys and the production instance need Clerk Pro for this application? | Clerk dashboard | M1 |
 | Does the `convex` crate's `set_auth_callback` refetch on reconnect, and can `set_auth` replace a token before it expires? | M1 spike | M1 |
+| Does a `userMutation` on Effect stay inside Convex's 1 s budget and bundle limit? | M1 spike | M1 |
+| Does core's M4A muxer give AVPlayer, Safari, Chrome and `ffprobe` the exact duration? | M1b spike | M1b |
 | Does Clerk revoke Sign in with Apple tokens on user deletion? | Clerk docs or support | M3 |

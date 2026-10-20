@@ -1,6 +1,6 @@
 # M5: Recording everywhere
 
-Status: not started. Depends on: M1, M3, M4. Design: [library.md](library.md#sermons).
+Status: not started. Depends on: M1b, M3, M4. Design: [library.md](library.md#sermons).
 
 **Goal.** Record a sermon on the iPhone in the pew, photograph the slides as they come up, and have the
 sermon, its transcript and its slides together in the library. Free users get transcripts on the
@@ -11,10 +11,10 @@ device on iOS 26, every supported macOS and Linux.
 1. **Recording:** `AVAudioEngine` from the microphone, the `audio` background mode, and the audio
    session set for recording. Interruptions (calls, Siri, another app's audio) pause and resume
    without losing the part in progress; a route change (AirPods) keeps recording.
-2. **Encoding:** one continuous `AVAudioConverter` per recording (16 kHz mono AAC-LC), with Linger writing
-   the ADTS header on each packet and starting a new part every 5 minutes at a packet boundary, the same
-   format as the Mac's parts ([library.md](library.md#sermons)). Parts go to the outbox as they close,
-   only if `sermons.begin` said `uploadAudio`.
+2. **Encoding:** the `AVAudioEngine` tap hands 16 kHz mono PCM buffers across the FFI, and core's
+   encoder, framer, part writer and muxer from M1b do the rest ([library.md](library.md#sermons)): there
+   is no iOS encoder. Parts go to the outbox as they close, only if `sermons.begin` said `uploadAudio`,
+   and the M4A is written and uploaded at the end, as on the Mac.
 3. **A Live Activity** (ActivityKit) with the elapsed time and a stop button, and a recording
    indicator in the app.
 4. **Details:** title, speaker and church, prefilled from the last recording, as the Mac's details
@@ -45,8 +45,10 @@ device on iOS 26, every supported macOS and Linux.
 - **iOS 26:** Apple's `SpeechTranscriber` (the Speech framework's long-form transcriber) on the recorded
   audio after the recording ends, with the 66 book names as contextual strings. iOS 17 and 18 get the
   cloud trial hour only, and the Pro sheet says so.
-- **macOS 26:** the same through a small Swift static library with a C ABI (`apps/desktop/swift/`, built
-  by `apps/desktop/build.rs` with `swiftc` on macOS only), called from the transcription thread.
+- **macOS 26:** the same through one small Swift static library with a C ABI (`apps/desktop/swift/`,
+  built by `apps/desktop/build.rs` with `swiftc` on macOS only, and linked into the iOS app too), called
+  from the transcription thread. It takes a file path and the contextual strings and returns the
+  transcript shape, nothing else.
 - **macOS 11–15 and Linux:** `whisper-rs` with the `base.en` model (Metal on Apple silicon), downloaded
   on first use (about 140 MB) with progress and a checksum, stored in `<data>/models/`.
 - Output becomes the same `{ language, durationMs, segments }` shape. The item notes the transcript was
@@ -56,8 +58,8 @@ device on iOS 26, every supported macOS and Linux.
 
 ## Tests
 
-- iOS: a 30-minute recording through a simulated phone call keeps every part, and the parts join to the
-  right duration; a slide taken at 12:30 appears in `read_item` at 12:30.
+- iOS: a 30-minute recording through a simulated phone call keeps every part, and the M4A has the
+  exact duration; a slide taken at 12:30 appears in `read_item` at 12:30.
 - Mac and Linux: on-device transcription of a public-domain reading (a LibriVox recording of a gospel)
   has a word error rate under 15% (`cargo xtask eval-transcribe`).
 - convex-test: `attachTranscript` doesn't touch allowances; a Free user's sermon past the trial never stores audio; a

@@ -31,11 +31,12 @@ on top of them.
 
 | | Milestone | Delivers | Depends on |
 |---|---|---|---|
-| M1 | [The library foundation](m1-library-foundation.md) | The production Clerk instance and `linger.app` first; Convex auth, the library schema, the sync engine in core, the desktop on it, migration of local data, sermons on Convex storage (no Vercel Blob), Pro audio kept | |
-| M2 | [Search and Ask over the library](m2-search-and-ask.md) | Chunks, the digest step and its anchors, `library.search`, contract `ask/5`, citations, the reader's library marks, export, `cargo xtask eval-ask` | M1 |
+| M1 | [The library foundation](m1-library-foundation.md) | The production Clerk instance and `linger.app` first; Effect inside Convex, the record schema generated from Rust, the sync engine in core behind `LibraryBackend`, the desktop on it, migration of notes, highlights, bookmarks and Recents | |
+| M1b | [Sermons on Convex](m1b-sermons-on-convex.md) | One AAC encoder and one M4A muxer in core, parts for crash safety, the transcription workflow in Convex, recordings migrated, Pro audio kept, Vercel Blob gone | M1 |
+| M2 | [Search and Ask over the library](m2-search-and-ask.md) | Chunks, the digest step and its anchors, `library.search`, contract `ask/5`, citations, the reader's library marks, export, `cargo xtask eval-ask` | M1, M1b |
 | M3 | [The iOS app](m3-ios-app.md) | Sign-in, sync, the reader with notes and highlights, Ask, Recents, StoreKit, account deletion | M1, M2 |
 | M4 | [Photo capture](m4-photo-capture.md) | Camera and scanner, PencilKit marks, extraction, review, sources, photo allowances | M3 |
-| M5 | [Recording everywhere](m5-recording-everywhere.md) | iOS recording, slides attached by time, on-device transcription for Free (iOS, macOS, Linux) | M1, M3, M4 |
+| M5 | [Recording everywhere](m5-recording-everywhere.md) | iOS recording on core's encoder, slides attached by time, on-device transcription for Free (iOS, macOS, Linux) | M1b, M3, M4 |
 | M6 | [The Mac as a capture device, and handoff](m6-mac-capture-and-handoff.md) | Continuity Camera, drag-and-drop, marks on the Mac, reading position and plan sync, `ASWebAuthenticationSession` | M4 |
 | M7 | [Outside sources](m7-outside-sources.md) | Public-domain commentaries, reference works and confessions in shared tables; contract `ask/6` | M2 |
 | M8 | [Web](m8-web.md) | The reader and Ask in the browser, on `linger-core` compiled to wasm | M2 (and M6 for handoff) |
@@ -47,12 +48,30 @@ release-build switch, as the online translations are today (`LICENSED_ONLINE`), 
 ([backend.md](backend.md#open-questions)).
 
 ```diagram
-M1 library foundation ──▶ M2 search and Ask ──┬──▶ M3 iOS ──▶ M4 photos ──┬──▶ M5 recording
-                                              │                           └──▶ M6 Mac capture, handoff
-                                              ├──▶ M7 outside sources
-                                              └──▶ M8 web
-                                                          all ──▶ M9 launch
+M1 library foundation ──▶ M1b sermons on Convex ──▶ M2 search and Ask ──┬──▶ M3 iOS ──▶ M4 photos ──┬──▶ M5 recording
+                                                                        │                           └──▶ M6 Mac capture, handoff
+                                                                        ├──▶ M7 outside sources
+                                                                        └──▶ M8 web
+                                                                                    all ──▶ M9 launch
 ```
+
+## Where code lives
+
+Linger is written in Rust and in TypeScript on Effect, and nothing else carries logic:
+
+- **Logic lives in `linger-core`** when it can run on a device or in wasm: records, references, the
+  sync engine and outbox, the Ask tool loop, audio encoding, framing and muxing, marks, image
+  preparation, search. Desktop, iOS and web call the same code.
+- **Server logic is Effect**, in the proxy and inside Convex handlers alike
+  ([backend.md](backend.md#effect-in-convex)): services as layers, `Schema` at every edge, typed errors
+  from one shared module.
+- **Swift, React and Node are leaves.** They hold platform APIs and views (`AVAudioEngine`, PencilKit,
+  SpeechTranscriber, the DOM) and hand raw data to core or to Effect. A leaf never decides anything a
+  test can't reach through core or a layer.
+- **The schema is written once, in Rust**, and generated into Convex validators, Effect Schemas, the
+  cache and the FFI by `cargo xtask schema`; a test fails on drift ([library.md](library.md#one-schema)).
+- **One door to Convex from a device:** the `LibraryBackend` trait in core, with a fake for tests
+  ([library.md](library.md#the-sync-engine)). No second client, no port of the tool loop.
 
 ## Shared vocabulary
 
@@ -63,8 +82,10 @@ These terms mean the same thing in every plan:
 - **Chunk**: a passage of an item's text, the unit of search and citation. **Focus**: a chunk the user
   marked on a photo. **Anchor**: a link from an item or chunk to a verse range.
 - **Verse id**: `book × 1,000,000 + chapter × 1,000 + verse` on the canonical 66-book grid (John 3:16 is
-  `42_003_016`). **`uid`**: the client-made UUID every synced record carries. **`seq`**: the per-user
-  sequence number every library write stamps, which orders the change feed.
+  `42_003_016`), the one encoding everywhere. **`uid`**: the client-made UUID every synced record
+  carries. **`seq`**: the per-user sequence number every library write stamps, which orders the change
+  feed. **`baseSeq`**: the `seq` a client's copy had when an edit began; a stale one makes a conflict
+  copy instead of overwriting.
 - **Digest**: the one-time model pass over a sermon or long page set that finds references, an outline
   and a summary.
 - **Change feed / outbox / cache**: the sync engine's pull, push and local copy ([library.md](library.md#the-sync-engine)).

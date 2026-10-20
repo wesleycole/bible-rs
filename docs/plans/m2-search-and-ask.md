@@ -1,6 +1,6 @@
 # M2: Search and Ask over the library
 
-Status: not started. Depends on: M1. Design: [library.md](library.md#search-and-ask),
+Status: not started. Depends on: M1, M1b. Design: [library.md](library.md#search-and-ask),
 [backend.md](backend.md#the-ask-contract).
 
 **Goal.** Ask answers from the user's library as well as the Bible, cites each library claim, and the
@@ -14,7 +14,8 @@ vectors (only if the eval below asks for them).
 
 1. **Chunks.** Add the server-only `chunks` table with its search index
    ([library.md](library.md#the-data-model)).
-   `library/chunk.ts` (internal) rebuilds an item's chunks whenever its text changes:
+   `library/chunk.ts`, a pure module with no `ctx`, rebuilds an item's chunks whenever its text or
+   text file changes:
    - notes: one chunk;
    - sermons: transcript segments joined into paragraphs of about 200 words on speaker and pause
      boundaries, keeping `startMs` and `endMs`.
@@ -26,8 +27,9 @@ vectors (only if the eval below asks for them).
    reference is validated against the grid and becomes an anchor at its time or page. A ledger row with
    `kind: digest`. Set `AI_GATEWAY_API_KEY` on each deployment.
 4. **Backfill.** A one-off internal action chunks and digests every existing sermon and note.
-5. **`library/search.search`** (action): anchors, then the text index, merged with reciprocal-rank
-   fusion, focus and anchored chunks boosted, grouped by item ([library.md](library.md#librarysearch)).
+5. **`library/search.search`** (an action, so neither reactive nor cached): anchors, then the text
+   index, merged with reciprocal-rank fusion (a pure module), focus and anchored chunks boosted,
+   grouped by item ([library.md](library.md#librarysearch)).
    `library/items.read({ uid, fromMs?, minutes?, page? })` (query) for `read_item`, capped at about
    2,500 words like `read_sermon` today.
 6. **The chapter query:** `library/items.forChapter({ book, chapter })` returns the items anchored to
@@ -42,16 +44,17 @@ vectors (only if the eval below asks for them).
 1. **Contract `ask/5`** in `contract.rs` and `chat.rs`:
    - `search_library { query, passage?, kinds?, source?, limit? }` and
      `read_item { item, from?, minutes?, page? }`
-     replace `search_sermons` and `read_sermon`. `chat::Tools` loses `sermons`; the tools call Convex's
-     HTTP API (`POST {CONVEX_URL}/api/action` and `/api/query` with the user's token) through `ureq`.
+     replace `search_sermons` and `read_sermon`. `chat::Tools` loses `sermons`; the tools send their
+     calls to the sync thread's `LibraryBackend` through `SyncHandle::call` and block on the reply
+     ([library.md](library.md#the-sync-engine)), so there is no second Convex client.
    - The three prompt rules and the `{{item <uid prefix> [mm:ss | p<n>]}}` citation
      ([library.md](library.md#the-prompt-and-citations)). `chat::segments` parses `{{item …}}` and keeps
      parsing `{{sermon …}}` for old chats.
    - `tools_note` says how many library items the user has and how many touch the passage being read.
    - `cargo xtask contract` writes `ask-v5.json`; the proxy serves `ask/5` and `ask/4` and drops
      `ask/3` ([backend.md](backend.md#the-ask-contract)).
-2. **Offline:** with no network, `search_library` answers from the cached items' text (and cached
-   transcripts) with a plain term match, and says it's offline.
+2. **Offline:** with no network, `search_library` answers from `search.rs` over the cached items' text
+   and text files, ranked as Bible search is, and says it's offline.
 3. **Audio playback** for sermon items: `symphonia` (AAC, MP4 and FLAC) through `rodio`, playing a file cached
    in `<data>/files/` (downloaded on first play; about 22 MB an hour) with seeking by time.
 
@@ -86,8 +89,8 @@ vectors (only if the eval below asks for them).
 - convex-test: chunking boundaries and times; digest output with a bad reference drops it; search
   never returns another user's chunks; anchored chunks rank above text-only matches for a passage
   query; `forChapter` returns ranges that start in the previous chapter.
-- Core: `{{item …}}` and legacy `{{sermon …}}` parsing; the tools' JSON against a mock Convex HTTP
-  API; the contract drift test.
+- Core: `{{item …}}` and legacy `{{sermon …}}` parsing; the tools against `FakeBackend`; offline
+  search over a cached fixture; the contract drift test.
 - Desktop: a chip for a sermon opens the item at the right second; the margin shows a mark on a verse
   covered by a range anchor that starts in the previous chapter.
 

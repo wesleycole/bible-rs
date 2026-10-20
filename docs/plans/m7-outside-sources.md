@@ -44,7 +44,8 @@ drivers.
 
 ## Ask
 
-Contract `ask/6` ([backend.md](backend.md#the-ask-contract)) adds two tools, both calling Convex:
+Contract `ask/6` ([backend.md](backend.md#the-ask-contract)) adds two tools, both through
+`LibraryBackend` like the library's own:
 - **`commentaries { passage, works? }`**: what each commentary and confession says on the passage, with
   the work's name, date and tradition, trimmed to about 1,500 words in total.
 - **`topics { term }`**: Easton's and Nave's entries for a term, and confession sections that match it,

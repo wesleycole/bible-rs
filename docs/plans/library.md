@@ -33,7 +33,9 @@ library later (see [Later](#later)).
 | Decision | Choice | Why |
 |---|---|---|
 | Where the library lives | **Convex**, for every personal record and every file (audio, photos, transcripts). No Vercel Blob | One store, one auth check, live queries for handoff; Convex file storage covers the files |
-| How devices sync | Native apps share one **sync engine in `linger-core`**: a local cache, an outbox and a change feed from Convex. The web app uses the Convex React client | Offline reading and capture; one implementation for macOS, Linux and iOS |
+| How devices sync | Every client shares one **sync engine in `linger-core`**: a local cache, an outbox and a change feed from Convex, behind the **`LibraryBackend`** trait, the only door to Convex from a device | Offline reading and capture; one implementation for macOS, Linux, iOS and the web; a fake backend for tests |
+| The schema | **Written once, in Rust.** `cargo xtask schema` generates the Convex validators, the Effect Schemas, the cache's columns and the FFI types, and a test fails on drift | Five copies of every record shape would drift; one can't |
+| Where logic runs | **Rust in core, or Effect on the server** ([README](README.md#where-code-lives)). Swift, React and Node hold platform APIs and views | Every rule is reachable by a test through core or a layer |
 | The unit | A **library item**: the original (audio, photo or none), its text, its **verse anchors** and where it came from | One shape for sermons, notes, slides and pages; verse anchors make "everything on Romans 8" an exact lookup |
 | Retrieval | **Verse anchors and full-text search**, with vectors only if the M2 eval needs them | Anchors find what is about this passage; text finds what is about this idea, and the model rewrites its own queries |
 | Photos to text | **Claude vision** through the AI Gateway, then a review screen | Reads handwriting and marked-up pages far better than OCR; the user corrects before it counts |
@@ -67,15 +69,25 @@ Nothing reads by id without it.
 
 **Verse ids.** A verse is the integer `book × 1,000,000 + chapter × 1,000 + verse` on the canonical
 66-book grid (`BookId` 0–65); John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two
-numbers, and they read as references in the Convex dashboard. The apps keep their own packed
-`VerseRef` key (`book << 16 | chapter << 8 | verse`, `books.rs`) and text book codes in `study.sqlite`;
-the sync engine converts at the boundary. `cargo xtask contract` exports the grid (verses per chapter)
-for the Convex functions, which check every reference against it.
+numbers, and they read as references in the Convex dashboard. It is the one encoding: core's `VerseId`
+newtype (`books.rs`) serializes to it, the cache stores it (migration 1 rewrites today's packed
+`book << 16 | chapter << 8 | verse` keys and text book codes), and nothing converts at a boundary.
+`cargo xtask schema` exports the grid (verses per chapter) as `canon.json` for the Convex functions,
+which check every reference against it.
 
 **Record ids.** Every synced record has a `uid`, a UUID the client makes, so a note or photo created
 offline has an id before it's uploaded and a retried upload never makes a second copy. Migrated
 recordings keep their recording UUID as the item's `uid`, so `{{sermon <id> …}}` citations in old
 Recents still resolve. Citations and the cache use `uid`s; Convex `_id`s never leave the server.
+
+### One schema
+
+Every synced record is a Rust type in `crates/core/src/records.rs` (serde, with `schemars` for its
+JSON Schema). `cargo xtask schema` writes `server/shared/records.ts`, holding an Effect `Schema` and a
+Convex validator per record, `server/convex/lib/canon.json`, the cache's column list, and core's
+`ApiError` from the server's error list; the FFI and the wasm bindings expose the same Rust types. A
+core test fails if any generated file differs from what the code produces, as the contract test does.
+The tables below describe those types; the Rust is the source.
 
 **Synced records and server-only rows.** The apps sync a small set of record types, each carrying
 `uid`, `seq` (below) and `deletedAt?`. Rows the server derives (chunks) or uses for indexing and
@@ -84,7 +96,7 @@ embedded in the record it belongs to.
 
 | Synced record | Fields | Notes |
 |---|---|---|
-| `items` | `uid`, `kind` (`sermon`, `handwritten`, `slide`, `page`, `note`), `title`, `status` (`recording`, `uploading`, `waiting`, `processing`, `review`, `ready`, `error`), `text`, `summary?`, `outline?`, `sourceUid?`, `sermonUid?` + `offsetMs?`, `recordedOn?` (`macos`, `ios`, `linux`), `details?` (title, speaker and church, from `recording::Details`; `startedAt`, `endedAt?`), `capturedAt`, `unreviewed`; **`anchors`** (`[{ from, to, origin, atMs?, page? }]`); **`files`** (`[{ uid, role, contentType, bytes, url, page?, durationMs? }]`); for photos, **`pages`** (`[{ page, text, pageText?, useWholePage, focus, printedPage?, marks? }]`) | One document per item; the embedded arrays are what the cache needs. `text` is the item's searchable text (for photos, the pages' `text` joined). Capped well under Convex's 1 MiB (strokes are simplified to at most 2,000 points a page) |
+| `items` | `uid`, `kind` (`sermon`, `handwritten`, `slide`, `page`, `note`), `title`, `status` (`recording`, `uploading`, `waiting`, `processing`, `review`, `ready`, `error`), `text?` (notes), `textFileUid?` and `excerpt?` (sermons and photos), `summary?`, `outline?`, `sourceUid?`, `sermonUid?` + `offsetMs?`, `recordedOn?` (`macos`, `ios`, `linux`), `details?` (title, speaker and church, from `recording::Details`; `startedAt`, `endedAt?`), `capturedAt`, `unreviewed`; **`anchors`** (`[{ from, to, origin, atMs?, page? }]`); **`files`** (`[{ uid, role, contentType, bytes, url, page?, durationMs? }]`); for photos, **`pages`** (`[{ page, useWholePage, focus, printedPage?, marks? }]`) | One document per item; the embedded arrays are what the cache needs. A note's `text` is inline, because the user edits it offline. A sermon's or photo's text is a **`text` file** (`role: text`, named by its SHA-256, never rewritten in place): the transcript, or the pages' `text` and `pageText` as JSON. The record carries `textFileUid` and a short `excerpt`, so retitling a sermon doesn't resend its transcript to every device; the cache fetches text files eagerly (they're small beside audio), so offline search covers them. Capped well under Convex's 1 MiB (strokes are simplified to at most 2,000 points a page) |
 | `sources` | `uid`, `kind` (`book`, `preacher`, `church`, `website`), `title`, `author?`, `publisher?`, `year?` | |
 | `highlights` | `verse`, `color` | One per verse, as now; `uid` is derived from the verse |
 | `bookmarks` | `verse`, `label` | One per verse, as now |
@@ -97,7 +109,7 @@ embedded in the record it belongs to.
 |---|---|---|
 | `anchors` | `userId`, `itemId`, `book`, `chapter`, `from`, `to`, `origin`, `atMs?`, `page?`: one row per chapter an anchor touches, rebuilt from the item's `anchors` | `by_user_chapter` [`userId`, `book`, `chapter`], `by_item` |
 | `chunks` | `userId`, `itemId`, `ordinal`, `text`, `startMs?` / `endMs?`, `page?`, `focus`, `unreviewed`, `embedding?` | search index `text` (filters `userId`), `by_item`; a vector index only if M2 adds one |
-| `files` | `userId`, `ownerUid` (the item or chat it belongs to; none for an export), `uid`, `role` (`audio`, `audioPart`, `uploadPart`, `photo`, `photoMarked`, `thumbnail`, `transcript`, `chat`, `export`), `storageId`, `contentType`, `bytes`, `partIndex?`, `page?`, `sha256` | `by_owner`, `by_user_uid` |
+| `files` | `userId`, `ownerUid` (the item or chat it belongs to; none for an export), `uid`, `role` (`audio`, `audioPart`, `uploadPart`, `photo`, `photoMarked`, `thumbnail`, `text`, `chat`, `export`), `storageId`, `contentType`, `bytes`, `partIndex?`, `page?`, `sha256` | `by_owner`, `by_user_uid` |
 | `userLibrary` | `userId`, `seq`, `purgedThrough` (the highest `seq` whose tombstone was hard-deleted), `storageBytes` | `by_user`: one per user (below) |
 
 Every synced table is indexed `by_user_seq` [`userId`, `seq`]. A file's `url` is its permanent
@@ -115,8 +127,9 @@ Why it's shaped this way:
   query answers on the server and the cache answers locally from the items it holds.
 - **Chunks are the unit of search and citation**, rebuilt whenever an item's text changes. A sermon is
   chunked by transcript paragraphs (about 200 words, with times). A page is chunked by paragraph, and
-  marked passages are their own chunks with `focus: true`. A note is one chunk. Offline, the apps search
-  the cached items' text instead.
+  marked passages are their own chunks with `focus: true`. A note is one chunk. Offline, core indexes
+  the cached items' text and text files with the engine that searches the Bible (`search.rs`), so the
+  tool still answers with ranked passages.
 - **Notes become items.** Today a note is one row per verse in `study.sqlite`, with no id. After M1 a
   note is a `note` item anchored to a verse or a range, and a verse can have several. The reader's note
   popover edits "your note on this verse": the note item whose only user anchor is that verse, made on
@@ -128,7 +141,7 @@ Why it's shaped this way:
   tombstones older than 30 days, with their files and server-only rows, and raises
   `userLibrary.purgedThrough`. A device whose cursor is older than that (offline for over a month) is
   told to resync: it keeps its outbox, empties its cache and pulls the library again.
-- **Documents stay small.** Transcripts, conversations and exports are files; items hold text, the
+- **Documents stay small.** Transcripts, page text, conversations and exports are files; items hold text, the
   embedded arrays and no blobs.
 
 ### Ask conversations are not context
@@ -156,11 +169,18 @@ argument. The proxy's `serverQuery` / `serverMutation` secret stays for proxy-on
 `crates/core/src/sync.rs`, behind a `sync` cargo feature (on for the desktop app and `crates/ffi`, off
 for the web's wasm build):
 
+- **One door: `LibraryBackend`.** A trait in core (`sync::Backend`) with every call a device makes to
+  Convex: subscribe to the change feed, run a named mutation, run `library.search` and `items.read`,
+  get an upload URL, upload bytes. Three implementations: the `convex` crate natively (feature
+  `convex`), the Convex JavaScript client through wasm-bindgen on the web, and an in-memory fake for
+  tests. The sync engine, the outbox and the Ask tools all go through it, so there is one connection,
+  one token path and one thing to fake.
 - **Its own thread.** The `convex` Rust crate (0.10) is async and the app has no async runtime, so the
-  engine runs a single-threaded tokio runtime on a `"sync"` thread. The rest of the app talks to it
-  through channels, as it does with the `"ask"` and `"account"` threads, and repaints when a change
-  arrives. iOS reaches the same engine through `crates/ffi`, with a callback that hands SwiftUI each
-  change.
+  engine runs a single-threaded tokio runtime on a `"sync"` thread that owns the backend. The rest of
+  the app talks to it through channels, as it does with the `"ask"` and `"account"` threads, and
+  repaints when a change arrives; the Ask tool loop sends `search_library` and `read_item` down the
+  same channel and blocks on the reply, so there is no second Convex client. iOS reaches the same
+  engine through `crates/ffi`, with a callback that hands SwiftUI each change.
 - **Tokens.** The engine asks the existing `auth::TokenSource` for a token on every connect, and pushes
   a fresh one 30 seconds before the current one's `exp`: Clerk session tokens on iOS last about a
   minute, the desktop's OAuth access token a day. (M1 confirms the crate's `set_auth_callback` and
@@ -180,10 +200,13 @@ for the web's wasm build):
   mutation keyed by `uid` (`notes.upsert`, `highlights.set`, `chats.save`, …). An entry leaves the
   outbox when its mutation succeeds. Files upload through upload URLs (below) before the mutation that
   references them.
-- **Conflicts: last writer wins per record, in `seq` order.** One person edits their own notes, so
-  collisions are rare. An offline edit that arrives late overwrites a newer edit from another device;
-  the notes and Recents pages say "edited on another device" when the cache replaces a record the user
-  has open.
+- **Conflicts: `baseSeq` first, then last writer wins.** Every upsert carries the `seq` the client's
+  copy had when the edit began. If the server's record has moved past it, the server doesn't overwrite:
+  for a note it keeps both, writing the late edit as a new note item with `conflictOf`, and for a
+  highlight, bookmark or chat it keeps the server's and answers `conflict`, which the outbox treats as
+  done. One person edits their own notes, so this is rare, but a late offline edit silently replacing
+  a newer one would be data loss. The notes and Recents pages say "edited on another device" when the
+  cache replaces a record the user has open, and show a conflict copy beside the note it collided with.
 - **Server time.** Times that cross devices (when a recording started, when a slide was taken) are
   stored in server time. The engine keeps the device's clock offset in its local `sync_state`, measured
   from the server time each feed page carries.
@@ -213,7 +236,8 @@ for the web's wasm build):
 
 ### Migrating what's on the device
 
-On the first launch after M1, signed in, the app uploads once, through the outbox:
+On the first launch after M1 (and after M1b for recordings), signed in, the app uploads once,
+through the outbox:
 - notes, as `note` items anchored to their verse;
 - highlights, bookmarks and Recents (chats get `uid`s);
 - recordings: details and transcript first (the recording's UUID becomes the item's `uid`), so they're
@@ -262,10 +286,15 @@ recording started offline follows the last known plan and is reconciled at `fini
 **Encoding and upload (Apple platforms).**
 - **AAC-LC, mono, 16 kHz** (the rate the Mac already records at), at the encoder's speech bitrate
   (32–48 kbps, at most about 22 MB an hour).
-- **One continuous encoder per recording** (`AudioConverter`; `AVAudioConverter` on iOS) produces raw
-  AAC packets. Linger writes the 7-byte ADTS header on each packet itself and starts a new part file
-  every 5 minutes at a packet boundary. Separate encoders per part would add encoder priming silence at
-  every join.
+- **One encoder, in core, on both platforms.** AudioToolbox's `AudioConverter` is the same C API on
+  macOS and iOS, so `recording::aac` (`crates/core`, feature `apple-audio`) calls it from Rust through
+  `objc2-audio-toolbox` (or `coreaudio-sys`; the fallback is a C shim built by `build.rs`, never Swift).
+  The platform hands core PCM buffers: the Mac's recorder thread as today, and on iOS the
+  `AVAudioEngine` tap in Swift, which does nothing else. One continuous encoder per recording, because
+  separate encoders per part would add priming silence at every join.
+- **Framing and parts, in core.** `recording::ChunkWriter` generalizes to write the 7-byte ADTS header
+  on each packet, start a new part file every 5 minutes at a packet boundary, and keep every packet's
+  size and position for the muxer below.
 - **Each part uploads as soon as it closes** (about 1.8 MB), through the outbox, as an `audioPart` file
   with its index. A two-hour service would be about 44 MB in one POST, which needs 3 Mbit/s of upload,
   more than church Wi-Fi or a phone signal reliably gives. Uploading as it goes also means most of a
@@ -274,18 +303,20 @@ recording started offline follows the last known plan and is reconciled at `fini
 
 **Encoding and upload (Linux).** There's no AAC encoder in the Linux stack, so Linux encodes one FLAC at
 the end with the pure-Rust `flacenc` (about 55 MB an hour, with a seek table) and uploads it in 8 MB
-`uploadPart` slices. The transcription workflow's first step, a Node action (512 MiB of memory, enough
-for a two-hour file), concatenates them byte for byte. AssemblyAI, AVPlayer and browsers all
-play FLAC.
+`uploadPart` slices. `files.join`, the same action that joins M4A slices (a Node action for its
+512 MiB of memory, enough for a two-hour file; a byte copy, no muxer), concatenates them. AssemblyAI,
+AVPlayer and browsers all play FLAC.
 
-**Joining (Apple platforms).** When recording ends, a Node action fetches the parts in order,
-concatenates them (ADTS streams join by concatenation) and **remuxes them into one M4A** with its index
-at the front, without re-encoding, using a pure-JavaScript MP4 muxer, then deletes the parts. Why M4A:
-ADTS has no index, so players estimate its timeline from the bitrate. In a test, AVPlayer gave a
-259-second ADTS file a duration of 238 seconds, 8% short; an hour into a sermon a transcript timestamp
-would land minutes from its sentence. The same audio as M4A reported its exact duration and seeked
-exactly. If the remux spike in M1 fails, the device remuxes locally at the end and uploads the M4A in
-slices.
+**The M4A is written on the device.** The device holds every packet, so when recording ends core's
+muxer (`recording::mp4`, a few hundred lines: one AAC track, `moov` with `stsz`, `stts`, `stsc` and
+`stco` first, then `mdat`) writes one M4A from the packets it kept, without re-encoding, and uploads it
+in 8 MB `uploadPart` slices; `sermons.finish` names it, `files.join` (a Convex action) concatenates
+the slices byte for byte, and the parts are deleted once the M4A is attached. Why M4A: ADTS has no
+index, so players estimate its timeline from the bitrate. In a test, AVPlayer gave a 259-second ADTS
+file a duration of 238 seconds, 8% short; an hour into a sermon a transcript timestamp would land
+minutes from its sentence. The same audio as M4A reported its exact duration and seeked exactly. Only
+a recording whose device died has no M4A: the cron that finishes it concatenates the ADTS parts it has
+into the `audio` file, and that sermon's timeline is approximate, which the item says.
 
 **Transcription** is a `@convex-dev/workflow` workflow (Convex actions aren't retried on their own; the
 workflow retries each step):
@@ -293,7 +324,7 @@ workflow retries each step):
 2. Start an AssemblyAI job on the joined file's `getUrl` link, with the settings `transcribe.rs` and
    `Transcriber.ts` use today: Universal-3.5 Pro, speaker labels and the 66 book names as key terms.
 3. On AssemblyAI's webhook, a Convex HTTP action at `https://<deployment>.convex.site/assemblyai`
-   checks the per-job secret, stores the transcript file (`{ language, durationMs, segments }`, the
+   checks the per-job secret, stores the transcript as the item's `text` file (`{ language, durationMs, segments }`, the
    shape the app already reads), settles the real duration and deletes AssemblyAI's copy. A cron
    checks on jobs whose webhook is late, as `GET /v1/sermons/:id` does today.
 4. Run the **digest step** (below), then chunk and anchor the transcript.
@@ -302,8 +333,9 @@ Pro audio is **kept**, so a recording plays on any device and a transcript line 
 Free trial sermon's audio is deleted once transcribed.
 
 **On-device transcription** (Free, offline, or by choice):
-- **iOS 26 and macOS 26:** Apple's SpeechTranscriber, through a small Swift static library with a C ABI
-  for the egui app and directly on iOS.
+- **iOS 26 and macOS 26:** Apple's SpeechTranscriber, through one small Swift static library with a C
+  ABI on both platforms. It takes an audio file and the contextual strings and returns the transcript
+  shape below, nothing else: the one Swift leaf with no Rust equivalent, because the API is Swift-only.
 - **macOS 11–15 and Linux:** `whisper-rs` with the `base.en` model, downloaded on first use.
 - **iOS 17–18:** none; these users have the cloud trial hour, or Pro.
 
@@ -338,13 +370,16 @@ each point was made.
      suggest another.
    - macOS: Continuity Camera, drag-and-drop or a file picker. Linux: drag-and-drop or a file.
 2. **Mark (optional).** On iOS, a PencilKit canvas over each page: circle, underline or highlight with a
-   finger or Pencil. Strokes are converted to Linger's own format (normalized 0–1 points, pen kind,
-   colour) and saved apart from the image. The Mac gets the same tools in M6.
+   finger or Pencil. Each stroke's raw points, pen kind and colour cross the FFI as they are; core
+   converts them to Linger's format (normalized 0–1 points), simplifies them and saves them apart from
+   the image. Swift draws the canvas and nothing more. The Mac gets the same tools in M6, on the same
+   converter.
 3. **Render and upload.** Each page as JPEG at 2,048 px on the long edge (about 400 KB) and a
    thumbnail, with its marks in the item's `pages` entry; for a marked page, also `photoMarked`, drawn by **one shared renderer** in `linger-core`
    (`tiny-skia`, reached from Swift through the FFI), so every device draws the same marks the same way.
    `photos.begin` creates the item as `uploading`; the files attach through the outbox; `photos.submit`
-   starts extraction. Rendering on the device keeps image processing out of Convex.
+   starts extraction. That sequence is core's (`photos::Capture`), driven through the outbox, so no
+   platform can order it differently. Rendering on the device keeps image processing out of Convex.
 4. **Extract.** A workflow step per page sends Claude **the clean photo and, for a marked page, the
    marked render**, so highlighter strokes don't hide the words, and asks for structured output:
    - `text`: the whole page or slide, in reading order;
@@ -364,6 +399,7 @@ each point was made.
 `text` is the marked passages, each with the sentence before and after for context, and only that is
 chunked, searched and given to Ask. The whole page's extracted text (`pageText`) is shown during review;
 unless the user turns on "Use the whole page" for that page, it's discarded when the review is saved.
+Both live in the item's `text` file, which approval rewrites.
 Unmarked handwriting and slides store their full text; an unmarked book page stores its full text too,
 and review suggests marking it.
 
@@ -419,9 +455,10 @@ unreviewed chunks alike and marks the unreviewed ones.
    grouped by item, so one sermon doesn't fill every slot.
 
 It is the `search` action in `convex/library/search.ts`. It returns chunks with their item's `uid`,
-kind, title, source, date, times and page, and whether they're unreviewed. Native clients call it
-through Convex's HTTP API (`POST /api/action` with the user's token) from the blocking tool loop;
-the web calls it through the Convex client.
+kind, title, source, date, times and page, and whether they're unreviewed. It is an action, not a
+query, because it merges several reads, so it is neither reactive nor cached; counts like "7 items on
+Romans 8" come from the anchor query instead. Every client calls it through `LibraryBackend`
+([the sync engine](#the-sync-engine)).
 
 ### Vectors, if the eval asks for them
 
@@ -510,22 +547,27 @@ highlights and bookmarks.
 
 - **UI:** a TypeScript single-page app in `web/` (Vite and React), hosted on Vercel as its own
   project, with HTML and CSS typesetting in Literata, `ConvexProviderWithClerk` and Clerk's React
-  SDK. egui on the web was rejected: no native text selection, find in page or screen-reader support,
+  SDK. React renders and holds no logic. egui on the web was rejected: no native text selection, find in page or screen-reader support,
   and a large download before first paint.
-- **Core on WebAssembly.** The Bible, search, references and the device-side Ask tools come from
-  `linger-core` compiled to `wasm32` through a new `crates/web` (wasm-bindgen). That needs a `native`
-  feature gating every native-only dependency (`rusqlite`, `ureq`, `keyring`, `hound`, `flacenc`, the
-  zstd C library, audio playback, image handling, `whisper-rs` and the `sync` engine), with the
-  pure-Rust `ruzstd` decoder for the data and getrandom's `wasm_js` backend for `uuid`. Today the data is compiled in with `include_bytes!`; the wasm build
+- **Core on WebAssembly.** The Bible, search, references, the Ask tool loop and the library's client
+  side come from `linger-core` compiled to `wasm32` through a new `crates/web` (wasm-bindgen). That
+  needs a `native` feature gating every native-only dependency (`rusqlite`, `ureq`, `keyring`, `hound`,
+  `flacenc`, the zstd C library, audio playback, image handling, `whisper-rs`, the `convex` crate and
+  the `apple-audio` encoder), with the pure-Rust `ruzstd` decoder for the data and getrandom's
+  `wasm_js` backend for `uuid`. Today the data is compiled in with `include_bytes!`; the wasm build
   fetches it instead (about 7 MB of translations, 4 MB of original-language text, 1 MB of
   cross-references) on first use and keeps it in Cache Storage.
-- **The tool loop** is ported to TypeScript (about a hundred lines): rounds go to the same proxy,
-  which allows the web origin through CORS, and tools run through wasm or `library.search`.
+- **The tool loop is `assistant.rs` in wasm**, not a port. `assistant` and `api` reach the proxy through
+  an `Http` trait: `ureq` natively, `fetch` under wasm, a fake in tests. Rounds go to the same proxy,
+  which allows the web origin through CORS; the device-side tools run in wasm, and `search_library`
+  goes through the web's `LibraryBackend`, which wraps the Convex JavaScript client, so Clerk's
+  session token and Convex's live queries stay the JavaScript SDKs' job and only the view is React.
 - **Handoff:** the web reads and writes `positions`, so it offers "Continue from your iPhone" and the
   apps offer to continue from the web.
 
-The wasm build is the risky part, so M8 spikes it first; the fallback is a TypeScript port of the
-reading and search code.
+The wasm build is the risky part, so M8 spikes it first. There is no TypeScript fallback: if the
+binary is too big or too slow, the fix is in the build (lazy data, fewer features, more fetches), not
+a second implementation ([README](README.md#where-code-lives)).
 
 ## What the library costs
 

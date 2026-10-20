@@ -1,6 +1,6 @@
 # M3: The iOS app
 
-Status: not started. Depends on: M1, M2. Design: [library.md](library.md), [backend.md](backend.md#accounts).
+Status: not started. Depends on: M1, M1b, M2. Design: [library.md](library.md), [backend.md](backend.md#accounts).
 
 **Goal.** A signed-in iPhone and iPad app that reads, takes notes, highlights, asks questions over the
 library, and stays in sync with the Mac. It reaches TestFlight at the end of M3. Capture comes next:
@@ -13,14 +13,16 @@ no entitlements yet.
 
 ## crates/ffi
 
-The iOS app runs the same Rust as the desktop for everything that isn't UI. The FFI grows:
+The iOS app runs the same Rust as the desktop for everything that isn't UI. Swift holds the views and
+the platform APIs it must (Clerk, StoreKit, AVPlayer, the keyboard) and decides nothing: a rule that
+Swift seems to need goes into core and crosses the FFI. The FFI grows:
 
 1. **Tokens.** A foreign-implemented `TokenProvider` trait (`fn token() -> Option<String>`,
    `fn refresh()`) that Swift implements with the Clerk SDK; core wraps it as an `auth::TokenSource`.
 2. **The study store and cache:** `Study` (open, highlights, bookmarks, notes as items, Recents, the
    library list and items, `forChapter`), with a `StudyObserver` callback when `generation` moves.
-3. **Sync:** `Sync::start(data_dir, convex_url, token_provider)`, the same engine as the desktop's, `status()`, and the observer. The tokio thread
-   lives inside Rust, as on the desktop.
+3. **Sync:** `Sync::start(data_dir, token_provider)` over the `ConvexBackend`, the same engine as the
+   desktop's, `status()`, and the observer. The tokio thread lives inside Rust, as on the desktop.
 4. **Ask:** `Conversation` (new, from saved JSON, `ask(question, context, mode, observer)`), streaming
    `AskEvent`s (text, tool, thinking, allowance) through a callback, with the device-side tools, the
    public-domain gate and the library tools exactly as on the desktop.
