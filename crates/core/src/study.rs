@@ -1298,9 +1298,10 @@ pub(crate) mod cache {
         }
         tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
         write_server(&tx, e.kind, e.verse, seq, theirs)?;
-        // A record this device made without having a copy (base 0, as migration uploads) over
-        // one the server already has is skipped, not a conflict: nothing was edited against it.
-        let real = mine != theirs && base > 0;
+        // Base 0 included: an edit made before the feed first caught up has no copy either, and
+        // losing it silently is what conflicts exist to prevent. Migration lands here too, and
+        // says so when the server's copy differs.
+        let real = mine != theirs;
         if real {
             tx.execute(
                 "INSERT INTO conflicts(kind, key, mine, theirs, at) VALUES(?1, ?2, ?3, ?4, ?5)",

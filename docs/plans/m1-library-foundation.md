@@ -21,7 +21,10 @@ These gate M1's release, because they can't be fixed once users have libraries:
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
    `server/scripts/clerk-test-token.ts`, the proxy's `CLERK_*`
-   variables and Convex's `CLERK_JWT_ISSUER`. Activate Clerk's Convex integration.
+   variables and Convex's `CLERK_JWT_ISSUER`. Activate Clerk's Convex integration. Deploy the
+   server to the production deployment `expert-rabbit-665` (`api::CONVEX_URL`, which release builds
+   use) and set `CLERK_JWT_ISSUER` there before any build that signs in ships; today it has no
+   functions.
 2. **Three spikes, two days each:**
    - **Tokens** (done, October 19): a desktop OAuth access token and a Clerk session token for the
      same user resolve to one `tokenIdentifier` through `library/whoami:get` and the `convex` crate;
@@ -138,9 +141,10 @@ These gate M1's release, because they can't be fixed once users have libraries:
    backs off as a whole while offline rather than per change. The cache keeps tombstones (a
    `deleted` flag and the `seq`) so a later edit is made against them; a record that arrives from
    the feed is dated when it arrived, since the wire carries no creation time. A device's own
-   record over one the server already has, made without a copy (`baseSeq` 0, as migration
-   uploads), is answered `conflict` and the server's stands without recording a conflict: that is
-   the "skipped" of [Migrating](library.md#migrating-whats-on-the-device). The `convex` crate turns
+   record over one the server already has, made without a copy (`baseSeq` 0: migration, or an
+   edit made before the feed first caught up), is answered `conflict` and the server's stands,
+   which is the "skipped" of [Migrating](library.md#migrating-whats-on-the-device); when the two
+   differ the conflict is recorded like any other, so an edit is never lost unannounced. The `convex` crate turns
    on serde_json's `preserve_order` for the whole build, so the Ask contract's hash and the record
    generator sort keys themselves (`contract::sorted`).
 4. **`reference::find_all(text) -> Vec<(Range<usize>, Reference)>`**, moved from

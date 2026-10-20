@@ -240,7 +240,7 @@ fn an_existing_library_migrates_keeps_everything_and_uploads_once() {
     assert_eq!(server.highlight(VerseId(42_003_016)).unwrap().1, "pink");
     assert_eq!(server.bookmark(VerseId(1_001)).unwrap().1, "Start");
     // A second device with its own library: the verse the server already has keeps the server's
-    // copy without a conflict; its other highlight goes up.
+    // copy, and since the colours differ the person is told; its other highlight goes up.
     let dir = std::env::temp_dir().join(format!("linger-sync-{}-migrate-b", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     old_file(&dir.join("study.sqlite"));
@@ -255,7 +255,12 @@ fn an_existing_library_migrates_keeps_everything_and_uploads_once() {
     b.start(&server);
     b.settle(&server);
     assert_eq!(b.store.highlight(jn316), Some(HighlightColor::Pink), "the server's copy stands");
-    assert!(b.store.conflicts().is_empty());
+    let conflicts = b.store.conflicts();
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(
+        (conflicts[0].verse, conflicts[0].mine.as_str(), conflicts[0].theirs.as_str()),
+        (jn316, "\"green\"", "\"pink\"")
+    );
     assert_eq!(server.seq(), 4, "only Mark 1:1 was new");
     assert_eq!(server.highlight(VerseId(40_001_001)).unwrap().1, "blue");
     // Opening again doesn't migrate or upload again.

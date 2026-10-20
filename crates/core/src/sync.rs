@@ -308,8 +308,12 @@ impl Engine {
             }
             let connected = self.backend.connected();
             if connected && !self.connected {
-                // Back online: what was waiting goes at once.
+                // Back online: what was waiting goes at once, and a feed that ended offline resumes.
                 self.online();
+                if !self.caught_up {
+                    let after = self.subscribed;
+                    self.subscribe(after);
+                }
             }
             self.connected = connected;
             if !connected {
