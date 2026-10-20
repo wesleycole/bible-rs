@@ -86,7 +86,7 @@ for i in $(seq 1 "$RUNS"); do
   if [[ -n "$SYNC_HOME" ]]; then
     want=$(remote_write "$i")
     measure s "$SYNC_HOME" sync_env
-    got=$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "{}"); print(int(v.get("cursor") or 0))' "$LAST_SYNC")
+    got=$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "{}"); print(int(v.get("cursor") or 0) if v.get("sync_ms") is not None else -1)' "$LAST_SYNC")
     if ! [[ "$got" =~ ^[0-9]+$ && "$want" =~ ^[0-9]+$ ]] || (( got < want )); then
       echo "run $i: sync didn't pull seq $want (the engine reported ${LAST_SYNC:-nothing})" >&2
       exit 1

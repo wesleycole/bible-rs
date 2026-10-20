@@ -2732,7 +2732,18 @@ impl BibleApp {
                         since.elapsed().as_secs_f64() * 1000.0,
                         s.cursor()
                     ),
-                    None => println!("{{\"sync_ms\":null,\"cursor\":null}}"),
+                    // Not caught up in time: say where the engine got to and why.
+                    None => println!(
+                        "{}",
+                        serde_json::json!({
+                            "sync_ms": null,
+                            "cursor": self.sync.as_ref().map(|s| s.cursor()),
+                            "status": self.sync.as_ref().map(|s| format!("{:?}", s.status())),
+                            "error": self.sync_error,
+                            "signed_in": self.account.signed_in(),
+                            "account_error": self.account.error,
+                        })
+                    ),
                 }
                 self.probe_sync_since = None;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
