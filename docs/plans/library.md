@@ -566,8 +566,8 @@ highlights and bookmarks.
   side come from `linger-core` compiled to `wasm32` through a new `crates/web` (wasm-bindgen). That
   needs a `native` feature gating every native-only dependency (`rusqlite`, `ureq`, `keyring`, `hound`,
   `flacenc`, the zstd C library, audio playback, image handling, `whisper-rs`, the `convex` crate and
-  the `apple-audio` encoder), with the pure-Rust `ruzstd` decoder for the data and getrandom's
-  `wasm_js` backend for `uuid`. Today the data is compiled in with `include_bytes!`; the wasm build
+  the `apple-audio` encoder), with the pure-Rust `ruzstd` decoder for the data and `uuid`'s `js`
+  feature for randomness. Today the data is compiled in with `include_bytes!`; the wasm build
   fetches it instead (about 7 MB of translations, 4 MB of original-language text, 1 MB of
   cross-references) on first use and keeps it in Cache Storage.
 - **The tool loop is `assistant.rs` in wasm**, not a port. `assistant` and `api` reach the proxy through
