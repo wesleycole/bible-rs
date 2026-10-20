@@ -30,8 +30,12 @@ impl Device {
     }
 
     fn start(&mut self, server: &Arc<FakeServer>) {
+        self.start_as(server, "t");
+    }
+
+    fn start_as(&mut self, server: &Arc<FakeServer>, token: &str) {
         let handle =
-            sync::start(&self.dir, Box::new(server.backend()), Arc::new(StaticToken("t".into()))).unwrap();
+            sync::start(&self.dir, Box::new(server.backend()), Arc::new(StaticToken(token.into()))).unwrap();
         self.store.on_outbox(handle.notifier());
         self.sync = Some(handle);
     }
@@ -573,4 +577,40 @@ fn a_record_type_newer_than_this_build_stops_sync_and_says_to_update() {
     let SyncStatus::Error(e) = sync.status() else { unreachable!() };
     assert!(e.starts_with("Update Linger to keep syncing"), "{e}");
     assert_eq!(sync.cursor(), 0, "the cursor doesn't move past what it couldn't read");
+}
+
+/// Unsigned tokens for two accounts: only their `sub` matters here.
+const USER_1: &str = "h.eyJzdWIiOiJ1c2VyXzEifQ.s";
+const USER_2: &str = "h.eyJzdWIiOiJ1c2VyXzIifQ.s";
+
+#[test]
+fn another_account_signing_in_never_sees_the_last_ones_library() {
+    // Each account has its own library on the server; the device keeps one cache.
+    let (first, second) = (FakeServer::new(), FakeServer::new());
+    let mut a = Device::new("owner");
+    a.start_as(&first, USER_1);
+    a.store.set_highlight(verse(3, 16), Some(HighlightColor::Pink)).unwrap();
+    a.store.set_note(verse(3, 17), "Not to condemn").unwrap();
+    a.settle(&first);
+    assert!(a.sync.as_ref().unwrap().cursor() > 0);
+
+    // The same account again (a restart): the cache stays.
+    a.stop();
+    a.start_as(&first, USER_1);
+    a.settle(&first);
+    assert_eq!(a.store.highlight(verse(3, 16)), Some(HighlightColor::Pink));
+
+    // The session ended without a sign-out, and someone else signs in.
+    a.stop();
+    a.start_as(&second, USER_2);
+    a.settle(&second);
+    assert_eq!(a.sync.as_ref().unwrap().cursor(), 0, "the first account's cursor is gone");
+    assert_eq!(a.store.counts(), (0, 0, 0), "the first account's library is gone");
+    assert!(second.notes().is_empty() && second.highlight(VerseId::from(verse(3, 16))).is_none());
+
+    // The second account's own writes go to its library alone.
+    a.store.set_highlight(verse(1, 1), Some(HighlightColor::Green)).unwrap();
+    a.settle(&second);
+    assert!(second.highlight(VerseId::from(verse(1, 1))).is_some());
+    assert!(first.highlight(VerseId::from(verse(1, 1))).is_none());
 }

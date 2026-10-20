@@ -331,6 +331,13 @@ struct Engine {
 
 impl Engine {
     fn run(&mut self) {
+        // The cache is one account's: another's is forgotten before anything is sent or read.
+        if let Some(account) = self.tokens.token().ok().as_deref().and_then(auth::subject) {
+            match cache::claim(&mut self.conn, &account) {
+                Ok(cleared) => self.data_changed |= cleared,
+                Err(e) => self.feed_error = Some(format!("{e:#}")),
+            }
+        }
         self.authenticate();
         // The clock first, so the first pages a new device pulls are dated by it too; offline,
         // the loop measures it once the server answers.

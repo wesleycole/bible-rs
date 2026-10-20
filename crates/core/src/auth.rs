@@ -136,6 +136,16 @@ pub fn base64url(bytes: &[u8]) -> String {
 /// When a JWT expires (its `exp`, Unix seconds), read without checking the signature: for
 /// scheduling a refresh, not for trusting the token.
 pub fn expires_at(jwt: &str) -> Option<u64> {
+    claims(jwt)?["exp"].as_u64()
+}
+
+/// Whose a JWT is (its `sub`, Clerk's user id), read without checking the signature: for keying
+/// this device's cache by account, not for trusting the token.
+pub fn subject(jwt: &str) -> Option<String> {
+    claims(jwt)?["sub"].as_str().map(str::to_string)
+}
+
+fn claims(jwt: &str) -> Option<serde_json::Value> {
     let payload = jwt.split('.').nth(1)?;
     let mut bytes = Vec::with_capacity(payload.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0);
@@ -156,7 +166,7 @@ pub fn expires_at(jwt: &str) -> Option<u64> {
             bytes.push((acc >> bits) as u8);
         }
     }
-    serde_json::from_slice::<serde_json::Value>(&bytes).ok()?["exp"].as_u64()
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Percent-encodes a query or form value (RFC 3986 unreserved characters pass through).

@@ -836,14 +836,7 @@ impl StudyStore {
     /// Signing out: forgets the library cache (highlights, bookmarks), the outbox, the cursor and
     /// recorded conflicts, so nothing of this account stays. Wait for the outbox first.
     pub fn clear_library(&mut self) -> Result<()> {
-        self.conn.execute_batch(
-            "DELETE FROM highlights; DELETE FROM bookmarks; DELETE FROM items; DELETE FROM item_anchors;
-             DELETE FROM files; DELETE FROM chats; DELETE FROM outbox; DELETE FROM sync_state;
-             DELETE FROM conflicts;",
-        )?;
-        if let Some(dir) = self.conn.path().and_then(|p| Path::new(p).parent()) {
-            let _ = std::fs::remove_dir_all(dir.join("files"));
-        }
+        forget_library(&self.conn)?;
         self.reload()
     }
 
@@ -1599,6 +1592,19 @@ fn pending(conn: &Connection) -> Result<usize> {
     Ok(conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0))? as usize)
 }
 
+/// Forgets the library cache, the outbox, the cursor and recorded conflicts.
+fn forget_library(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM highlights; DELETE FROM bookmarks; DELETE FROM items; DELETE FROM item_anchors;
+         DELETE FROM files; DELETE FROM chats; DELETE FROM outbox; DELETE FROM sync_state;
+         DELETE FROM conflicts;",
+    )?;
+    if let Some(dir) = conn.path().and_then(|p| Path::new(p).parent()) {
+        let _ = std::fs::remove_dir_all(dir.join("files"));
+    }
+    Ok(())
+}
+
 /// The sync engine's side of the cache: what it sends from the outbox, what it does with the
 /// answers, and how it applies the change feed. Each function is one transaction.
 #[cfg(feature = "sync")]
@@ -2008,6 +2014,28 @@ pub(crate) mod cache {
     pub(crate) fn retry_all(conn: &Connection) -> Result<()> {
         conn.execute("UPDATE outbox SET next_at = 0, last_error = NULL", [])?;
         Ok(())
+    }
+
+    /// Makes the cache `account`'s (a Clerk user id): if it was another account's, everything of
+    /// that one is forgotten first, so a session that ended without signing out (an expiry, a
+    /// lost keychain) never hands one account's library to the next. A cache with no owner yet
+    /// (new, or kept from before owners were recorded) is adopted as it is. True if it cleared.
+    pub(crate) fn claim(conn: &mut Connection, account: &str) -> Result<bool> {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let owner: Option<String> = tx
+            .query_row("SELECT value FROM settings WHERE key = 'library_owner'", [], |r| r.get(0))
+            .optional()?;
+        let other = owner.is_some_and(|o| o != account);
+        if other {
+            forget_library(&tx)?;
+        }
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES('library_owner', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [account],
+        )?;
+        tx.commit()?;
+        Ok(other)
     }
 
     /// The cursor: the `seq` of the last feed page applied.

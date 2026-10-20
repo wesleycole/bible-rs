@@ -125,11 +125,18 @@ translations), and that the app launches to text as fast as now.
   phone was on the Mac 0.77 s later (an upper bound, including the CLI sync), and a bookmark synced
   on the Mac was on the phone's screen 0.17 s after the Mac's sync returned. On a device with
   TestFlight later.
-- Sign-in and sign-out work through Clerk's development instance. **Proven on the simulator**
+- Sign-in and sign-out work through Clerk's development instance. The device's cache records whose
+  library it holds (the token's `sub`), and sync clears it before starting as a different account, so
+  a session that ended without signing out (expiry, a lost keychain) doesn't hand one account's
+  library to the next; a cache from before this has no owner and is adopted. **Proven on the simulator**
   (8d85783, iPhone Air): sign-out cleared study.sqlite to zero rows and a relaunch opened on the
-  sign-in screen; signing in again refilled the same counts as the Mac (40 highlights, 11 notes,
-  37 bookmarks). The headless XCUITest (LingerUITests) signs in by email code. On a device later.
-- Account deletion from the iPhone removes everything ([backend.md](backend.md#deletion)).
+  sign-in screen; signing in again refilled the same counts as the Mac (40 highlights, 11 bookmarks,
+  37 note items). The headless XCUITest (LingerUITests) signs in by email code. On a device later.
+- Account deletion from the iPhone removes everything ([backend.md](backend.md#deletion)). **Proven on
+  the simulator** (207fadd, iPhone Air, dev): a throwaway user (user_3KymVPc7GS0rt1Z7pyDEIGvQWzQ)
+  with 1 highlight and 1 note deleted its account from Settings; afterwards Clerk answered 404 for
+  the user, dev Convex held 0 of its records and the device's study.sqlite was empty. On a device
+  later.
 - A sandbox purchase on the iPhone unlocks Pro on the Mac.
 
 **M3b:**
