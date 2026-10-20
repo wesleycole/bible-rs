@@ -119,6 +119,14 @@ These gate M1's release, because they can't be fixed once users have libraries:
    - `updated` and `deleted` on `highlights` and `bookmarks`; `uid` on `chats` (filled for existing
      rows); verse keys rewritten from the packed form to `VerseId`.
 
+   As built, migration 1 (pass 1) is the highlight and bookmark cache with `outbox`, `sync_state` and
+   `conflicts`; migration 2 (pass 2) adds `items` (the record as JSON beside `kind`, `seq`, `deleted`),
+   `item_anchors` (per chapter), `files` (a local `path` once fetched) and the chat columns (`uid`,
+   `seq`, `deleted`, `file_uid`, `url`, `fetched`; the local order moves to `ord`), turns each note
+   into the verse's own note item, drops `notes`, and queues notes and chats once. The outbox's `key`
+   loses its type there, so it holds a verse id or a uid; a note's or chat's arguments are read from
+   the cache when it's sent, so an edit only bumps its entry.
+
    `notes` stays readable for migration and export, then becomes a view over note items. `StudyStore`'s
    public API keeps its shape where it can (`note(verse)`, `set_note`, `set_highlight`, `chats()`),
    reading the cache and writing through the outbox, so most of the desktop doesn't change.
@@ -155,6 +163,17 @@ These gate M1's release, because they can't be fixed once users have libraries:
    differ the conflict is recorded like any other, so an edit is never lost unannounced. The `convex` crate turns
    on serde_json's `preserve_order` for the whole build, so the Ask contract's hash and the record
    generator sort keys themselves (`contract::sorted`).
+   Notes, chats and files follow (pass 2, October 20). A conflict answer carries the server's record,
+   so the cache shows what stood at once; for a note it also names the copy (`copyUid`, `copySeq`),
+   and this device's note becomes that copy (an edit made while the first was in flight goes on as an
+   edit of the copy). A chat's conflict keeps the server's and isn't listed (a conflict names a verse).
+   A chat is saved by uploading its conversation as a `chat` file named from the chat's uid and the
+   bytes' SHA-256, so a retry attaches the same file and an unchanged one isn't uploaded again. Chats
+   from another device are listed at once and their conversations fetched eagerly, like text files,
+   rather than on demand: they're small and Recents should open offline. `Synced` waits for those
+   fetches. A second device's migrated note is dropped instead of sent when the library already has
+   the same text on the same anchors. The desktop keeps a chat's local row id as its handle (only the
+   engine uses `uid`), so Recents didn't change. `Item` has no photo `pages` until M4.
 4. **`reference::find_all(text) -> Vec<(Range<usize>, Reference)>`**, moved from
    `apps/desktop/src/pages/notes.rs` `mentioned()` and extended to whole chapters and ranges, with the
    existing tests.
@@ -162,6 +181,11 @@ These gate M1's release, because they can't be fixed once users have libraries:
    `ApiError` becomes the generated enum.
 
 ## The desktop app
+
+Pass 2's first half changes only the cache under the existing UI: the popover and notes page edit the
+verse's own note through it, and Recents sync. What follows for the notes page and popover (a conflict
+copy shown beside its note, "edited on another device", typed anchors from `find_all`) and
+`items.updateDetails` come in the second half.
 
 1. **Start sync after sign-in** from `Account`. **Sign-out** waits for the outbox (or asks), then deletes
    the cache and cached files, keeping recordings that exist only on this Mac unless the user deletes them

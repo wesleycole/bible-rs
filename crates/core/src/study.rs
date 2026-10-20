@@ -23,7 +23,7 @@ use serde_json::json;
 use crate::books::{BookId, ChapterIdx, VerseRef};
 #[cfg(feature = "sync")]
 use crate::records::FeedRecord;
-use crate::records::VerseId;
+use crate::records::{Anchor, AnchorOrigin, Item, ItemKind, ItemStatus, VerseId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -68,8 +68,11 @@ impl HighlightColor {
     }
 }
 
+/// A verse's own note: the note item whose only user anchor is that verse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
+    /// The note item's uid.
+    pub uid: String,
     pub body: String,
     pub created: i64,
     pub updated: i64,
@@ -123,7 +126,7 @@ CREATE TABLE IF NOT EXISTS chats(
 ";
 
 /// The `PRAGMA user_version` this build migrates a file to.
-const VERSION: i64 = 1;
+const VERSION: i64 = 2;
 
 /// Migration 1 (M1): highlights and bookmarks become the library cache, keyed by [`VerseId`],
 /// with the outbox, the feed cursor and recorded conflicts beside them.
@@ -143,6 +146,41 @@ CREATE TABLE sync_state(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 CREATE TABLE conflicts(
     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, key INTEGER NOT NULL, mine TEXT NOT NULL,
     theirs TEXT NOT NULL, at INTEGER NOT NULL);
+";
+
+/// Migration 2 (M1): notes become `note` items, the library's own record (several to a verse,
+/// anchored to verses), with a per-chapter index of their anchors; chats get a `uid` and the
+/// server's `seq` (their local order moves to `ord`); `files` keeps what the cache has downloaded.
+/// The outbox's `key` loses its type, so it holds a verse id for a highlight or bookmark and a
+/// uid for a note or chat.
+const MIGRATION_2: &str = "
+CREATE TABLE items(
+    uid TEXT PRIMARY KEY, kind TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0,
+    deleted INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL,
+    record TEXT NOT NULL);
+CREATE TABLE item_anchors(
+    uid TEXT NOT NULL, book INTEGER NOT NULL, chapter INTEGER NOT NULL,
+    first INTEGER NOT NULL, last INTEGER NOT NULL, origin TEXT NOT NULL);
+CREATE INDEX item_anchors_chapter ON item_anchors(book, chapter);
+CREATE INDEX item_anchors_uid ON item_anchors(uid);
+CREATE TABLE files(
+    uid TEXT PRIMARY KEY, owner TEXT, role TEXT NOT NULL, url TEXT NOT NULL,
+    bytes INTEGER NOT NULL, path TEXT NOT NULL);
+ALTER TABLE chats RENAME COLUMN seq TO ord;
+ALTER TABLE chats ADD COLUMN uid TEXT;
+ALTER TABLE chats ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chats ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chats ADD COLUMN file_uid TEXT;
+ALTER TABLE chats ADD COLUMN url TEXT;
+ALTER TABLE chats ADD COLUMN fetched INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE outbox_v2(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, key NOT NULL,
+    payload TEXT NOT NULL, base_seq INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, next_at INTEGER NOT NULL DEFAULT 0,
+    created INTEGER NOT NULL, UNIQUE(kind, key));
+INSERT INTO outbox_v2 SELECT * FROM outbox;
+DROP TABLE outbox;
+ALTER TABLE outbox_v2 RENAME TO outbox;
 ";
 
 /// Brings a file (new, or from any earlier version) up to [`VERSION`], one transaction a step.
@@ -217,14 +255,252 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         tx.pragma_update(None, "user_version", 1)?;
         tx.commit()?;
     }
+    if version < 2 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(MIGRATION_2)?;
+        let t = now();
+        // Each note becomes the verse's own note item and goes to the server once, as do chats.
+        let mut rows = Vec::new();
+        {
+            let mut st = tx.prepare("SELECT book, chapter, verse, body, created, updated FROM notes")?;
+            let mut q = st.query([])?;
+            while let Some(r) = q.next()? {
+                rows.push((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                ));
+            }
+        }
+        for (b, c, v, body, created, updated) in rows {
+            let Some(vr) = verse_from_row(&b, c, v) else { continue };
+            let uid = new_uid();
+            put_item(&tx, &note_item(&uid, VerseId::from(vr), &body, created), created, updated)?;
+            if VerseId::from(vr).is_valid() {
+                enqueue_uid(&tx, Kind::Note, &uid, t)?;
+            }
+        }
+        tx.execute("DROP TABLE notes", [])?;
+        let ids: Vec<i64> =
+            tx.prepare("SELECT id FROM chats")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        for id in ids {
+            let uid = new_uid();
+            tx.execute("UPDATE chats SET uid = ?2 WHERE id = ?1", params![id, uid])?;
+            enqueue_uid(&tx, Kind::Chat, &uid, t)?;
+        }
+        tx.execute_batch("CREATE UNIQUE INDEX chats_uid ON chats(uid);")?;
+        tx.pragma_update(None, "user_version", 2)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
-/// A kind of record kept one per verse, as the outbox and the cache name it.
+/// A new record id: a UUID, as every device makes them.
+fn new_uid() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// A note as its verse's own note item: one user anchor on `verse`. `created` is Unix seconds.
+fn note_item(uid: &str, verse: VerseId, text: &str, created: i64) -> Item {
+    Item {
+        uid: uid.into(),
+        seq: 0,
+        deleted_at: None,
+        kind: ItemKind::Note,
+        title: String::new(),
+        status: ItemStatus::Ready,
+        text: Some(text.into()),
+        text_file_uid: None,
+        excerpt: None,
+        summary: None,
+        outline: None,
+        source_uid: None,
+        sermon_uid: None,
+        offset_ms: None,
+        recorded_on: None,
+        details: None,
+        conflict_of: None,
+        captured_at: created.max(0) as u64 * 1000,
+        unreviewed: false,
+        anchors: vec![Anchor { from: verse, to: verse, origin: AnchorOrigin::User, at_ms: None, page: None }],
+        files: Vec::new(),
+    }
+}
+
+/// Writes an item into the cache, with its anchors in the per-chapter index (none once deleted).
+/// `created` and `updated` are Unix seconds on this device. The `seq` column only moves up: it is
+/// the server's, which a local edit (made from a record whose JSON `seq` may be older) never
+/// changes.
+fn put_item(tx: &Connection, item: &Item, created: i64, updated: i64) -> Result<()> {
+    let kind = serde_json::to_value(item.kind)?;
+    tx.execute(
+        "INSERT INTO items(uid, kind, seq, deleted, created, updated, record) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(uid) DO UPDATE SET kind = excluded.kind, seq = MAX(seq, excluded.seq), deleted = excluded.deleted,
+           created = excluded.created, updated = excluded.updated, record = excluded.record",
+        params![
+            item.uid,
+            kind.as_str().unwrap_or("note"),
+            item.seq as i64,
+            item.deleted_at.is_some() as i64,
+            created,
+            updated,
+            serde_json::to_string(item)?
+        ],
+    )?;
+    tx.execute("DELETE FROM item_anchors WHERE uid = ?1", [&item.uid])?;
+    if item.deleted_at.is_none() {
+        for a in &item.anchors {
+            for (book, chapter, first, last) in chapter_spans(a.from, a.to) {
+                tx.execute(
+                    "INSERT INTO item_anchors(uid, book, chapter, first, last, origin) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![item.uid, book, chapter, first, last, serde_json::to_value(a.origin)?.as_str()],
+                )?;
+            }
+        }
+    }
+    // Its text files, for the engine to fetch (they're named by their bytes, so never rewritten).
+    let text: Vec<&crate::records::FileRef> = if item.deleted_at.is_none() {
+        item.files.iter().filter(|f| f.role == crate::records::FileRole::Text).collect()
+    } else {
+        Vec::new()
+    };
+    let known: Vec<String> = tx
+        .prepare("SELECT uid FROM files WHERE owner = ?1")?
+        .query_map([&item.uid], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for uid in known.iter().filter(|k| !text.iter().any(|f| &f.uid == *k)) {
+        tx.execute("DELETE FROM files WHERE uid = ?1", [uid])?;
+    }
+    for f in text {
+        tx.execute(
+            "INSERT OR IGNORE INTO files(uid, owner, role, url, bytes, path) VALUES(?1, ?2, 'text', ?3, ?4, '')",
+            params![f.uid, item.uid, f.url, f.bytes as i64],
+        )?;
+    }
+    Ok(())
+}
+
+/// The item `uid` as the cache holds it.
+fn load_item(conn: &Connection, uid: &str) -> Result<Option<Item>> {
+    let record: Option<String> =
+        conn.query_row("SELECT record FROM items WHERE uid = ?1", [uid], |r| r.get(0)).optional()?;
+    record.map(|r| serde_json::from_str(&r).map_err(Into::into)).transpose()
+}
+
+/// Deletes an item here (a tombstone, so a later write is made against its `seq`).
+fn delete_item(tx: &Connection, uid: &str, t: i64) -> Result<bool> {
+    let Some(mut item) = load_item(tx, uid)? else { return Ok(false) };
+    if item.deleted_at.is_some() {
+        return Ok(false);
+    }
+    item.deleted_at = Some(t.max(0) as u64 * 1000);
+    tx.execute(
+        "UPDATE items SET deleted = 1, updated = ?2, record = ?3 WHERE uid = ?1",
+        params![uid, t, serde_json::to_string(&item)?],
+    )?;
+    tx.execute("DELETE FROM item_anchors WHERE uid = ?1", [uid])?;
+    tx.execute("DELETE FROM files WHERE owner = ?1", [uid])?;
+    Ok(true)
+}
+
+/// The verse whose own note `item` is: a live note, not a conflict copy, whose only user anchor
+/// is that one verse.
+fn own_verse(item: &Item) -> Option<VerseRef> {
+    if item.kind != ItemKind::Note || item.deleted_at.is_some() || item.conflict_of.is_some() {
+        return None;
+    }
+    let mut user = item.anchors.iter().filter(|a| a.origin == AnchorOrigin::User);
+    let a = user.next()?;
+    if user.next().is_some() || a.from != a.to {
+        return None;
+    }
+    verse_of(a.from.0 as i64)
+}
+
+/// Every verse's own note in the cache. A verse with several (two devices each wrote one before
+/// either saw the other's) has the oldest as its own; the rest stay in the library.
+fn own_notes(conn: &Connection) -> Result<HashMap<u32, Note>> {
+    let mut st = conn.prepare(
+        "SELECT uid, created, updated, record FROM items WHERE kind = 'note' AND deleted = 0 ORDER BY created, uid",
+    )?;
+    let rows = st.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+    })?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (uid, created, updated, record) = row?;
+        let Ok(item) = serde_json::from_str::<Item>(&record) else { continue };
+        if let Some(v) = own_verse(&item) {
+            out.entry(v.key()).or_insert(Note { uid, body: item.text.unwrap_or_default(), created, updated });
+        }
+    }
+    Ok(out)
+}
+
+/// Saves `body` as the verse's own note `own` (a new note item when there is none), or deletes
+/// it for a blank body, and queues the change. Returns the note that now stands, if any.
+fn write_note(
+    tx: &Connection,
+    own: Option<&Note>,
+    v: VerseRef,
+    body: &str,
+    created: i64,
+    updated: i64,
+) -> Result<Option<Note>> {
+    // A verse off the canonical grid keeps its note on this device (the server would refuse it).
+    let queue = VerseId::from(v).is_valid();
+    if body.trim().is_empty() {
+        if let Some(own) = own
+            && delete_item(tx, &own.uid, updated)?
+            && queue
+        {
+            enqueue_uid(tx, Kind::Note, &own.uid, updated)?;
+        }
+        return Ok(None);
+    }
+    let (uid, created) = own.map_or_else(|| (new_uid(), created), |n| (n.uid.clone(), n.created));
+    let mut item = load_item(tx, &uid)?.unwrap_or_else(|| note_item(&uid, VerseId::from(v), body, created));
+    item.text = Some(body.into());
+    put_item(tx, &item, created, updated)?;
+    if queue {
+        enqueue_uid(tx, Kind::Note, &uid, updated)?;
+    }
+    Ok(Some(Note { uid, body: body.into(), created, updated }))
+}
+
+/// A verse range split at chapter breaks, as (book, chapter, first, last) on the KJV grid.
+fn chapter_spans(from: VerseId, to: VerseId) -> Vec<(u32, u32, u32, u32)> {
+    let (Some(a), Some(b)) = (from.verse_ref(), to.verse_ref()) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut idx = ChapterIdx::new(a.book, a.chapter);
+    while let Some(c) = idx {
+        let first = if (c.book(), c.chapter()) == (a.book, a.chapter) { a.verse } else { 1 };
+        let last = if (c.book(), c.chapter()) == (b.book, b.chapter) { b.verse } else { c.kjv_verses() };
+        out.push((
+            c.book().index() as u32,
+            c.chapter() as u32,
+            VerseId::new(c.book(), c.chapter(), first).0,
+            VerseId::new(c.book(), c.chapter(), last).0,
+        ));
+        if (c.book(), c.chapter()) == (b.book, b.chapter) || out.len() > 1_189 {
+            break;
+        }
+        idx = c.next();
+    }
+    out
+}
+
+/// A kind of synced record, as the outbox and the cache name it: highlights and bookmarks are
+/// kept one per verse, notes (items) and chats by uid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Highlight,
     Bookmark,
+    Note,
+    Chat,
 }
 
 impl Kind {
@@ -232,28 +508,50 @@ impl Kind {
         match self {
             Kind::Highlight => "highlight",
             Kind::Bookmark => "bookmark",
+            Kind::Note => "note",
+            Kind::Chat => "chat",
         }
     }
 
     #[cfg(feature = "sync")]
     pub(crate) fn from_name(name: &str) -> Option<Self> {
-        [Kind::Highlight, Kind::Bookmark].into_iter().find(|k| k.name() == name)
+        [Kind::Highlight, Kind::Bookmark, Kind::Note, Kind::Chat].into_iter().find(|k| k.name() == name)
     }
 
     fn table(self) -> &'static str {
         match self {
             Kind::Highlight => "highlights",
             Kind::Bookmark => "bookmarks",
+            Kind::Note => "items",
+            Kind::Chat => "chats",
         }
     }
 
-    /// The mutation that sets one, and the name of its value in the args and in a conflict answer.
+    /// For a per-verse kind, the mutation that sets one, and the name of its value in the args and
+    /// in a conflict answer.
     pub(crate) fn mutation(self) -> (&'static str, &'static str) {
         match self {
             Kind::Highlight => ("library/highlights:set", "color"),
             Kind::Bookmark => ("library/bookmarks:set", "label"),
+            Kind::Note | Kind::Chat => unreachable!("{self:?} is kept by uid"),
         }
     }
+}
+
+/// Queues the note or chat `uid` in the outbox, against the `seq` of the copy in the cache. Its
+/// arguments are read from the cache when it is sent, so a later edit only bumps the entry,
+/// which keeps its place and its `base_seq`.
+fn enqueue_uid(tx: &Connection, kind: Kind, uid: &str, t: i64) -> Result<()> {
+    let base: i64 = tx
+        .query_row(&format!("SELECT seq FROM {} WHERE uid = ?1", kind.table()), [uid], |r| r.get(0))
+        .optional()?
+        .unwrap_or(0);
+    tx.execute(
+        "INSERT INTO outbox(kind, key, payload, base_seq, created) VALUES(?1, ?2, '{}', ?3, ?4)
+         ON CONFLICT(kind, key) DO UPDATE SET rev = rev + 1, attempts = 0, last_error = NULL, next_at = 0",
+        params![kind.name(), uid, base, t],
+    )?;
+    Ok(())
 }
 
 /// Queues `value` (a colour name or label, `null` to clear) for `verse` in the outbox, against the
@@ -515,15 +813,18 @@ impl StudyStore {
     /// recorded conflicts, so nothing of this account stays. Wait for the outbox first.
     pub fn clear_library(&mut self) -> Result<()> {
         self.conn.execute_batch(
-            "DELETE FROM highlights; DELETE FROM bookmarks; DELETE FROM outbox; DELETE FROM sync_state;
+            "DELETE FROM highlights; DELETE FROM bookmarks; DELETE FROM items; DELETE FROM item_anchors;
+             DELETE FROM files; DELETE FROM chats; DELETE FROM outbox; DELETE FROM sync_state;
              DELETE FROM conflicts;",
         )?;
+        if let Some(dir) = self.conn.path().and_then(|p| Path::new(p).parent()) {
+            let _ = std::fs::remove_dir_all(dir.join("files"));
+        }
         self.reload()
     }
 
     fn reload(&mut self) -> Result<()> {
         self.highlights.clear();
-        self.notes.clear();
         self.bookmarks.clear();
         let mut st = self.conn.prepare("SELECT verse, color, created FROM highlights WHERE deleted = 0")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get(2)?)))?;
@@ -533,23 +834,7 @@ impl StudyStore {
                 self.highlights.insert(vr.key(), (color, created));
             }
         }
-        let mut st = self.conn.prepare("SELECT book, chapter, verse, body, created, updated FROM notes")?;
-        let rows = st.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-                r.get(4)?,
-                r.get(5)?,
-            ))
-        })?;
-        for row in rows {
-            let (b, c, v, body, created, updated) = row?;
-            if let Some(vr) = verse_from_row(&b, c, v) {
-                self.notes.insert(vr.key(), Note { body, created, updated });
-            }
-        }
+        self.notes = own_notes(&self.conn)?;
         let mut st = self.conn.prepare("SELECT verse, label, created FROM bookmarks WHERE deleted = 0")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get(2)?)))?;
         for row in rows {
@@ -604,26 +889,23 @@ impl StudyStore {
         Ok(())
     }
 
-    /// Saves a note; an empty (whitespace-only) body deletes it.
+    /// Saves the verse's own note (made on first save); an empty (whitespace-only) body deletes
+    /// it. Queues the change for the server.
     pub fn set_note(&mut self, v: VerseRef, body: &str) -> Result<()> {
-        let code = v.book.info().code;
-        if body.trim().is_empty() {
-            self.conn.execute(
-                "DELETE FROM notes WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
-                params![code, v.chapter, v.verse],
-            )?;
-            self.notes.remove(&v.key());
-        } else {
-            let t = now();
-            self.conn.execute(
-                "INSERT INTO notes(book, chapter, verse, body, created, updated) VALUES(?1, ?2, ?3, ?4, ?5, ?5)
-                 ON CONFLICT(book, chapter, verse) DO UPDATE SET body = excluded.body, updated = excluded.updated",
-                params![code, v.chapter, v.verse, body, t],
-            )?;
-            let created = self.notes.get(&v.key()).map_or(t, |n| n.created);
-            self.notes.insert(v.key(), Note { body: body.to_string(), created, updated: t });
-        }
+        let t = now();
+        let own = self.notes.get(&v.key()).cloned();
+        let tx = self.conn.transaction()?;
+        let standing = write_note(&tx, own.as_ref(), v, body, t, t)?;
+        tx.commit()?;
+        let changed = own.is_some() || standing.is_some();
+        match standing {
+            Some(n) => self.notes.insert(v.key(), n),
+            None => self.notes.remove(&v.key()),
+        };
         self.generation += 1;
+        if changed && VerseId::from(v).is_valid() {
+            self.queued();
+        }
         Ok(())
     }
 
@@ -753,7 +1035,9 @@ impl StudyStore {
 
     /// Saved conversations, most recently answered first.
     pub fn chats(&self) -> Vec<ChatSummary> {
-        let Ok(mut st) = self.conn.prepare_cached("SELECT id, title, updated FROM chats ORDER BY seq DESC")
+        let Ok(mut st) = self
+            .conn
+            .prepare_cached("SELECT id, title, updated FROM chats WHERE deleted = 0 ORDER BY ord DESC")
         else {
             return Vec::new();
         };
@@ -765,15 +1049,19 @@ impl StudyStore {
     pub fn chat(&self, id: i64) -> Option<SavedChat> {
         let (title, messages, api): (String, String, String) = self
             .conn
-            .query_row("SELECT title, messages, api FROM chats WHERE id = ?1", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            // One synced from another device is listed at once and opens once its file is here.
+            .query_row(
+                "SELECT title, messages, api FROM chats WHERE id = ?1 AND deleted = 0 AND fetched = 1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .optional()
             .ok()??;
         Some(SavedChat { id, title, messages: serde_json::from_str(&messages).ok()?, api })
     }
 
-    /// Saves a conversation, as a new one (`id` None) or over the one it continues. Returns its id.
+    /// Saves a conversation, as a new one (`id` None) or over the one it continues, and queues it
+    /// for the server. Returns its id, which is this device's own; the library knows it by `uid`.
     pub fn save_chat(
         &mut self,
         id: Option<i64>,
@@ -783,33 +1071,55 @@ impl StudyStore {
     ) -> Result<i64> {
         let messages = serde_json::to_string(messages)?;
         let at = now();
+        let tx = self.conn.transaction()?;
         // Order of saving, which the second-resolution times can't settle.
-        let seq: i64 = self.conn.query_row("SELECT IFNULL(MAX(seq), 0) + 1 FROM chats", [], |r| r.get(0))?;
+        let ord: i64 = tx.query_row("SELECT IFNULL(MAX(ord), 0) + 1 FROM chats", [], |r| r.get(0))?;
         let id = match id {
             // One deleted while its answer was coming is saved again, as a new one.
             Some(id)
-                if self.conn.execute(
-                    "UPDATE chats SET title = ?2, updated = ?3, messages = ?4, api = ?5, seq = ?6 WHERE id = ?1",
-                    params![id, title, at, messages, api, seq],
+                if tx.execute(
+                    "UPDATE chats SET title = ?2, updated = ?3, messages = ?4, api = ?5, ord = ?6
+                     WHERE id = ?1 AND deleted = 0",
+                    params![id, title, at, messages, api, ord],
                 )? > 0 =>
             {
                 id
             }
             _ => {
-                self.conn.execute(
-                    "INSERT INTO chats(title, created, updated, messages, api, seq) VALUES(?1, ?2, ?2, ?3, ?4, ?5)",
-                    params![title, at, messages, api, seq],
+                tx.execute(
+                    "INSERT INTO chats(title, created, updated, messages, api, ord, uid)
+                     VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6)",
+                    params![title, at, messages, api, ord, new_uid()],
                 )?;
-                self.conn.last_insert_rowid()
+                tx.last_insert_rowid()
             }
         };
+        let uid: String = tx.query_row("SELECT uid FROM chats WHERE id = ?1", [id], |r| r.get(0))?;
+        enqueue_uid(&tx, Kind::Chat, &uid, at)?;
+        tx.commit()?;
         self.generation += 1;
+        self.queued();
         Ok(id)
     }
 
+    /// Deletes a conversation, from the library too.
     pub fn delete_chat(&mut self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM chats WHERE id = ?1", [id])?;
+        let tx = self.conn.transaction()?;
+        let uid: Option<String> = tx
+            .query_row(
+                "UPDATE chats SET deleted = 1 WHERE id = ?1 AND deleted = 0 RETURNING uid",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(uid) = &uid {
+            enqueue_uid(&tx, Kind::Chat, uid, now())?;
+        }
+        tx.commit()?;
         self.generation += 1;
+        if uid.is_some() {
+            self.queued();
+        }
         Ok(())
     }
 
@@ -1081,6 +1391,7 @@ impl StudyStore {
             Ok(VerseRef::new(book, e.chapter, e.verse))
         };
         let tx = self.conn.unchecked_transaction()?;
+        let mut own = self.notes.clone();
         for h in &doc.highlights {
             put_highlight(
                 &tx,
@@ -1091,18 +1402,14 @@ impl StudyStore {
         }
         for n in &doc.notes {
             let v = verse(&n.verse)?;
-            tx.execute(
-                "INSERT INTO notes(book, chapter, verse, body, created, updated) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(book, chapter, verse) DO UPDATE SET body = excluded.body, updated = excluded.updated",
-                params![
-                    v.book.info().code,
-                    v.chapter,
-                    v.verse,
-                    n.note,
-                    parse_rfc3339(&n.created).unwrap_or_else(now),
-                    parse_rfc3339(&n.updated).unwrap_or_else(now)
-                ],
-            )?;
+            let (created, updated) = (
+                parse_rfc3339(&n.created).unwrap_or_else(now),
+                parse_rfc3339(&n.updated).unwrap_or_else(now),
+            );
+            match write_note(&tx, own.get(&v.key()), v, &n.note, created, updated)? {
+                Some(note) => own.insert(v.key(), note),
+                None => own.remove(&v.key()),
+            };
         }
         for b in &doc.bookmarks {
             put_bookmark(
@@ -1146,27 +1453,35 @@ impl StudyStore {
         }
         tx.commit()?;
         self.reload()?;
-        if !doc.highlights.is_empty() || !doc.bookmarks.is_empty() {
+        if !doc.highlights.is_empty() || !doc.bookmarks.is_empty() || !doc.notes.is_empty() {
             self.queued();
         }
         Ok((doc.highlights.len(), doc.notes.len(), doc.bookmarks.len()))
     }
 
     /// Erases every highlight, note, bookmark, plan and the reading history.
-    /// Highlights and bookmarks are cleared through the outbox, so they go from the library too.
+    /// Highlights, bookmarks and notes are cleared through the outbox, so they go from the library
+    /// too.
     pub fn erase_all(&mut self) -> Result<()> {
         let tx = self.conn.transaction()?;
+        let t = now();
+        let notes: Vec<String> = tx
+            .prepare("SELECT uid FROM items WHERE kind = 'note' AND deleted = 0")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        for uid in &notes {
+            delete_item(&tx, uid, t)?;
+            enqueue_uid(&tx, Kind::Note, uid, t)?;
+        }
         for key in self.highlights.keys().copied().filter_map(VerseRef::from_key) {
             put_highlight(&tx, key, None, 0)?;
         }
         for key in self.bookmarks.keys().copied().filter_map(VerseRef::from_key) {
             put_bookmark(&tx, key, None, 0)?;
         }
-        tx.execute_batch(
-            "DELETE FROM notes; DELETE FROM plans; DELETE FROM plan_reads; DELETE FROM reading;",
-        )?;
+        tx.execute_batch("DELETE FROM plans; DELETE FROM plan_reads; DELETE FROM reading;")?;
         tx.commit()?;
-        let queued = !self.highlights.is_empty() || !self.bookmarks.is_empty();
+        let queued = !self.highlights.is_empty() || !self.bookmarks.is_empty() || !notes.is_empty();
         self.reload()?;
         if queued {
             self.queued();
@@ -1197,6 +1512,7 @@ fn pending(conn: &Connection) -> Result<usize> {
 #[cfg(feature = "sync")]
 pub(crate) mod cache {
     use super::*;
+    use crate::records::Chat;
     use serde_json::Value;
 
     /// A change waiting in the outbox, as the mutation's arguments.
@@ -1204,13 +1520,24 @@ pub(crate) mod cache {
     pub(crate) struct Entry {
         pub id: i64,
         pub kind: Kind,
-        pub verse: u32,
+        pub key: Key,
+        /// The mutation that sends it.
+        pub name: &'static str,
         /// The mutation's arguments, `baseSeq` included.
         pub args: Value,
+        /// A file to upload and attach first: its uid, bytes and SHA-256 (hex).
+        pub upload: Option<(String, Vec<u8>, String)>,
         rev: i64,
         pub attempts: i64,
         /// Unix milliseconds before which it isn't tried again (0: now).
         pub next_at: i64,
+    }
+
+    /// What an outbox entry is about: a verse for a highlight or bookmark, a uid otherwise.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum Key {
+        Verse(u32),
+        Uid(String),
     }
 
     pub(crate) fn open(path: &Path) -> Result<Connection> {
@@ -1224,33 +1551,147 @@ pub(crate) mod cache {
     }
 
     /// The oldest change waiting. Changes go strictly in order, so one backing off holds the rest.
+    /// A note or chat is read from the cache as it is now; a note this device made that the
+    /// library already has, word for word on the same verse (a second device's migration), is
+    /// dropped here instead of uploaded again.
     pub(crate) fn next(conn: &Connection) -> Result<Option<Entry>> {
-        let row = conn
-            .query_row(
-                "SELECT id, kind, key, payload, base_seq, rev, attempts, next_at FROM outbox ORDER BY id LIMIT 1",
-                [],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, u32>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, i64>(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((id, kind, verse, payload, base, rev, attempts, next_at)) = row else { return Ok(None) };
-        let kind = Kind::from_name(&kind).with_context(|| format!("unknown outbox kind {kind}"))?;
-        let mut args: Value = serde_json::from_str(&payload)?;
-        args["baseSeq"] = json!(base);
-        if let Some(created) = args["createdAt"].as_i64() {
-            args["createdAt"] = json!((created + clock_offset_ms(conn)?).max(0));
+        use rusqlite::types::Value as Sql;
+        loop {
+            let row = conn
+                .query_row(
+                    "SELECT id, kind, key, payload, base_seq, rev, attempts, next_at FROM outbox ORDER BY id LIMIT 1",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Sql>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, i64>(4)?,
+                            r.get(5)?,
+                            r.get(6)?,
+                            r.get(7)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((id, kind, key, payload, base, rev, attempts, next_at)) = row else { return Ok(None) };
+            let kind = Kind::from_name(&kind).with_context(|| format!("unknown outbox kind {kind}"))?;
+            let offset = clock_offset_ms(conn)?;
+            // A device time in Unix seconds as server milliseconds.
+            let made = |t: i64| json!((t * 1000 + offset).max(0));
+            let entry =
+                |key, name, args, upload| Entry { id, kind, key, name, args, upload, rev, attempts, next_at };
+            match (kind, key) {
+                (Kind::Highlight | Kind::Bookmark, Sql::Integer(verse)) => {
+                    let mut args: Value = serde_json::from_str(&payload)?;
+                    args["baseSeq"] = json!(base);
+                    if let Some(created) = args["createdAt"].as_i64() {
+                        // In this device's milliseconds until now.
+                        args["createdAt"] = json!((created + offset).max(0));
+                    }
+                    return Ok(Some(entry(Key::Verse(verse as u32), kind.mutation().0, args, None)));
+                }
+                (Kind::Note, Sql::Text(uid)) => {
+                    let row = conn
+                        .query_row("SELECT deleted, created, seq FROM items WHERE uid = ?1", [&uid], |r| {
+                            Ok((r.get::<_, bool>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                        })
+                        .optional()?;
+                    let (Some((deleted, created, seq)), Some(item)) = (row, load_item(conn, &uid)?) else {
+                        conn.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+                        continue;
+                    };
+                    if deleted {
+                        let args = json!({ "uid": uid, "baseSeq": base });
+                        return Ok(Some(entry(Key::Uid(uid), "library/notes:remove", args, None)));
+                    }
+                    if seq == 0 && base == 0 && already_there(conn, &item)? {
+                        let tx = conn.unchecked_transaction()?;
+                        tx.execute("DELETE FROM items WHERE uid = ?1", [&uid])?;
+                        tx.execute("DELETE FROM item_anchors WHERE uid = ?1", [&uid])?;
+                        tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+                        tx.commit()?;
+                        continue;
+                    }
+                    let mut args = json!({
+                        "uid": uid, "text": item.text.unwrap_or_default(), "anchors": item.anchors, "baseSeq": base
+                    });
+                    if seq == 0 {
+                        args["capturedAt"] = made(created);
+                    }
+                    return Ok(Some(entry(Key::Uid(uid), "library/notes:upsert", args, None)));
+                }
+                (Kind::Chat, Sql::Text(uid)) => {
+                    let row = conn
+                        .query_row(
+                            "SELECT deleted, created, seq, title, messages, api, file_uid FROM chats WHERE uid = ?1",
+                            [&uid],
+                            |r| {
+                                Ok((
+                                    r.get::<_, bool>(0)?,
+                                    r.get::<_, i64>(1)?,
+                                    r.get::<_, i64>(2)?,
+                                    r.get::<_, String>(3)?,
+                                    r.get::<_, String>(4)?,
+                                    r.get::<_, String>(5)?,
+                                    r.get::<_, Option<String>>(6)?,
+                                ))
+                            },
+                        )
+                        .optional()?;
+                    let Some((deleted, created, seq, title, messages, api, attached)) = row else {
+                        conn.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+                        continue;
+                    };
+                    if deleted {
+                        let args = json!({ "uid": uid, "baseSeq": base });
+                        return Ok(Some(entry(Key::Uid(uid), "library/chats:remove", args, None)));
+                    }
+                    // The conversation is a `chat` file, named by the chat and its bytes, so a retry
+                    // attaches the same file and an unchanged one isn't uploaded again.
+                    let messages: Value = serde_json::from_str(&messages)?;
+                    let bytes = json!({ "messages": messages, "api": api }).to_string().into_bytes();
+                    let sha = sha256_hex(&bytes);
+                    let file_uid = sha256_hex(format!("{uid}:{sha}").as_bytes());
+                    let upload =
+                        (attached.as_deref() != Some(&file_uid)).then(|| (file_uid.clone(), bytes, sha));
+                    let mut args =
+                        json!({ "uid": uid, "title": title, "fileUid": file_uid, "baseSeq": base });
+                    if seq == 0 {
+                        args["createdAt"] = made(created);
+                    }
+                    return Ok(Some(entry(Key::Uid(uid), "library/chats:save", args, upload)));
+                }
+                (kind, key) => bail!("outbox entry {id} for a {kind:?} has the key {key:?}"),
+            }
         }
-        Ok(Some(Entry { id, kind, verse, args, rev, attempts, next_at }))
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// Whether the library already has a note with this one's text and anchors.
+    fn already_there(conn: &Connection, item: &Item) -> Result<bool> {
+        let mut st = conn.prepare(
+            "SELECT record FROM items WHERE kind = 'note' AND deleted = 0 AND seq > 0 AND uid != ?1",
+        )?;
+        let records: Vec<String> = st.query_map([&item.uid], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(records
+            .iter()
+            .filter_map(|r| serde_json::from_str::<Item>(r).ok())
+            .any(|other| other.text == item.text && other.anchors == item.anchors))
+    }
+
+    /// A chat's file was uploaded and attached as `file_uid`.
+    pub(crate) fn attached(conn: &Connection, chat: &str, file_uid: &str, url: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE chats SET file_uid = ?2, url = ?3 WHERE uid = ?1",
+            params![chat, file_uid, url],
+        )?;
+        Ok(())
     }
 
     /// When the next change that is backing off falls due, if any is.
@@ -1276,58 +1717,128 @@ pub(crate) mod cache {
         if tx.execute("DELETE FROM outbox WHERE id = ?1 AND rev = ?2", params![e.id, e.rev])? == 0 {
             tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
         }
-        tx.execute(
-            &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE verse = ?1", e.kind.table()),
-            params![e.verse, seq as i64],
-        )?;
+        match &e.key {
+            Key::Verse(verse) => tx.execute(
+                &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE verse = ?1", e.kind.table()),
+                params![verse, seq as i64],
+            )?,
+            Key::Uid(uid) => tx.execute(
+                &format!("UPDATE {} SET seq = MAX(seq, ?2) WHERE uid = ?1", e.kind.table()),
+                params![uid, seq as i64],
+            )?,
+        };
         tx.commit()?;
         Ok(())
     }
 
-    /// The server kept its own copy (`theirs`, `null` for a tombstone) because another device
-    /// changed the record after this one's copy: the change is done and the cache takes the
-    /// server's copy. Returns whether that was a real conflict, recorded for the UI. Two cases
-    /// aren't: the server already has this edit (a write that reached it before the connection
-    /// broke, or the same highlight made on both devices), and a record made here, with no copy,
-    /// over a deletion this device never saw, which is sent again against the tombstone.
-    pub(crate) fn conflicted(
-        conn: &mut Connection,
-        e: &Entry,
-        seq: u64,
-        theirs: &Value,
-        created_at: Option<u64>,
-    ) -> Result<bool> {
+    /// The server kept its own copy because another device changed the record after this one's
+    /// copy: the change is done and the cache takes the server's copy (in `answer`). Returns
+    /// whether that was a real conflict, recorded for the UI.
+    ///
+    /// For a highlight or bookmark two cases aren't: the server already has this edit (a write
+    /// that reached it before the connection broke, or the same highlight made on both devices),
+    /// and a record made here, with no copy, over a deletion this device never saw, which is sent
+    /// again against the tombstone. For a note the edit isn't lost: the server kept it as a
+    /// conflict copy (`copyUid`), which this device's note becomes. A chat's is lost, as for a
+    /// highlight, and not recorded (a conflict names a verse).
+    pub(crate) fn conflicted(conn: &mut Connection, e: &Entry, answer: &Value) -> Result<bool> {
+        let seq = answer["seq"].as_u64().unwrap_or(0);
         let offset = clock_offset_ms(conn)?;
         let tx = conn.transaction()?;
-        let (payload, base, rev): (String, i64, i64) =
-            tx.query_row("SELECT payload, base_seq, rev FROM outbox WHERE id = ?1", [e.id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })?;
-        if rev != e.rev {
-            // Edited again while this was in flight: the next answer settles the newer edit.
-            return Ok(false);
-        }
-        let payload: Value = serde_json::from_str(&payload)?;
-        let mine = &payload[e.kind.mutation().1];
-        if base == 0 && theirs.is_null() && !mine.is_null() {
-            tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
-            tx.commit()?;
-            return Ok(false);
-        }
-        tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
-        write_server(&tx, e.kind, e.verse, seq, theirs, local_time(created_at, offset))?;
-        // Base 0 included: an edit made before the feed first caught up has no copy either, and
-        // losing it silently is what conflicts exist to prevent. Migration lands here too, and
-        // says so when the server's copy differs.
-        let real = mine != theirs;
-        if real {
+        let rev: i64 = tx.query_row("SELECT rev FROM outbox WHERE id = ?1", [e.id], |r| r.get(0))?;
+        let real = match (&e.key, e.kind) {
+            (Key::Verse(verse), _) => {
+                if rev != e.rev {
+                    // Edited again while this was in flight: the next answer settles the newer edit.
+                    return Ok(false);
+                }
+                let (payload, base): (String, i64) =
+                    tx.query_row("SELECT payload, base_seq FROM outbox WHERE id = ?1", [e.id], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })?;
+                let payload: Value = serde_json::from_str(&payload)?;
+                let field = e.kind.mutation().1;
+                let (mine, theirs) = (&payload[field], &answer[field]);
+                if base == 0 && theirs.is_null() && !mine.is_null() {
+                    tx.execute("UPDATE outbox SET base_seq = ?2 WHERE id = ?1", params![e.id, seq as i64])?;
+                    tx.commit()?;
+                    return Ok(false);
+                }
+                tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+                let created = local_time(answer["createdAt"].as_u64(), offset);
+                write_server(&tx, e.kind, *verse, seq, theirs, created)?;
+                // Base 0 included: an edit made before the feed first caught up has no copy either,
+                // and losing it silently is what conflicts exist to prevent. Migration lands here
+                // too, and says so when the server's copy differs.
+                (mine != theirs).then(|| (*verse, mine.to_string(), theirs.to_string()))
+            }
+            (Key::Uid(uid), Kind::Note) => {
+                let mine = load_item(&tx, uid)?;
+                let theirs: Option<Item> = serde_json::from_value(answer["record"].clone()).ok();
+                let removing = e.name == "library/notes:remove";
+                match (answer["copyUid"].as_str(), &mine) {
+                    (Some(copy), Some(mine)) if !removing => {
+                        // This device's note becomes the copy the server kept, with the same text.
+                        let (created, updated): (i64, i64) =
+                            tx.query_row("SELECT created, updated FROM items WHERE uid = ?1", [uid], |r| {
+                                Ok((r.get(0)?, r.get(1)?))
+                            })?;
+                        tx.execute("DELETE FROM items WHERE uid = ?1", [copy])?;
+                        let item = Item {
+                            uid: copy.into(),
+                            seq: answer["copySeq"].as_u64().unwrap_or(0),
+                            conflict_of: Some(uid.clone()),
+                            ..mine.clone()
+                        };
+                        put_item(&tx, &item, created, updated)?;
+                        if rev != e.rev {
+                            // Edited again in flight: the newer text goes on as an edit of the copy.
+                            tx.execute(
+                                "UPDATE outbox SET key = ?2, base_seq = ?3 WHERE id = ?1",
+                                params![e.id, copy, item.seq as i64],
+                            )?;
+                        } else {
+                            tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+                        }
+                    }
+                    _ => {
+                        tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+                    }
+                }
+                if let Some(theirs) = &theirs {
+                    let created = local_time(Some(theirs.captured_at), offset).unwrap_or_else(now);
+                    put_item(&tx, theirs, created, now())?;
+                }
+                let text = |i: Option<&Item>| match i {
+                    Some(i) if i.deleted_at.is_none() => json!(i.text.as_deref().unwrap_or("")),
+                    _ => Value::Null,
+                };
+                let mine_text = if removing { Value::Null } else { text(mine.as_ref()) };
+                let theirs_text = text(theirs.as_ref());
+                let verse = mine.as_ref().and_then(|m| m.anchors.first()).map(|a| a.from.0);
+                verse
+                    .filter(|_| mine_text != theirs_text)
+                    .map(|v| (v, mine_text.to_string(), theirs_text.to_string()))
+            }
+            (Key::Uid(_), _) => {
+                if rev != e.rev {
+                    return Ok(false);
+                }
+                tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
+                if let Ok(chat) = serde_json::from_value::<Chat>(answer["record"].clone()) {
+                    write_chat(&tx, &chat, offset)?;
+                }
+                None
+            }
+        };
+        if let Some((verse, mine, theirs)) = &real {
             tx.execute(
                 "INSERT INTO conflicts(kind, key, mine, theirs, at) VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![e.kind.name(), e.verse, mine.to_string(), theirs.to_string(), now()],
+                params![e.kind.name(), verse, mine, theirs, now()],
             )?;
         }
         tx.commit()?;
-        Ok(real)
+        Ok(real.is_some())
     }
 
     /// The server refused the change: show `error`, and try it again at `next_at`.
@@ -1398,6 +1909,21 @@ pub(crate) mod cache {
                     b.created_at,
                     b.deleted_at.is_none().then(|| json!(b.label)),
                 ),
+                FeedRecord::Item(item) => {
+                    if newer_by_uid(&tx, Kind::Note, &item.uid, item.seq)? {
+                        let created = local_time(Some(item.captured_at), clock_offset_ms).unwrap_or_else(now);
+                        put_item(&tx, item, created, now())?;
+                        changed += 1;
+                    }
+                    continue;
+                }
+                FeedRecord::Chat(chat) => {
+                    if newer_by_uid(&tx, Kind::Chat, &chat.uid, chat.seq)? {
+                        write_chat(&tx, chat, clock_offset_ms)?;
+                        changed += 1;
+                    }
+                    continue;
+                }
             };
             let value = value.unwrap_or(Value::Null);
             let waiting: Option<i64> = tx
@@ -1437,6 +1963,100 @@ pub(crate) mod cache {
         Ok(changed)
     }
 
+    /// Whether the feed's copy of the note or chat `uid` (at `seq`) replaces the cache's. One with
+    /// a change of this device's waiting keeps it and only learns the server's `seq`.
+    fn newer_by_uid(tx: &Connection, kind: Kind, uid: &str, seq: u64) -> Result<bool> {
+        let table = kind.table();
+        let waiting = tx.query_row(
+            "SELECT 1 FROM outbox WHERE kind = ?1 AND key = ?2",
+            params![kind.name(), uid],
+            |_| Ok(()),
+        );
+        if waiting.optional()?.is_some() {
+            tx.execute(
+                &format!("UPDATE {table} SET seq = MAX(seq, ?2) WHERE uid = ?1"),
+                params![uid, seq as i64],
+            )?;
+            return Ok(false);
+        }
+        let have: Option<i64> = tx
+            .query_row(&format!("SELECT seq FROM {table} WHERE uid = ?1"), [uid], |r| r.get(0))
+            .optional()?;
+        Ok(have.is_none_or(|have| seq as i64 > have))
+    }
+
+    /// Writes the server's copy of a chat. Its conversation comes later, when the engine fetches
+    /// the file, unless the file is the one already here.
+    fn write_chat(tx: &Connection, c: &Chat, clock_offset_ms: i64) -> Result<()> {
+        let t = now();
+        let created = local_time(Some(c.created_at), clock_offset_ms).unwrap_or(t);
+        let ord: i64 = tx.query_row("SELECT IFNULL(MAX(ord), 0) + 1 FROM chats", [], |r| r.get(0))?;
+        tx.execute(
+            "INSERT INTO chats(title, created, updated, messages, api, ord, uid, seq, deleted, file_uid, url, fetched)
+             VALUES(?1, ?2, ?3, '[]', '', ?4, ?5, ?6, ?7, ?8, ?9, 0)
+             ON CONFLICT(uid) DO UPDATE SET title = excluded.title, updated = excluded.updated,
+               ord = excluded.ord, seq = excluded.seq, deleted = excluded.deleted,
+               fetched = CASE WHEN file_uid IS excluded.file_uid THEN fetched ELSE 0 END,
+               file_uid = excluded.file_uid, url = excluded.url",
+            params![
+                c.title,
+                created,
+                t,
+                ord,
+                c.uid,
+                c.seq as i64,
+                c.deleted_at.is_some() as i64,
+                c.file_uid,
+                c.url
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A file the cache wants: a chat's conversation, or an item's text.
+    #[derive(Debug, Clone)]
+    pub(crate) struct Fetch {
+        pub chat: bool,
+        pub uid: String,
+        pub url: String,
+    }
+
+    /// Files the cache doesn't have yet. Text files are fetched as soon as they're known (they're
+    /// small, and offline search reads them); conversations too, so Recents opens offline.
+    pub(crate) fn to_fetch(conn: &Connection) -> Result<Vec<Fetch>> {
+        let mut out = Vec::new();
+        for (chat, sql) in [
+            (true, "SELECT uid, url FROM chats WHERE deleted = 0 AND fetched = 0 AND IFNULL(url, '') != ''"),
+            (false, "SELECT uid, url FROM files WHERE role = 'text' AND path = ''"),
+        ] {
+            let mut st = conn.prepare_cached(sql)?;
+            let rows = st.query_map([], |r| Ok(Fetch { chat, uid: r.get(0)?, url: r.get(1)? }))?;
+            out.extend(rows.collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(out)
+    }
+
+    /// Keeps a fetched file: a conversation in its chat, text under `files_dir`.
+    pub(crate) fn fetched(conn: &Connection, f: &Fetch, bytes: &[u8], files_dir: &Path) -> Result<()> {
+        if f.chat {
+            let file: Value = serde_json::from_slice(bytes).context("not a conversation")?;
+            let messages: Vec<crate::chat::Message> = serde_json::from_value(file["messages"].clone())?;
+            conn.execute(
+                "UPDATE chats SET messages = ?3, api = ?4, fetched = 1 WHERE uid = ?1 AND url = ?2",
+                params![f.uid, f.url, serde_json::to_string(&messages)?, file["api"].as_str().unwrap_or("")],
+            )?;
+        } else {
+            std::fs::create_dir_all(files_dir)?;
+            let path = files_dir.join(&f.uid);
+            std::fs::write(&path, bytes)?;
+            conn.execute(
+                "UPDATE files SET path = ?2 WHERE uid = ?1",
+                params![f.uid, path.to_string_lossy()],
+            )?;
+        }
+        Ok(())
+    }
+
     /// The server dropped tombstones this device hadn't seen: forget the cache (keeping records
     /// with a change still waiting, which the outbox settles) and pull the library from 0.
     pub(crate) fn resync(conn: &mut Connection) -> Result<()> {
@@ -1450,6 +2070,19 @@ pub(crate) mod cache {
                 [kind.name()],
             )?;
         }
+        for kind in [Kind::Note, Kind::Chat] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {} WHERE uid NOT IN (SELECT key FROM outbox WHERE kind = ?1)",
+                    kind.table()
+                ),
+                [kind.name()],
+            )?;
+        }
+        tx.execute_batch(
+            "DELETE FROM item_anchors WHERE uid NOT IN (SELECT uid FROM items);
+             DELETE FROM files WHERE owner NOT IN (SELECT uid FROM items);",
+        )?;
         set_state(&tx, "cursor", 0)?;
         tx.commit()?;
         Ok(())
@@ -1480,6 +2113,7 @@ pub(crate) mod cache {
                 ("color", color.map_or(0, HighlightColor::to_i64).into())
             }
             Kind::Bookmark => ("label", value.as_str().unwrap_or("").to_string().into()),
+            Kind::Note | Kind::Chat => unreachable!("{kind:?} is kept by uid"),
         };
         let deleted = value.is_null() as i64;
         tx.execute(

@@ -16,9 +16,9 @@
 //! `convex`) or [`FakeBackend`] for tests. The engine sleeps in [`Backend::park`], so the Convex
 //! backend's current-thread runtime runs its socket while the engine waits.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -29,13 +29,15 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 
 use crate::auth::{self, TokenSource};
-use crate::records::{Changes, VerseId};
+use crate::records::{Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, VerseId};
 use crate::study::cache;
 
 /// The change feed's query.
 pub const FEED: &str = "library/sync:changes";
 /// The server's clock, from a mutation (never cached).
 pub const CLOCK: &str = "library/sync:now";
+/// Records an uploaded file.
+const ATTACH: &str = "library/files:attach";
 /// Install the token again this long before it expires.
 const TOKEN_EARLY: Duration = Duration::from_secs(30);
 /// The longest a failing change waits before it is tried again.
@@ -89,6 +91,8 @@ pub trait Backend: Send {
     fn upload_url(&mut self) -> Result<String, CallError>;
     /// Uploads bytes to an upload URL; returns the storage id.
     fn upload(&mut self, url: &str, bytes: Vec<u8>, content_type: &str) -> Result<String, CallError>;
+    /// Downloads a file from its permanent URL.
+    fn download(&mut self, url: &str) -> Result<Vec<u8>, CallError>;
     /// Whether the connection is up, as far as the backend knows. While it isn't, the engine
     /// holds the outbox and the footer says offline.
     fn connected(&self) -> bool {
@@ -147,6 +151,7 @@ pub struct SyncHandle {
 /// after the first frame, so start-up never waits for it.
 pub fn start(data_dir: &Path, backend: Box<dyn Backend>, tokens: Arc<dyn TokenSource>) -> Result<SyncHandle> {
     let conn = cache::open(&data_dir.join("study.sqlite"))?;
+    let files_dir = data_dir.join("files");
     let inner = Arc::new(Inner {
         state: Mutex::new(Shared {
             status: SyncStatus::Syncing(cache::pending(&conn)?),
@@ -179,6 +184,9 @@ pub fn start(data_dir: &Path, backend: Box<dyn Backend>, tokens: Arc<dyn TokenSo
         held: None,
         token_due: None,
         data_changed: false,
+        files_dir,
+        fetch_due: true,
+        unfetchable: HashSet::new(),
     };
     let thread = std::thread::Builder::new().name("sync".into()).spawn(move || engine.run())?;
     Ok(SyncHandle { inner, tx, waker, thread: Some(thread) })
@@ -306,6 +314,12 @@ struct Engine {
     token_due: Option<Instant>,
     /// The cache changed since the last `on_change`.
     data_changed: bool,
+    /// Where fetched text files go.
+    files_dir: PathBuf,
+    /// The cache may want files it doesn't have.
+    fetch_due: bool,
+    /// Files the server refused to give (deleted since): not asked for again until restart.
+    unfetchable: HashSet<String>,
 }
 
 impl Engine {
@@ -349,6 +363,7 @@ impl Engine {
                     if self.caught_up_once {
                         self.drain();
                     }
+                    self.fetch();
                 }
             }
             if self.token_due.is_some_and(|due| Instant::now() >= due) {
@@ -433,6 +448,7 @@ impl Engine {
             Changes::Page { records, seq, .. } => {
                 if cache::apply_page(&mut self.conn, &records, seq)? > 0 {
                     self.data_changed = true;
+                    self.fetch_due = true;
                 }
                 self.feed_error = None;
                 if records.is_empty() {
@@ -498,24 +514,18 @@ impl Engine {
                     return;
                 }
             };
-            let (name, field) = entry.kind.mutation();
-            let done = match self.backend.mutate(name, entry.args.clone()) {
+            let done = match self.send(&entry) {
                 Ok(answer) => {
                     self.online();
                     let seq = answer["seq"].as_u64().unwrap_or(0);
-                    self.written = self.written.max(seq);
+                    // A note's conflict copy is this device's write too.
+                    self.written = self.written.max(seq).max(answer["copySeq"].as_u64().unwrap_or(0));
                     match answer["result"].as_str() {
                         Some("ok") => cache::sent(&mut self.conn, &entry, seq),
                         Some("conflict") => {
                             self.data_changed = true;
-                            cache::conflicted(
-                                &mut self.conn,
-                                &entry,
-                                seq,
-                                &answer[field],
-                                answer["createdAt"].as_u64(),
-                            )
-                            .map(|_| ())
+                            self.fetch_due = true;
+                            cache::conflicted(&mut self.conn, &entry, &answer).map(|_| ())
                         }
                         _ => self.refused(&entry, &format!("unexpected answer {answer}")),
                     }
@@ -533,6 +543,56 @@ impl Engine {
                 return;
             }
         }
+    }
+
+    /// Sends one change: its file first, if it has one (an upload URL, the bytes, then
+    /// `files.attach`), then its mutation.
+    fn send(&mut self, entry: &cache::Entry) -> Result<Value, CallError> {
+        if let (Some((file_uid, bytes, sha256)), cache::Key::Uid(owner)) = (&entry.upload, &entry.key) {
+            let url = self.backend.upload_url()?;
+            let storage_id = self.backend.upload(&url, bytes.clone(), "application/json")?;
+            let file = self.backend.mutate(
+                ATTACH,
+                json!({ "uid": file_uid, "ownerUid": owner, "role": "chat", "storageId": storage_id, "sha256": sha256 }),
+            )?;
+            cache::attached(&self.conn, owner, file_uid, file["url"].as_str().unwrap_or_default())
+                .map_err(|e| CallError::Refused(format!("{e:#}")))?;
+        }
+        self.backend.mutate(entry.name, entry.args.clone())
+    }
+
+    /// Fetches the files the cache wants (conversations and text), while the server answers.
+    fn fetch(&mut self) {
+        if !self.fetch_due {
+            return;
+        }
+        self.fetch_due = false;
+        for f in cache::to_fetch(&self.conn).unwrap_or_default() {
+            if self.unfetchable.contains(&f.uid) {
+                continue;
+            }
+            match self.backend.download(&f.url) {
+                Ok(bytes) => match cache::fetched(&self.conn, &f, &bytes, &self.files_dir) {
+                    Ok(()) => self.data_changed = true,
+                    Err(_) => {
+                        self.unfetchable.insert(f.uid);
+                    }
+                },
+                Err(CallError::Offline(_)) => {
+                    // Tried again when the loop next comes round.
+                    self.fetch_due = true;
+                    return;
+                }
+                Err(CallError::Refused(_)) => {
+                    self.unfetchable.insert(f.uid);
+                }
+            }
+        }
+    }
+
+    /// Files the cache still wants and can get.
+    fn fetching(&self) -> bool {
+        cache::to_fetch(&self.conn).unwrap_or_default().iter().any(|f| !self.unfetchable.contains(&f.uid))
     }
 
     fn refused(&self, entry: &cache::Entry, error: &str) -> Result<()> {
@@ -563,7 +623,11 @@ impl Engine {
             self.feed_error.clone().or_else(|| cache::last_error(&self.conn).ok().flatten())
         {
             SyncStatus::Error(e)
-        } else if pending > 0 || !self.caught_up || cache::cursor(&self.conn).unwrap_or(0) < self.written {
+        } else if pending > 0
+            || !self.caught_up
+            || cache::cursor(&self.conn).unwrap_or(0) < self.written
+            || self.fetching()
+        {
             SyncStatus::Syncing(pending)
         } else {
             SyncStatus::Synced
@@ -611,6 +675,35 @@ struct FakeState {
     /// the time it last ran, which a write causes.
     last_write_ms: i64,
     uploads: BTreeMap<String, Vec<u8>>,
+    /// Notes and chats by uid, as the feed sends them.
+    items: BTreeMap<String, Item>,
+    chats: BTreeMap<String, Chat>,
+    /// Attached files by uid: (owner uid, role, storage id).
+    files: BTreeMap<String, (Option<String>, String, String)>,
+}
+
+/// What `convex/lib/conflict.ts`'s `decideByUid` decides.
+enum ByUid {
+    Write,
+    Unchanged(u64),
+    Conflict(u64),
+}
+
+/// `decideByUid`: `stored` is (seq, deleted, already holds what is written).
+fn decide_by_uid(stored: Option<(u64, bool, bool)>, removing: bool, base: Option<u64>) -> ByUid {
+    match stored {
+        None if removing => ByUid::Unchanged(0),
+        None => ByUid::Write,
+        Some((seq, deleted, same)) if (removing && deleted) || (!removing && same && !deleted) => {
+            ByUid::Unchanged(seq)
+        }
+        Some((seq, ..)) if base.is_some_and(|b| seq > b) => ByUid::Conflict(seq),
+        Some(_) => ByUid::Write,
+    }
+}
+
+fn refused(e: impl fmt::Display) -> CallError {
+    CallError::Refused(e.to_string())
 }
 
 impl FakeServer {
@@ -650,6 +743,8 @@ impl FakeServer {
         for records in s.records.values_mut() {
             records.retain(|_, r| !r.2);
         }
+        s.items.retain(|_, i| i.deleted_at.is_none());
+        s.chats.retain(|_, c| c.deleted_at.is_none());
         s.deliver_all();
     }
 
@@ -668,6 +763,16 @@ impl FakeServer {
 
     pub fn bookmark(&self, verse: VerseId) -> Option<(u64, String, bool)> {
         self.lock().records.get("bookmark")?.get(&verse.0).cloned()
+    }
+
+    /// The live notes, conflict copies included.
+    pub fn notes(&self) -> Vec<Item> {
+        self.lock().items.values().filter(|i| i.deleted_at.is_none()).cloned().collect()
+    }
+
+    /// The live chats.
+    pub fn chats(&self) -> Vec<Chat> {
+        self.lock().chats.values().filter(|c| c.deleted_at.is_none()).cloned().collect()
     }
 
     /// The user's latest `seq`.
@@ -705,6 +810,11 @@ impl FakeState {
                 })
             })
             .collect();
+        let by_uid =
+            self.items.values().filter(|i| i.seq > after).map(|i| FeedRecord::Item(Box::new(i.clone())));
+        let by_uid =
+            by_uid.chain(self.chats.values().filter(|c| c.seq > after).map(|c| FeedRecord::Chat(c.clone())));
+        records.extend(by_uid.map(|r| serde_json::to_value(r).unwrap_or_default()));
         records.sort_by_key(|r| r["seq"].as_u64());
         records.truncate(self.page_records.unwrap_or(500));
         let seq = records.last().map_or(after, |r| r["seq"].as_u64().unwrap_or(after));
@@ -751,9 +861,203 @@ impl FakeState {
             None => (seq, stored.map(|s| s.1).unwrap_or_default(), true),
         };
         self.records.entry(kind).or_default().insert(verse.0, record);
+        self.wrote();
+        Ok(json!({ "result": "ok", "seq": seq }))
+    }
+
+    fn wrote(&mut self) {
         self.last_write_ms = now_ms();
         self.deliver_all();
-        Ok(json!({ "result": "ok", "seq": seq }))
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
+    }
+
+    /// `notes.upsert`: a stale edit is kept as a conflict copy.
+    fn upsert_note(&mut self, args: &Value) -> Result<Value, CallError> {
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        let text = args["text"].as_str().unwrap_or_default().to_string();
+        let anchors: Vec<Anchor> = serde_json::from_value(args["anchors"].clone()).map_err(refused)?;
+        if anchors.iter().any(|a| !a.from.is_valid() || !a.to.is_valid() || a.from > a.to) {
+            return Err(refused("That reference isn't in the Bible."));
+        }
+        let (base, captured) = (args["baseSeq"].as_u64(), args["capturedAt"].as_u64());
+        let stored = self.items.get(&uid).map(|i| {
+            (i.seq, i.deleted_at.is_some(), i.text.as_deref() == Some(text.as_str()) && i.anchors == anchors)
+        });
+        Ok(match decide_by_uid(stored, false, base) {
+            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
+            ByUid::Write => {
+                json!({ "result": "ok", "seq": self.write_note(&uid, &text, anchors, captured, None) })
+            }
+            ByUid::Conflict(seq) => {
+                let copy = format!("{uid}-c{}", base.unwrap_or(0));
+                let copy_seq = match self.items.get(&copy) {
+                    Some(c) => c.seq,
+                    None => self.write_note(&copy, &text, anchors, captured, Some(&uid)),
+                };
+                json!({ "result": "conflict", "seq": seq, "copyUid": copy, "copySeq": copy_seq, "record": self.items[&uid] })
+            }
+        })
+    }
+
+    fn write_note(
+        &mut self,
+        uid: &str,
+        text: &str,
+        anchors: Vec<Anchor>,
+        captured: Option<u64>,
+        conflict_of: Option<&str>,
+    ) -> u64 {
+        let seq = self.next_seq();
+        let now = now_ms() as u64;
+        let title =
+            text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(80).collect();
+        let item = match self.items.remove(uid) {
+            Some(i) => Item {
+                seq,
+                deleted_at: None,
+                captured_at: if i.deleted_at.is_some() { captured.unwrap_or(now) } else { i.captured_at },
+                title,
+                text: Some(text.into()),
+                anchors,
+                ..i
+            },
+            None => Item {
+                uid: uid.into(),
+                seq,
+                deleted_at: None,
+                kind: ItemKind::Note,
+                title,
+                status: ItemStatus::Ready,
+                text: Some(text.into()),
+                text_file_uid: None,
+                excerpt: None,
+                summary: None,
+                outline: None,
+                source_uid: None,
+                sermon_uid: None,
+                offset_ms: None,
+                recorded_on: None,
+                details: None,
+                conflict_of: conflict_of.map(Into::into),
+                captured_at: captured.unwrap_or(now),
+                unreviewed: false,
+                anchors,
+                files: Vec::new(),
+            },
+        };
+        self.items.insert(uid.into(), item);
+        self.wrote();
+        seq
+    }
+
+    fn remove_note(&mut self, args: &Value) -> Result<Value, CallError> {
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        let stored = self.items.get(&uid).map(|i| (i.seq, i.deleted_at.is_some(), false));
+        Ok(match decide_by_uid(stored, true, args["baseSeq"].as_u64()) {
+            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
+            ByUid::Conflict(seq) => json!({ "result": "conflict", "seq": seq, "record": self.items[&uid] }),
+            ByUid::Write => {
+                let seq = self.next_seq();
+                let i = self.items.get_mut(&uid).expect("stored");
+                (i.seq, i.deleted_at, i.text, i.title, i.anchors) =
+                    (seq, Some(now_ms() as u64), Some(String::new()), String::new(), Vec::new());
+                self.wrote();
+                json!({ "result": "ok", "seq": seq })
+            }
+        })
+    }
+
+    /// `files.attach`, idempotent by uid, checking the bytes' SHA-256.
+    fn attach(&mut self, args: &Value) -> Result<Value, CallError> {
+        use sha2::{Digest, Sha256};
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        let answer = |s: &FakeState, storage: &str| json!({ "uid": uid, "url": format!("fake://storage/{storage}"), "bytes": s.uploads.get(storage).map_or(0, Vec::len) });
+        if let Some((_, _, storage)) = self.files.get(&uid) {
+            return Ok(answer(self, storage));
+        }
+        let storage = args["storageId"].as_str().unwrap_or_default().to_string();
+        let bytes = self.uploads.get(&storage).ok_or_else(|| refused("No upload has that storage id."))?;
+        if format!("{:x}", Sha256::digest(bytes)) != args["sha256"].as_str().unwrap_or_default() {
+            return Err(refused("The upload's bytes don't match its SHA-256."));
+        }
+        let owner = args["ownerUid"].as_str().map(Into::into);
+        let role = args["role"].as_str().unwrap_or_default().into();
+        self.files.insert(uid.clone(), (owner, role, storage.clone()));
+        Ok(answer(self, &storage))
+    }
+
+    /// `chats.save`: the conversation must be attached first as the chat's own `chat` file.
+    fn save_chat(&mut self, args: &Value) -> Result<Value, CallError> {
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        let (title, file_uid) = (
+            args["title"].as_str().unwrap_or_default().to_string(),
+            args["fileUid"].as_str().unwrap_or_default(),
+        );
+        let storage = match self.files.get(file_uid) {
+            Some((Some(owner), role, storage)) if *owner == uid && role == "chat" => storage.clone(),
+            _ => return Err(refused("Attach the conversation as this chat's file first.")),
+        };
+        let stored = self.chats.get(&uid).cloned();
+        let same = stored
+            .as_ref()
+            .map(|c| (c.seq, c.deleted_at.is_some(), c.file_uid == file_uid && c.title == title));
+        Ok(match decide_by_uid(same, false, args["baseSeq"].as_u64()) {
+            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
+            ByUid::Conflict(seq) => {
+                let stored = stored.expect("stored");
+                if stored.file_uid != file_uid {
+                    self.files.remove(file_uid);
+                }
+                json!({ "result": "conflict", "seq": seq, "record": stored })
+            }
+            ByUid::Write => {
+                let seq = self.next_seq();
+                let created_at = match &stored {
+                    Some(c) if c.deleted_at.is_none() => c.created_at,
+                    _ => args["createdAt"].as_u64().unwrap_or(now_ms() as u64),
+                };
+                if let Some(old) = stored.filter(|c| c.file_uid != file_uid) {
+                    self.files.remove(&old.file_uid);
+                }
+                let bytes = self.uploads.get(&storage).map_or(0, Vec::len) as u64;
+                let chat = Chat {
+                    uid: uid.clone(),
+                    seq,
+                    deleted_at: None,
+                    created_at,
+                    title,
+                    file_uid: file_uid.into(),
+                    url: format!("fake://storage/{storage}"),
+                    bytes,
+                };
+                self.chats.insert(uid, chat);
+                self.wrote();
+                json!({ "result": "ok", "seq": seq })
+            }
+        })
+    }
+
+    fn remove_chat(&mut self, args: &Value) -> Result<Value, CallError> {
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        let stored = self.chats.get(&uid).map(|c| (c.seq, c.deleted_at.is_some(), false));
+        Ok(match decide_by_uid(stored, true, args["baseSeq"].as_u64()) {
+            ByUid::Unchanged(seq) => json!({ "result": "ok", "seq": seq }),
+            ByUid::Conflict(seq) => json!({ "result": "conflict", "seq": seq, "record": self.chats[&uid] }),
+            ByUid::Write => {
+                let seq = self.next_seq();
+                let c = self.chats.get_mut(&uid).expect("stored");
+                (c.seq, c.deleted_at, c.title, c.url, c.bytes) =
+                    (seq, Some(now_ms() as u64), String::new(), String::new(), 0);
+                let file = c.file_uid.clone();
+                self.files.remove(&file);
+                self.wrote();
+                json!({ "result": "ok", "seq": seq })
+            }
+        })
     }
 }
 
@@ -776,6 +1080,11 @@ impl FakeBackend {
         match name {
             "library/highlights:set" => s.set("highlight", "color", args),
             "library/bookmarks:set" => s.set("bookmark", "label", args),
+            "library/notes:upsert" => s.upsert_note(args),
+            "library/notes:remove" => s.remove_note(args),
+            "library/chats:save" => s.save_chat(args),
+            "library/chats:remove" => s.remove_chat(args),
+            ATTACH => s.attach(args),
             FEED => Ok(s.page(args["after"].as_u64().unwrap_or(0))),
             CLOCK => Ok(json!({ "serverTime": now_ms() })),
             "library/files:uploadUrl" => Ok(json!(format!("fake://upload/{}", s.uploads.len()))),
@@ -817,6 +1126,15 @@ impl Backend for FakeBackend {
         let id = format!("storage-{}", url.rsplit('/').next().unwrap_or_default());
         s.uploads.insert(id.clone(), bytes);
         Ok(id)
+    }
+
+    fn download(&mut self, url: &str) -> Result<Vec<u8>, CallError> {
+        let s = self.server.lock();
+        if s.offline {
+            return Err(CallError::Offline("the fake server is offline".into()));
+        }
+        let id = url.strip_prefix("fake://storage/").unwrap_or_default();
+        s.uploads.get(id).cloned().ok_or_else(|| refused(format!("no file at {url}")))
     }
 
     fn waker(&self) -> Waker {
@@ -1019,6 +1337,14 @@ mod convex_backend {
                 .as_str()
                 .map(str::to_string)
                 .ok_or_else(|| CallError::Refused(format!("no storageId: {body}")))
+        }
+
+        fn download(&mut self, url: &str) -> Result<Vec<u8>, CallError> {
+            let mut resp = ureq::get(url).call().map_err(|e| match e {
+                ureq::Error::StatusCode(code) => CallError::Refused(format!("HTTP {code} for a file")),
+                e => CallError::Offline(format!("{e:#}")),
+            })?;
+            resp.body_mut().read_to_vec().map_err(|e| CallError::Offline(format!("{e:#}")))
         }
 
         fn connected(&self) -> bool {

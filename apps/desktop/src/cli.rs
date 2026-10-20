@@ -394,7 +394,15 @@ fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
     let conflicts = study.conflicts();
     // conflicts() is newest first, so this run's are the head of the list.
     for c in conflicts.iter().take(conflicts.len().saturating_sub(before)) {
-        println!("conflict on {} {}: kept {} over this device's {}", c.kind, c.verse, c.theirs, c.mine);
+        if c.kind == "note" {
+            // The edit isn't lost: the server kept it as a copy beside the newer note.
+            println!(
+                "conflict on note {}: kept {} and this device's {} as a copy",
+                c.verse, c.theirs, c.mine
+            );
+        } else {
+            println!("conflict on {} {}: kept {} over this device's {}", c.kind, c.verse, c.theirs, c.mine);
+        }
     }
     Ok(())
 }

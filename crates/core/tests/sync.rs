@@ -273,12 +273,14 @@ fn an_existing_library_migrates_keeps_everything_and_uploads_once() {
     assert_eq!(a.store.highlights_dated()[0].2, 1_700_000_100, "creation times survive");
     assert_eq!(a.store.bookmark(gen11).unwrap().label, "Start");
     assert_eq!(a.store.note(jn316).unwrap().body, "Love");
-    assert_eq!(a.store.pending_changes(), 3);
+    assert_eq!(a.store.note(jn316).unwrap().created, 1_700_000_000);
+    assert_eq!(a.store.pending_changes(), 4);
 
     let server = FakeServer::new();
     a.start(&server);
     a.settle(&server);
-    assert_eq!(server.seq(), 3);
+    assert_eq!(server.seq(), 4);
+    assert_eq!(server.notes()[0].text.as_deref(), Some("Love"));
     assert_eq!(server.highlight(VerseId(42_003_016)).unwrap().1, "pink");
     assert_eq!(server.bookmark(VerseId(1_001)).unwrap().1, "Start");
     // A second device with its own library: the verse the server already has keeps the server's
@@ -303,7 +305,9 @@ fn an_existing_library_migrates_keeps_everything_and_uploads_once() {
         (conflicts[0].verse, conflicts[0].mine.as_str(), conflicts[0].theirs.as_str()),
         (jn316, "\"green\"", "\"pink\"")
     );
-    assert_eq!(server.seq(), 4, "only Mark 1:1 was new");
+    assert_eq!(server.seq(), 5, "only Mark 1:1 was new: the same note on the same verse isn't sent again");
+    assert_eq!(server.notes().len(), 1);
+    assert_eq!(b.store.note(jn316).unwrap().body, "Love");
     // Creation times cross devices: the bookmark B pulled and the highlight it lost both carry
     // the dates A's library had, not the moment B saw them.
     assert_eq!(b.store.bookmark(gen11).unwrap().created, 1_700_000_200);
@@ -317,4 +321,78 @@ fn an_existing_library_migrates_keeps_everything_and_uploads_once() {
     a.store = StudyStore::open(&dir.join("study.sqlite")).unwrap();
     assert_eq!(a.store.pending_changes(), 0);
     assert_eq!(a.store.highlight(jn316), Some(HighlightColor::Pink));
+}
+
+#[test]
+fn a_note_syncs_and_a_stale_edit_is_kept_beside_the_newer_one() {
+    let server = FakeServer::new();
+    let (mut a, mut b) = (Device::new("note-a"), Device::new("note-b"));
+    a.start(&server);
+    b.start(&server);
+    a.store.set_note(verse(3, 16), "Love").unwrap();
+    a.settle(&server);
+    b.settle(&server);
+    assert_eq!(b.store.note(verse(3, 16)).unwrap().body, "Love");
+    assert_eq!(b.store.note(verse(3, 16)).unwrap().created, a.store.note(verse(3, 16)).unwrap().created);
+
+    // B goes quiet; A edits; B, still on the first text, edits too.
+    b.stop();
+    a.store.set_note(verse(3, 16), "Love, endlessly").unwrap();
+    a.settle(&server);
+    b.store.set_note(verse(3, 16), "God's love").unwrap();
+    b.start(&server);
+    b.settle(&server);
+    a.settle(&server);
+
+    // A's later edit is the note on the verse; B's is kept as a copy of it, on both devices' server.
+    let notes = server.notes();
+    let original = notes.iter().find(|n| n.conflict_of.is_none()).unwrap();
+    let copy = notes.iter().find(|n| n.conflict_of.is_some()).unwrap();
+    assert_eq!(original.text.as_deref(), Some("Love, endlessly"));
+    assert_eq!(
+        (copy.text.as_deref(), copy.conflict_of.as_deref()),
+        (Some("God's love"), Some(original.uid.as_str()))
+    );
+    for d in [&a, &b] {
+        assert_eq!(d.store.note(verse(3, 16)).unwrap().body, "Love, endlessly");
+    }
+    let conflicts = b.store.conflicts();
+    assert_eq!(
+        (conflicts[0].kind.as_str(), conflicts[0].verse, conflicts[0].mine.as_str()),
+        ("note", verse(3, 16), "\"God's love\"")
+    );
+    assert_eq!(b.store.pending_changes(), 0);
+
+    // B edits its copy no further; A deletes the note and B sees it go.
+    a.store.set_note(verse(3, 16), "").unwrap();
+    a.settle(&server);
+    b.settle(&server);
+    assert!(b.store.note(verse(3, 16)).is_none());
+}
+
+#[test]
+fn a_conversation_saved_on_one_device_opens_on_the_other() {
+    use linger_core::chat::Message;
+    let server = FakeServer::new();
+    let (mut a, mut b) = (Device::new("chat-a"), Device::new("chat-b"));
+    a.start(&server);
+    b.start(&server);
+    let first = [Message::user("Who was Nicodemus?")];
+    let id = a.store.save_chat(None, "Nicodemus", &first, "[1]").unwrap();
+    a.settle(&server);
+    let messages = [Message::user("Who was Nicodemus?"), Message::assistant("A Pharisee {{John 3:1}}.")];
+    a.store.save_chat(Some(id), "Nicodemus", &messages, "[1,2]").unwrap();
+    a.settle(&server);
+    b.settle(&server);
+    let chats = b.store.chats();
+    assert_eq!(chats.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Nicodemus"]);
+    let saved = b.store.chat(chats[0].id).expect("the conversation was fetched");
+    assert_eq!((saved.messages.as_slice(), saved.api.as_str()), (&messages[..], "[1,2]"));
+    assert_eq!(server.chats().len(), 1, "continuing a conversation saves the same chat");
+
+    b.store.delete_chat(chats[0].id).unwrap();
+    b.settle(&server);
+    a.settle(&server);
+    assert!(a.store.chats().is_empty());
+    assert!(server.chats().is_empty());
 }

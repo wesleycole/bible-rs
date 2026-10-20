@@ -206,7 +206,8 @@ for the web's wasm build):
   copy had when the edit began. If the server's record has moved past it, the server doesn't overwrite:
   for a note it keeps both, writing the late edit as a new note item with `conflictOf`, and for a
   highlight, bookmark or chat it keeps the server's and answers `conflict`, which the outbox treats as
-  done. Clearing a record that is already clear (or absent) answers `ok` with its current `seq` and
+  done. The answer carries the record that stood (and, for a note, the copy's uid and `seq`), so the
+  device shows it without waiting for the feed, and its own note becomes the copy. Clearing a record that is already clear (or absent) answers `ok` with its current `seq` and
   consumes no sequence number. One person edits their own notes, so this is rare, but a late offline edit silently replacing
   a newer one would be data loss. The notes and Recents pages say "edited on another device" when the
   cache replaces a record the user has open, and show a conflict copy beside the note it collided with.
@@ -219,8 +220,9 @@ for the web's wasm build):
 - **The cache** is `study.sqlite`, which gains versioned migrations (`PRAGMA user_version`) in M1: the
   synced records, a per-chapter anchor index built from them, the cursor and the outbox. Reading, the
   margin, the notes page, Recents and the library list work offline from it. File bytes are fetched on
-  demand and kept in `<data>/files/` with a size cap (thumbnails always; photos, audio and
-  conversations least-recently-used).
+  demand and kept in `<data>/files/` with a size cap (thumbnails always; photos and audio
+  least-recently-used). Text files and conversations are fetched as soon as the feed names them:
+  they're small, offline search reads text, and Recents opens offline.
 - **Signing out** waits for the outbox to drain (or asks), then deletes the cache and cached files, so
   nothing personal from the library stays on a shared computer; signing in again pulls it back.
   Recordings that exist only on this device (a Free user's audio, a recording not yet uploaded) are
