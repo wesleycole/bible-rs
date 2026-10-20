@@ -1272,7 +1272,7 @@ impl SettingsUi {
 
         // Online translations: the publishers' own APIs. Their free terms are non-commercial, and
         // a paid tier makes the whole app commercial, so release builds leave them out until the
-        // publishers answer in writing (docs/backend-plan.md). Ones already added keep working.
+        // publishers answer in writing (docs/plans/backend.md). Ones already added keep working.
         if !LICENSED_ONLINE {
             return;
         }

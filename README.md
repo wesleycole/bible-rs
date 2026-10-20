@@ -6,7 +6,7 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
 Linger is growing into a personal Bible context manager. Record the sermons you hear, photograph
 your handwritten notes, the slides and the pages of the books you study (circling what matters),
 and write notes as you read. Ask then answers your questions from that library and the Bible, on
-every device. That part is in progress ([the plan](docs/context-plan.md)); everything below
+every device. That part is in progress ([the plan](docs/plans/README.md)); everything below
 describes the reader as it works today.
 
 Linger began as a fork of [bible-rs](https://github.com/michaelshimeles/bible-rs) (MIT).
@@ -134,7 +134,7 @@ skipped. Remove an import from the same settings page or with `linger remove <id
 
 **Development builds only, for now.** These services' free terms are non-commercial, and Linger
 will offer a paid Pro plan, so release builds leave them out until the publishers and API.Bible
-answer in writing (see [the backend plan](docs/backend-plan.md#licensing-shapes-the-product)).
+answer in writing (see [the backend plan](docs/plans/backend.md#licensing-shapes-the-product)).
 Translations already added keep working, and importing a file you own works in every build.
 
 Chapters are fetched from each publisher's own API as you read, and shown with the publisher's

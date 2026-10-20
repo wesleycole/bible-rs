@@ -1,6 +1,6 @@
 # Linger server
 
-The backend from [docs/backend-plan.md](../docs/backend-plan.md): an Effect 4 proxy deployed as one
+The backend from [docs/plans/backend.md](../docs/plans/backend.md): an Effect 4 proxy deployed as one
 Vercel Function (`api/index.ts`), with Convex for accounts, allowances and the ledger.
 
 ## Run it locally
