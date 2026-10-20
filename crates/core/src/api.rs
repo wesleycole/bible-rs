@@ -5,144 +5,17 @@
 //! sorts them by what the app should do: sign in, show Pro, wait, update, or start a new chat.
 
 use std::fmt;
-use std::io::Read;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::auth::TokenSource;
+
 /// The production proxy (Vercel's own URL until `api.trylinger.com` points at it).
 pub const API_URL: &str = "https://linger-api.vercel.app";
-
-/// Where the signed-in user's Clerk token comes from: the desktop's OAuth session, the iOS
-/// app's Clerk SDK, the web's `useAuth().getToken()`, or a fixed token for development.
-pub trait TokenSource: Send + Sync {
-    /// A token that should be valid now, refreshed first if it's about to expire.
-    fn token(&self) -> Result<String>;
-    /// A fresh token after the proxy rejected the current one; an error means sign in again.
-    fn refresh(&self) -> Result<String>;
-}
-
-/// One fixed token: the dev Settings field, or `LINGER_API_TOKEN`. It can't be refreshed.
-pub struct StaticToken(pub String);
-
-impl TokenSource for StaticToken {
-    fn token(&self) -> Result<String> {
-        Ok(self.0.clone())
-    }
-
-    fn refresh(&self) -> Result<String> {
-        anyhow::bail!("the token was rejected")
-    }
-}
-
-/// How `api` and `assistant` reach the network: `ureq` natively ([`Ureq`]), `XMLHttpRequest`
-/// on the web, a fake in tests.
-pub trait Http: Send + Sync {
-    /// Sends one request. `Err` is a transport failure (unreachable, timed out, the stream went
-    /// quiet); any HTTP status is `Ok`.
-    fn send(&self, request: Request) -> Result<Response, String>;
-}
-
-/// One request: a JSON or form body, already serialized.
-#[derive(Debug, Clone)]
-pub struct Request {
-    pub method: String,
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-    pub body: Option<String>,
-}
-
-impl Request {
-    pub fn new(method: &str, url: &str) -> Self {
-        Self { method: method.into(), url: url.into(), headers: Vec::new(), body: None }
-    }
-
-    pub fn header(mut self, name: &str, value: &str) -> Self {
-        self.headers.push((name.into(), value.into()));
-        self
-    }
-
-    pub fn body(mut self, body: String) -> Self {
-        self.body = Some(body);
-        self
-    }
-}
-
-/// A response: its status, headers, and the body as a stream (Ask reads events as they come).
-pub struct Response {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Box<dyn Read + Send>,
-}
-
-impl Response {
-    /// A whole body in memory (tests, the web).
-    pub fn new(status: u16, headers: Vec<(String, String)>, body: Vec<u8>) -> Self {
-        Self { status, headers, body: Box::new(std::io::Cursor::new(body)) }
-    }
-
-    pub fn is_success(&self) -> bool {
-        (200..300).contains(&self.status)
-    }
-
-    /// The first header named `name` (case-insensitively).
-    pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
-    }
-
-    /// Reads the rest of the body as text (lossily).
-    pub fn text(&mut self) -> String {
-        let mut bytes = Vec::new();
-        self.body.read_to_end(&mut bytes).ok();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-}
-
-/// The native [`Http`]: a `ureq` agent with no overall timeout, because Ask's answers stream
-/// for as long as they take; reads time out if the stream goes quiet.
-#[cfg(feature = "native")]
-pub struct Ureq(ureq::Agent);
-
-#[cfg(feature = "native")]
-impl Default for Ureq {
-    fn default() -> Self {
-        use std::time::Duration;
-        Self(
-            ureq::Agent::config_builder()
-                .timeout_connect(Some(Duration::from_secs(15)))
-                .timeout_recv_body(Some(Duration::from_secs(120)))
-                .http_status_as_error(false)
-                .user_agent(concat!("linger/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .into(),
-        )
-    }
-}
-
-#[cfg(feature = "native")]
-impl Http for Ureq {
-    fn send(&self, request: Request) -> Result<Response, String> {
-        let unreachable = |e: ureq::Error| e.to_string();
-        let mut req = ureq::http::Request::builder().method(request.method.as_str()).uri(&request.url);
-        for (n, v) in &request.headers {
-            req = req.header(n, v);
-        }
-        let bad = |e: ureq::http::Error| e.to_string();
-        let resp = match request.body {
-            Some(body) => self.0.run(req.body(body).map_err(bad)?).map_err(unreachable)?,
-            None => self.0.run(req.body(()).map_err(bad)?).map_err(unreachable)?,
-        };
-        let status = resp.status().as_u16();
-        let headers = resp
-            .headers()
-            .iter()
-            .filter_map(|(n, v)| Some((n.to_string(), v.to_str().ok()?.to_string())))
-            .collect();
-        Ok(Response { status, headers, body: Box::new(resp.into_body().into_reader()) })
-    }
-}
 
 /// What went wrong talking to the proxy, by what the user can do about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,7 +161,7 @@ impl Me {
 pub struct Api {
     base: String,
     tokens: Arc<dyn TokenSource>,
-    http: Arc<dyn Http>,
+    agent: ureq::Agent,
 }
 
 /// The production Convex deployment, which the library syncs with ([`convex_url`]).
@@ -314,26 +187,25 @@ pub fn base_url() -> String {
         .to_string()
 }
 
-impl Api {
-    /// Over the native `ureq` client.
-    #[cfg(feature = "native")]
-    pub fn new(base: impl Into<String>, tokens: Arc<dyn TokenSource>) -> Self {
-        Self::with_http(base, tokens, Arc::new(Ureq::default()))
-    }
+pub type Response = ureq::http::Response<ureq::Body>;
 
-    /// Over any [`Http`]: the web's, or a fake.
-    pub fn with_http(base: impl Into<String>, tokens: Arc<dyn TokenSource>, http: Arc<dyn Http>) -> Self {
-        Self { base: base.into().trim_end_matches('/').to_string(), tokens, http }
+impl Api {
+    pub fn new(base: impl Into<String>, tokens: Arc<dyn TokenSource>) -> Self {
+        // No overall timeout: Ask's answers stream for as long as they take; reads time out if
+        // the stream goes quiet.
+        let agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(15)))
+            .timeout_recv_body(Some(Duration::from_secs(120)))
+            .http_status_as_error(false)
+            .user_agent(concat!("linger/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+        Self { base: base.into().trim_end_matches('/').to_string(), tokens, agent }
     }
 
     /// The signed-in user's tokens, for the sync engine's own connection.
     pub fn tokens(&self) -> Arc<dyn TokenSource> {
         self.tokens.clone()
-    }
-
-    /// The client's [`Http`], for requests outside the proxy (a direct Gateway call).
-    pub fn http(&self) -> Arc<dyn Http> {
-        self.http.clone()
     }
 
     pub fn base(&self) -> &str {
@@ -346,13 +218,13 @@ impl Api {
         let url = format!("{}{path}", self.base);
         let token = self.tokens.token().map_err(|e| ApiError::SignIn(format!("{e:#}")))?;
         let mut resp = self.request(method, &url, &token, body)?;
-        if resp.status == 401 {
+        if resp.status().as_u16() == 401 {
             match self.tokens.refresh() {
                 Ok(fresh) => resp = self.request(method, &url, &fresh, body)?,
                 Err(_) => return Err(error_of(resp)),
             }
         }
-        if resp.is_success() { Ok(resp) } else { Err(error_of(resp)) }
+        if resp.status().is_success() { Ok(resp) } else { Err(error_of(resp)) }
     }
 
     fn request(
@@ -362,20 +234,27 @@ impl Api {
         token: &str,
         body: Option<&Value>,
     ) -> Result<Response, ApiError> {
-        let mut req = Request::new(method, url).header("authorization", &format!("Bearer {token}"));
-        if !matches!(method, "GET" | "DELETE") {
-            req = req
+        let auth = format!("Bearer {token}");
+        let unreachable =
+            |e: ureq::Error| ApiError::Unavailable(format!("Couldn't reach Linger's servers: {e}"));
+        match (method, body) {
+            ("GET", _) => self.agent.get(url).header("authorization", &auth).call().map_err(unreachable),
+            ("DELETE", _) => {
+                self.agent.delete(url).header("authorization", &auth).call().map_err(unreachable)
+            }
+            (_, body) => self
+                .agent
+                .post(url)
+                .header("authorization", &auth)
                 .header("content-type", "application/json")
-                .body(body.map_or_else(|| "{}".to_string(), Value::to_string));
+                .send(body.map_or_else(|| "{}".to_string(), Value::to_string))
+                .map_err(unreachable),
         }
-        self.http
-            .send(req)
-            .map_err(|e| ApiError::Unavailable(format!("Couldn't reach Linger's servers: {e}")))
     }
 
     fn json(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ApiError> {
         let mut resp = self.send(method, path, body)?;
-        let text = resp.text();
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
@@ -405,7 +284,6 @@ impl Api {
         self.send("DELETE", "/v1/account", None).map(drop)
     }
 
-    #[cfg(feature = "native")]
     pub(crate) fn json_call(
         &self,
         method: &str,
@@ -425,9 +303,10 @@ fn url_of(v: Value) -> Result<String, ApiError> {
 
 /// The error a non-2xx response carries.
 pub fn error_of(mut resp: Response) -> ApiError {
-    let retry = resp.header("retry-after").map(str::to_string);
-    let body = resp.text();
-    ApiError::from_response(resp.status, &body, retry.as_deref())
+    let status = resp.status().as_u16();
+    let retry = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let body = resp.body_mut().read_to_string().unwrap_or_default();
+    ApiError::from_response(status, &body, retry.as_deref())
 }
 
 #[cfg(test)]

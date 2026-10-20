@@ -33,7 +33,7 @@ on a Mac.
 
 | Criterion | Chrome | Firefox |
 | --- | --- | --- |
-| Wasm binary (limit 3 MB compressed) | 704,867 B raw, **262,127 B** gzip -9 | same |
+| Wasm binary (limit 3 MB compressed) | 709,954 B raw, **262,549 B** gzip -9 | same |
 | John 3 from the BSB | fetch 1,023,985 B, decode 34 ms, chapter model (36 verses) 0.3 ms; renders with its heading, verse numbers and paragraphs | decode 55 ms, chapter 0 ms |
 | Search (limit 50 ms) | warm **1.5–2.4 ms** median (max 2.6) over "love" (478 hits), "living water", "faith hope love", "righteousness of god", "born again"; the first search, which builds the index, 52 ms | warm **2–3 ms** (max 4); first 75 ms |
 | `cross_references` John 3:16 | 5 links; first call 89 ms including the 1,168,870 B cross-reference decode, warm 0.2 ms | first 144 ms, warm 1 ms |
@@ -44,26 +44,31 @@ the translation loads. Nothing had to be made lazier or cut: the data stays as i
 
 What the build needed, all in `crates/core`:
 - The `native` feature, on by default, gating what core has today: `rusqlite`, `ureq`, `hound`,
-  `zip`, `flate2` and the zstd C library (`keyring` was already a macOS-only dependency). `sync`, and so
-  `convex`, imply it. The pure-Rust `ruzstd` decoder is always on; the C library only encodes.
+  `zip`, `flate2` and the zstd C library (`keyring` was already a macOS-only dependency), and with
+  them the modules that need them: `api`, `assistant`, `auth`, `import`, `library`, `online`, `secrets`,
+  `study`, and the transcribing half of `transcribe`. `sync`, and so `convex`, imply it. The wasm
+  build, the only one without `native`, decodes with the pure-Rust `ruzstd`, a wasm32-only
+  dependency; native builds never compile it.
 - Data behind `bundled::Source`: `include_bytes!` under the `bundled` feature, otherwise whatever the
   host installs (`bundled::install`), which the page fills with fetched blobs.
-- `api::Http`, with `Ureq` as the native implementation; `Api::with_http`, and `assistant`'s
-  `Backend::Direct` carries its `Http`. `HighlightColor` moved from `study` (native) to `records`, and
-  the clock and civil-date functions `study` and `transcribe` share moved to `time.rs`, on `web-time`
-  under wasm.
+- `HighlightColor` moved from `study` (native) to `records`, and the clock and civil-date functions
+  `study` and `transcribe` share moved to `time.rs`, on `web-time` under wasm.
 - `uuid` takes its randomness from `crypto.getRandomValues` through its own `js` feature, which is
   one feature on a dependency we have rather than getrandom's `wasm_js` backend and its `RUSTFLAGS`
-  cfg. It compiles; Ask, its only caller, didn't run in the spike.
+  cfg. Nothing on wasm calls it yet (its callers, Ask and the recorder, are native); the feature is
+  what lets the crate compile there, and Ask will need it.
 - `crates/web` depends on core with `default-features = false`, and is a workspace member but not a
   default member, so the desktop, CLI and iOS builds are unchanged.
 
 Smaller than item 3 on purpose: `crates/web` exposes the chapter model, search, references, citation
 segments and `run_tool` for Ask's device-side tools, which is what the pass criteria exercise. Two
 things wait for the app, with a decision each:
-- **The `fetch` `Http`.** `Http::send` is synchronous because Ask reads the event stream as it
-  arrives and the native loop blocks on it. A browser implementation either runs the loop in a Web
-  Worker over synchronous `XMLHttpRequest`, or `assistant` grows an async entry point for wasm.
+- **The `Http` trait and its `fetch` implementation.** `api` and `assistant` are native-only for
+  now, on `ureq` as before; the spike built the trait and took it out again because nothing on the
+  web called it yet. Ask reads the event stream as it arrives and the native loop blocks on it, so
+  the browser version either runs the loop in a Web Worker over synchronous `XMLHttpRequest` or
+  `assistant` grows an async entry point for wasm; the seam's shape follows from that choice, so it
+  is built with the first web caller.
 - **The web `LibraryBackend`.** `sync.rs` is native-only (SQLite). The web's `LibraryBackend` over the
   Convex JavaScript client is new code with nothing in the spike's criteria to check it against, so
   it belongs with the reader that uses it.

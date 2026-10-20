@@ -4,7 +4,9 @@
 //! Modules marked `native` need the OS or a C library; the rest, with `recording` and
 //! `transcribe` reduced to their types, also build for wasm32 (`--no-default-features`).
 
+#[cfg(feature = "native")]
 pub mod api;
+#[cfg(feature = "native")]
 pub mod assistant;
 #[cfg(feature = "native")]
 pub mod auth;

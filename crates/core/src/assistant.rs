@@ -12,12 +12,12 @@
 //! [`contract`](crate::contract), and decides what the account may spend.
 
 use std::io::{BufRead, BufReader};
-use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::api::{Api, Http, Request, Response};
+use crate::api::Api;
 use crate::chat::{self, Context, Message, Tools};
 use crate::contract;
 
@@ -49,7 +49,7 @@ pub enum Backend {
     /// Linger's proxy, as the signed-in user.
     Proxy(Api),
     /// Development only: the Gateway itself, with a key from the environment.
-    Direct { url: String, key: String, model: String, http: Arc<dyn Http> },
+    Direct { url: String, key: String, model: String },
 }
 
 /// Where to send requests, as whom, and in which mode.
@@ -67,7 +67,6 @@ impl Config {
 
     /// Development mode: the Gateway, with the key from `LINGER_AI_GATEWAY_KEY` or
     /// `AI_GATEWAY_API_KEY`; `None` when neither is set.
-    #[cfg(feature = "native")]
     pub fn from_env() -> Option<Self> {
         let key = ["LINGER_AI_GATEWAY_KEY", "AI_GATEWAY_API_KEY"]
             .iter()
@@ -77,7 +76,6 @@ impl Config {
                 url: std::env::var("LINGER_AI_URL").unwrap_or_else(|_| GATEWAY_URL.into()),
                 key,
                 model: std::env::var("LINGER_AI_MODEL").unwrap_or_else(|_| MODEL.into()),
-                http: Arc::new(crate::api::Ureq::default()),
             },
             mode: Mode::Standard,
         })
@@ -151,13 +149,14 @@ impl Conversation {
         let start = self.messages.len();
         self.messages.push(json!({ "role": "user", "content": content }));
 
+        let agent = agent();
         let mut answer: Vec<String> = Vec::new();
         // One id for the question and all its tool rounds: the proxy counts the question once
         // and keeps every round on the model it started on.
         let question_id = uuid::Uuid::new_v4().to_string();
         for round in 0..contract::MAX_ROUNDS {
             let body = self.request(cfg, &question_id, round);
-            let turn = match stream(cfg, &body, &mut on_event) {
+            let turn = match stream(&agent, cfg, &body, &mut on_event) {
                 Ok(t) => t,
                 Err(e) => {
                     // Nothing of this question stays, so the next one starts from a valid history.
@@ -234,6 +233,18 @@ impl Conversation {
     }
 }
 
+fn agent() -> ureq::Agent {
+    // No overall timeout: a long answer streams for as long as it takes. Reads time out if the
+    // stream goes quiet.
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_recv_body(Some(Duration::from_secs(120)))
+        .http_status_as_error(false)
+        .user_agent(concat!("linger/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
+}
+
 /// "Reading John 3:16", "Searching for “living water”".
 fn tool_label(name: &str, input: &Value) -> String {
     match name {
@@ -272,42 +283,44 @@ fn tool_label(name: &str, input: &Value) -> String {
 /// comes back as an [`ApiError`] for the panel to show; the client only refreshes its token
 /// once on a 401. Direct to the Gateway it retries twice on overload or a dropped connection
 /// before anything has streamed.
-fn stream(cfg: &Config, body: &Value, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
-    let (url, key, http) = match &cfg.backend {
+fn stream(agent: &ureq::Agent, cfg: &Config, body: &Value, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
+    let (url, key) = match &cfg.backend {
         Backend::Proxy(api) => {
             let resp = api.send("POST", "/v1/ask", Some(body))?;
+            let header =
+                |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
             on_event(Event::Allowance {
-                questions_left: resp.header("x-linger-questions-left").and_then(|v| v.parse().ok()),
-                downgraded: resp.header("x-linger-downgraded") == Some("1"),
+                questions_left: header("x-linger-questions-left").and_then(|v| v.parse().ok()),
+                downgraded: header("x-linger-downgraded").as_deref() == Some("1"),
             });
             return read_events(resp, on_event);
         }
-        Backend::Direct { url, key, http, .. } => (url, key, http),
+        Backend::Direct { url, key, .. } => (url, key),
     };
     let mut last = None;
     for attempt in 0..3 {
         if attempt > 0 {
-            // The web has no thread to sleep; it retries at once.
-            #[cfg(not(target_arch = "wasm32"))]
-            std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
+            std::thread::sleep(Duration::from_secs(2 * attempt));
         }
-        let req = Request::new("POST", url)
+        let resp = agent
+            .post(url)
             .header("content-type", "application/json")
             .header("x-api-key", key)
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", "server-side-fallback-2026-07-01")
-            .body(body.to_string());
-        let mut resp = match http.send(req) {
+            .send(body.to_string());
+        let mut resp = match resp {
             Ok(r) => r,
             Err(e) => {
                 last = Some(anyhow!(e).context("couldn't reach the assistant"));
                 continue;
             }
         };
-        if resp.status != 200 {
-            let text = resp.text();
-            let err = api_error(resp.status, &text);
-            if matches!(resp.status, 429 | 500..=599) {
+        let status = resp.status().as_u16();
+        if status != 200 {
+            let text = resp.body_mut().read_to_string().unwrap_or_default();
+            let err = api_error(status, &text);
+            if matches!(status, 429 | 500..=599) {
                 last = Some(err);
                 continue;
             }
@@ -319,8 +332,8 @@ fn stream(cfg: &Config, body: &Value, on_event: &mut impl FnMut(Event)) -> Resul
 }
 
 /// Folds a Messages event stream into one turn, reporting progress as it goes.
-fn read_events(resp: Response, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
-    let reader = BufReader::new(resp.body);
+fn read_events(resp: crate::api::Response, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
+    let reader = BufReader::new(resp.into_body().into_reader());
     let mut turn = Turn::default();
     let mut data = String::new();
     for line in reader.lines() {

@@ -218,8 +218,8 @@ pub fn decompress_all(data: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The zstd C library natively; the pure-Rust `ruzstd` otherwise (it decodes the same frames,
-/// a few times slower: see docs/plans/m8-web.md for the measured numbers).
+/// The zstd C library natively; the pure-Rust `ruzstd` on wasm, the only build without `native`
+/// (it decodes the same frames, a few times slower: docs/plans/m8-web.md has the numbers).
 #[cfg(feature = "native")]
 fn decoder(data: &[u8]) -> Result<impl Read + '_> {
     Ok(zstd::stream::read::Decoder::with_buffer(data)?)
