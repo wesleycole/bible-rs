@@ -59,7 +59,7 @@ describe("pure policy", () => {
     for (const url of ["http://127.0.0.1:3000", "http://localhost:3000", "http://10.1.2.3", "http://192.168.1.4", "http://172.20.0.1", "http://[::1]:3000", "http://mac.local"]) {
       expect(reachable(url), url).toBe(false)
     }
-    for (const url of ["https://api.linger.app", "http://172.32.0.1", "https://x.onamp.dev"]) expect(reachable(url), url).toBe(true)
+    for (const url of ["https://api.trylinger.com", "http://172.32.0.1", "https://x.onamp.dev"]) expect(reachable(url), url).toBe(true)
   })
 
   it("maps Stripe subscription states onto entitlements", () => {

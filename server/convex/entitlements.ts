@@ -1,7 +1,6 @@
 import { v } from "convex/values"
 import { Clock, Effect } from "effect"
 import type { Doc, Id } from "./_generated/dataModel.js"
-import type { MutationCtx as RawMutationCtx } from "./_generated/server.js"
 import { ensureUser } from "./lib/accounts.js"
 import { effectServerMutation } from "./lib/effect.js"
 import { MutationCtx } from "./lib/services.js"
@@ -23,24 +22,18 @@ const owner = v.union(
   v.object({ stripeCustomerId: v.string() })
 )
 
-const findOwner = async (
-  ctx: RawMutationCtx,
+const findOwner = Effect.fn("entitlements.findOwner")(function*(
   who: { clerkId: string } | { appAccountToken: string } | { stripeCustomerId: string }
-): Promise<Id<"users"> | null> => {
-  if ("clerkId" in who) return (await ensureUser(ctx, who.clerkId))._id
-  if ("appAccountToken" in who) {
-    const u = await ctx.db
-      .query("users")
-      .withIndex("by_app_account_token", (q) => q.eq("appAccountToken", who.appAccountToken))
-      .unique()
-    return u?._id ?? null
-  }
-  const u = await ctx.db
-    .query("users")
-    .withIndex("by_stripe_customer", (q) => q.eq("stripeCustomerId", who.stripeCustomerId))
-    .unique()
+): Effect.fn.Return<Id<"users"> | null, never, MutationCtx> {
+  if ("clerkId" in who) return (yield* ensureUser(who.clerkId))._id
+  const ctx = yield* MutationCtx
+  const u = yield* Effect.promise(() =>
+    "appAccountToken" in who
+      ? ctx.db.query("users").withIndex("by_app_account_token", (q) => q.eq("appAccountToken", who.appAccountToken)).unique()
+      : ctx.db.query("users").withIndex("by_stripe_customer", (q) => q.eq("stripeCustomerId", who.stripeCustomerId)).unique()
+  )
   return u?._id ?? null
-}
+})
 
 /**
  * Records the current state of one subscription, keyed by its source and original id, so a
@@ -63,7 +56,7 @@ export const upsert = effectServerMutation({
     const existing = yield* Effect.promise(() =>
       ctx.db.query("entitlements").withIndex("by_original", (q) => q.eq("source", args.source).eq("originalId", args.originalId)).unique()
     )
-    const fromOwner = args.owner ? yield* Effect.promise(() => findOwner(ctx, args.owner!)) : null
+    const fromOwner = args.owner ? yield* findOwner(args.owner) : null
     const userId = fromOwner ?? existing?.userId ?? null
     if (!userId) return { ok: false as const, reason: "unknown_user" as const }
     const row: Omit<Doc<"entitlements">, "_id" | "_creationTime"> = {

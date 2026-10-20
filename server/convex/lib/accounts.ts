@@ -1,5 +1,7 @@
+import { Clock, Effect } from "effect"
 import type { Doc, Id } from "../_generated/dataModel.js"
 import type { MutationCtx, QueryCtx } from "../_generated/server.js"
+import { MutationCtx as Mutation } from "./services.js"
 import { dayOf, periodOf } from "./time.js"
 
 export type PlanKey = "free" | "pro"
@@ -8,24 +10,25 @@ export const userByClerk = (ctx: QueryCtx, clerkId: string) =>
   ctx.db.query("users").withIndex("by_clerk", (q) => q.eq("clerkId", clerkId)).unique()
 
 /** The user for a verified Clerk id, created on first sight with its StoreKit account token. */
-export const ensureUser = async (ctx: MutationCtx, clerkId: string, email?: string): Promise<Doc<"users">> => {
-  const existing = await userByClerk(ctx, clerkId)
+export const ensureUser = Effect.fn("ensureUser")(function*(
+  clerkId: string,
+  email?: string
+): Effect.fn.Return<Doc<"users">, never, Mutation> {
+  const ctx = yield* Mutation
+  const existing = yield* Effect.promise(() => userByClerk(ctx, clerkId))
   if (existing) {
     if (email && existing.email !== email) {
-      await ctx.db.patch(existing._id, { email })
+      yield* Effect.promise(() => ctx.db.patch(existing._id, { email }))
       return { ...existing, email }
     }
     return existing
   }
-  const id = await ctx.db.insert("users", {
-    clerkId,
-    email,
-    createdAt: Date.now(),
-    appAccountToken: crypto.randomUUID(),
-    trialHourUsed: false
-  })
-  return (await ctx.db.get(id))!
-}
+  const createdAt = yield* Clock.currentTimeMillis
+  const id = yield* Effect.promise(() =>
+    ctx.db.insert("users", { clerkId, email, createdAt, appAccountToken: crypto.randomUUID(), trialHourUsed: false })
+  )
+  return (yield* Effect.promise(() => ctx.db.get(id)))!
+})
 
 /** An entitlement counts while it is active or in its billing grace period, and unexpired. */
 export const isEntitled = (e: Doc<"entitlements">, now: number) =>

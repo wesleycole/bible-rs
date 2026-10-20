@@ -4,7 +4,7 @@
  * at the public key with CLERK_JWT_KEY (printed by --env) and CLERK_JWT_ISSUER=https://clerk.linger.test.
  *
  *   pnpm dev:token [user_id] [--oauth] [--minutes 60]
- *   pnpm dev:token --env        # prints CLERK_JWT_KEY and CLERK_JWT_ISSUER for .env.local
+ *   pnpm dev:token --env        # prints CLERK_JWT_KEY, CLERK_JWT_ISSUER and CLERK_JWKS (a data URI)
  */
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -22,7 +22,9 @@ export const devKeys = () => {
   }
   const privateKey = createPrivateKey(readFileSync(privatePath))
   const publicPem = createPublicKey(privateKey).export({ type: "spki", format: "pem" }).toString()
-  return { privateKey, publicPem }
+  const jwk = createPublicKey(privateKey).export({ format: "jwk" })
+  const jwks = { keys: [{ ...jwk, kid: "ins_dev", alg: "RS256", use: "sig" }] }
+  return { privateKey, publicPem, jwksDataUri: `data:text/plain;charset=utf-8;base64,${Buffer.from(JSON.stringify(jwks)).toString("base64")}` }
 }
 
 const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url")
@@ -49,8 +51,9 @@ export const mintToken = (sub: string, opts: { oauth?: boolean; minutes?: number
 if (import.meta.main) {
   const args = process.argv.slice(2)
   if (args.includes("--env")) {
-    const pem = devKeys().publicPem.trim().replace(/\n/g, "\\n")
-    console.log(`CLERK_JWT_KEY="${pem}"\nCLERK_JWT_ISSUER=${DEV_ISSUER}`)
+    const { publicPem, jwksDataUri } = devKeys()
+    const pem = publicPem.trim().replace(/\n/g, "\\n")
+    console.log(`CLERK_JWT_KEY="${pem}"\nCLERK_JWT_ISSUER=${DEV_ISSUER}\nCLERK_JWKS=${jwksDataUri}`)
   } else {
     const minutes = args.includes("--minutes") ? Number(args[args.indexOf("--minutes") + 1]) : undefined
     const sub = args.find((a) => a.startsWith("user_")) ?? "user_dev"

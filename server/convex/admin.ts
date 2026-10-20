@@ -54,55 +54,46 @@ export const seed = effectInternalMutation({
   args: { overwrite: v.optional(v.boolean()) },
   handler: Effect.fn("admin.seed")(function*({ overwrite }) {
     const ctx = yield* MutationCtx
-    return yield* Effect.promise(() => seedWith(ctx, overwrite))
-  })
-})
-
-/** The seed's writes: plain database calls with no time and nothing that can fail but a defect. */
-const seedWith = async (ctx: MutationCtx["Service"], overwrite: boolean | undefined) => {
     const changed: string[] = []
     for (const plan of PLANS) {
-      const row = await ctx.db.query("plans").withIndex("by_key", (q) => q.eq("key", plan.key)).unique()
+      const row = yield* Effect.promise(() => ctx.db.query("plans").withIndex("by_key", (q) => q.eq("key", plan.key)).unique())
       if (!row) {
-        await ctx.db.insert("plans", { ...plan })
+        yield* Effect.promise(() => ctx.db.insert("plans", { ...plan }))
         changed.push(`plans.${plan.key}`)
       } else if (overwrite) {
-        await ctx.db.replace(row._id, { ...plan })
+        yield* Effect.promise(() => ctx.db.replace(row._id, { ...plan }))
         changed.push(`plans.${plan.key}`)
       } else {
         const missing = Object.fromEntries(Object.entries(plan).filter(([k]) => !(k in row)))
         if (Object.keys(missing).length > 0) {
-          await ctx.db.patch(row._id, missing)
+          yield* Effect.promise(() => ctx.db.patch(row._id, missing))
           changed.push(...Object.keys(missing).map((k) => `plans.${plan.key}.${k}`))
         }
       }
     }
     for (const m of MODELS) {
-      const model = {
-        ...m,
-        thinking: "adaptive" as const,
-        enabled: true,
-        prices: DEFAULT_PRICES[m.gatewayModel]
-      }
-      const row = await ctx.db.query("models").withIndex("by_key", (q) => q.eq("key", m.key)).unique()
+      const model = { ...m, thinking: "adaptive" as const, enabled: true, prices: DEFAULT_PRICES[m.gatewayModel] }
+      const row = yield* Effect.promise(() => ctx.db.query("models").withIndex("by_key", (q) => q.eq("key", m.key)).unique())
       if (!row) {
-        await ctx.db.insert("models", model)
+        yield* Effect.promise(() => ctx.db.insert("models", model))
         changed.push(`models.${m.key}`)
       } else if (overwrite) {
-        await ctx.db.replace(row._id, model)
+        yield* Effect.promise(() => ctx.db.replace(row._id, model))
         changed.push(`models.${m.key}`)
       }
     }
-    const routing = await ctx.db.query("routing").first()
+    const routing = yield* Effect.promise(() => ctx.db.query("routing").first())
+    const defaults = { providers: ["anthropic"], note: "default" }
     if (!routing) {
-      await ctx.db.insert("routing", { providers: ["anthropic"], note: "default" })
+      yield* Effect.promise(() => ctx.db.insert("routing", defaults))
       changed.push("routing")
     } else if (overwrite) {
-      await ctx.db.replace(routing._id, { providers: ["anthropic"], note: "default" })
+      yield* Effect.promise(() => ctx.db.replace(routing._id, defaults))
       changed.push("routing")
     }
     return { changed }
-}
+  })
+})
 
 /** Points new questions at other providers (an outage drill or a real outage). */
 export const setRouting = effectInternalMutation({
@@ -120,7 +111,7 @@ export const grant = effectInternalMutation({
   args: { clerkId: v.string(), days: v.number(), note: v.optional(v.string()) },
   handler: Effect.fn("admin.grant")(function*({ clerkId, days, note }) {
     const ctx = yield* MutationCtx
-    const user = yield* Effect.promise(() => ensureUser(ctx, clerkId))
+    const user = yield* ensureUser(clerkId)
     const now = yield* Clock.currentTimeMillis
     return yield* Effect.promise(() => ctx.db.insert("entitlements", {
       userId: user._id,

@@ -9,7 +9,6 @@ import { ensureUser } from "./lib/accounts.js"
 import { effectInternalMutation, effectServerMutation } from "./lib/effect.js"
 import { Allowance } from "./lib/allowance.js"
 import { denial, type Denial } from "./lib/errors.js"
-import { MutationCtx } from "./lib/services.js"
 
 export type BeginRound =
   | {
@@ -32,8 +31,7 @@ export const beginRound = effectServerMutation({
     estimatedInputTokens: v.number()
   },
   handler: Effect.fn("usage.beginRound")(function*(args) {
-    const ctx = yield* MutationCtx
-    const user = yield* Effect.promise(() => ensureUser(ctx, args.clerkId, args.email))
+    const user = yield* ensureUser(args.clerkId, args.email)
     return yield* (yield* Allowance).beginRound(user, args).pipe(
       Effect.map((granted): BeginRound => ({ ok: true, ...granted })),
       // A denial is an answer the proxy maps onto its error contract, not a thrown error.

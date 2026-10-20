@@ -113,7 +113,7 @@ export class AppConfig extends Context.Service<AppConfig, Settings>()("linger/se
           priceMonthly: yield* optional(Config.String("STRIPE_PRICE_MONTHLY")),
           priceYearly: yield* optional(Config.String("STRIPE_PRICE_YEARLY")),
           returnUrl: yield* Config.String("STRIPE_RETURN_URL").pipe(
-            Config.withDefault("https://linger.app/billing/done")
+            Config.withDefault("https://trylinger.com/billing/done")
           )
         }
       })
@@ -146,7 +146,7 @@ export class AppConfig extends Context.Service<AppConfig, Settings>()("linger/se
           webhookSecret: undefined,
           priceMonthly: undefined,
           priceYearly: undefined,
-          returnUrl: "https://linger.app/billing/done"
+          returnUrl: "https://trylinger.com/billing/done"
         },
         ...overrides
       })

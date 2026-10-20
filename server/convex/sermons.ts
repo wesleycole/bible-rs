@@ -30,7 +30,7 @@ export const create = effectServerMutation({
     const ctx = yield* MutationCtx
     const allowance = yield* Allowance
     const now = yield* Clock.currentTimeMillis
-    const user = yield* Effect.promise(() => ensureUser(ctx, args.clerkId))
+    const user = yield* ensureUser(args.clerkId)
     return yield* Effect.gen(function*() {
       const { trial } = yield* allowance.admitSermon(user, args.durationSec)
       const blobPath = `sermons/${user._id}/${args.nonce}.wav`

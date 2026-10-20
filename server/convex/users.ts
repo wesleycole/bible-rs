@@ -9,8 +9,7 @@ import { MutationCtx, QueryCtx } from "./lib/services.js"
 export const me = effectServerMutation({
   args: { clerkId: v.string(), email: v.optional(v.string()) },
   handler: Effect.fn("users.me")(function*({ clerkId, email }) {
-    const ctx = yield* MutationCtx
-    const user = yield* Effect.promise(() => ensureUser(ctx, clerkId, email))
+    const user = yield* ensureUser(clerkId, email)
     const summary = yield* (yield* Allowance).summary(user)
     return { user: { id: clerkId, email: user.email, appAccountToken: user.appAccountToken }, ...summary }
   })
@@ -20,7 +19,7 @@ export const setStripeCustomer = effectServerMutation({
   args: { clerkId: v.string(), stripeCustomerId: v.string() },
   handler: Effect.fn("users.setStripeCustomer")(function*({ clerkId, stripeCustomerId }) {
     const ctx = yield* MutationCtx
-    const user = yield* Effect.promise(() => ensureUser(ctx, clerkId))
+    const user = yield* ensureUser(clerkId)
     yield* Effect.promise(() => ctx.db.patch(user._id, { stripeCustomerId }))
     return { userId: user._id }
   })

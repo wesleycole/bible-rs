@@ -11,7 +11,9 @@ export default {
     {
       type: "customJwt",
       issuer: process.env.CLERK_JWT_ISSUER!,
-      jwks: `${process.env.CLERK_JWT_ISSUER}/.well-known/jwks.json`,
+      // The issuer's `/.well-known/jwks.json`; a local backend for tests sets the dev token key
+      // inline as a data URI (scripts/library-local.sh). Convex requires it set on every deployment.
+      jwks: process.env.CLERK_JWKS!,
       algorithm: "RS256"
     }
   ]
