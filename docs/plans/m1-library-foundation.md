@@ -40,11 +40,15 @@ These gate M1's release, because they can't be fixed once users have libraries:
    development instances, and stays off in production. Smoke-tested October 20 (Mac prover):
    `linger signin` with the two overrides opens `accounts.trylinger.com/sign-in`, "Sign in to
    Linger" with email and "Use passkey instead", no Google, Apple or password, and no OAuth error.
-   The registered redirect is `http://127.0.0.1/callback` (no port); whether Clerk accepts the
-   app's ported loopback when it issues the code is unproven until one real sign-in (Wes), because
-   `/oauth/authorize` sends the browser to sign in before it checks `redirect_uri`. Before the client
+   The registered redirect is `http://127.0.0.1/callback` (no port), and Clerk accepts the app's
+   ported loopback against it: Wes's real sign-in (October 20, email code, `redirect_uri`
+   `http://127.0.0.1:58039/callback`) printed "Signed in.", so the app keeps that form. Before the client
    defaults flip, the smoke test also confirms the proxy's `/v1/me` answers 200 for a production
-   token: a refusal there signs the app out and stops sync, as the start-up bench found. A new
+   token: a refusal there signs the app out and stops sync, as the start-up bench found. Vercel
+   applies env edits only on a redeploy: after that sign-in, `linger account` got "Your session has
+   expired" because the live proxy (deployed October 19, 20:12 UTC) still verified with the values
+   from before the Clerk variables changed (October 20, 17:44–17:45 UTC). So the cut-over sets the
+   variables, redeploys the proxy, then runs the `/v1/me` check. A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
