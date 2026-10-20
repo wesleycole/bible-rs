@@ -3,14 +3,18 @@
 
 import Foundation
 
+/// Application Support/linger: translations and study data, the same layout the desktop app uses.
+public func dataDirectory() throws -> String {
+    let dir = try FileManager.default
+        .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        .appendingPathComponent("linger", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.path
+}
+
 extension BibleLibrary {
-    /// The library in Application Support/linger, the same layout the desktop app uses.
     public static func openDefault(observer: LibraryObserver? = nil) throws -> BibleLibrary {
-        let dir = try FileManager.default
-            .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("linger", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return BibleLibrary(dataDir: dir.path, observer: observer)
+        BibleLibrary(dataDir: try dataDirectory(), observer: observer)
     }
 }
 
