@@ -11,6 +11,8 @@ import { v } from "convex/values"
 /** A highlighted verse: one per verse, last writer wins. */
 export const HighlightFields = {
   color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+  /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+  createdAt: v.optional(v.number()),
   /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
   deletedAt: v.optional(v.number()),
   /** The per-user sequence number of the write that last changed this record. */
@@ -23,6 +25,8 @@ export const HighlightFields = {
 
 export const Highlight = Schema.Struct({
   color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+  /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+  createdAt: Schema.optionalKey(Schema.Int),
   /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
   deletedAt: Schema.optionalKey(Schema.Int),
   /** The per-user sequence number of the write that last changed this record. */
@@ -37,6 +41,8 @@ export type Highlight = typeof Highlight["Type"]
 
 /** A bookmarked verse with its label: one per verse, last writer wins. */
 export const BookmarkFields = {
+  /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+  createdAt: v.optional(v.number()),
   /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
   deletedAt: v.optional(v.number()),
   label: v.string(),
@@ -49,6 +55,8 @@ export const BookmarkFields = {
 }
 
 export const Bookmark = Schema.Struct({
+  /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+  createdAt: Schema.optionalKey(Schema.Int),
   /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
   deletedAt: Schema.optionalKey(Schema.Int),
   label: Schema.String,
@@ -65,6 +73,8 @@ export type Bookmark = typeof Bookmark["Type"]
 /** One record in the change feed, of any synced type, tagged with that type. */
 export const FeedRecordValidator = v.union(v.object({
     color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+    /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+    createdAt: v.optional(v.number()),
     /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
     deletedAt: v.optional(v.number()),
     /** The per-user sequence number of the write that last changed this record. */
@@ -75,6 +85,8 @@ export const FeedRecordValidator = v.union(v.object({
     /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
     verse: v.number(),
   }), v.object({
+    /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+    createdAt: v.optional(v.number()),
     /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
     deletedAt: v.optional(v.number()),
     label: v.string(),
@@ -89,6 +101,8 @@ export const FeedRecordValidator = v.union(v.object({
 
 export const FeedRecord = Schema.Union([Schema.Struct({
     color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+    /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+    createdAt: Schema.optionalKey(Schema.Int),
     /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
     deletedAt: Schema.optionalKey(Schema.Int),
     /** The per-user sequence number of the write that last changed this record. */
@@ -99,6 +113,8 @@ export const FeedRecord = Schema.Union([Schema.Struct({
     /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
     verse: Schema.Int,
   }), Schema.Struct({
+    /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+    createdAt: Schema.optionalKey(Schema.Int),
     /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
     deletedAt: Schema.optionalKey(Schema.Int),
     label: Schema.String,
@@ -118,6 +134,8 @@ export const ChangesValidator = v.union(v.object({
     /** Every record with `seq > after`, tombstones included, in `seq` order. */
     records: v.array(v.union(v.object({
       color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
       /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
       deletedAt: v.optional(v.number()),
       /** The per-user sequence number of the write that last changed this record. */
@@ -128,6 +146,8 @@ export const ChangesValidator = v.union(v.object({
       /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
       verse: v.number(),
     }), v.object({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
       /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
       deletedAt: v.optional(v.number()),
       label: v.string(),
@@ -152,6 +172,8 @@ export const Changes = Schema.Union([Schema.Struct({
     /** Every record with `seq > after`, tombstones included, in `seq` order. */
     records: Schema.Array(Schema.Union([Schema.Struct({
       color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
       /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
       deletedAt: Schema.optionalKey(Schema.Int),
       /** The per-user sequence number of the write that last changed this record. */
@@ -162,6 +184,8 @@ export const Changes = Schema.Union([Schema.Struct({
       /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
       verse: Schema.Int,
     }), Schema.Struct({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
       /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
       deletedAt: Schema.optionalKey(Schema.Int),
       label: Schema.String,

@@ -72,6 +72,11 @@ pub struct Highlight {
     /// When the record was deleted (a tombstone other devices drop), in server milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<u64>,
+    /// When the record was made, in server milliseconds: the device's own time on a first upload
+    /// (so a migrated library keeps its dates), else the server's; kept on update, and set again
+    /// when a tombstone comes back. Absent only on records written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
     pub verse: VerseId,
     pub color: HighlightColor,
 }
@@ -87,6 +92,11 @@ pub struct Bookmark {
     /// When the record was deleted (a tombstone other devices drop), in server milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<u64>,
+    /// When the record was made, in server milliseconds: the device's own time on a first upload
+    /// (so a migrated library keeps its dates), else the server's; kept on update, and set again
+    /// when a tombstone comes back. Absent only on records written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
     pub verse: VerseId,
     pub label: String,
 }
@@ -384,16 +394,19 @@ mod tests {
             uid: "h-42003016".into(),
             seq: 7,
             deleted_at: None,
+            created_at: None,
             verse: VerseId(42_003_016),
             color: HighlightColor::Yellow,
         };
         let v = serde_json::to_value(&h).unwrap();
         assert_eq!(v, json!({ "uid": "h-42003016", "seq": 7, "verse": 42_003_016, "color": "yellow" }));
         let back: Highlight = serde_json::from_value(json!({
-            "uid": "h-42003016", "seq": 8, "deletedAt": 1_700_000_000_000u64, "verse": 42_003_016, "color": "blue"
+            "uid": "h-42003016", "seq": 8, "deletedAt": 1_700_000_000_000u64, "createdAt": 1_600_000_000_000u64,
+            "verse": 42_003_016, "color": "blue"
         }))
         .unwrap();
         assert_eq!(back.deleted_at, Some(1_700_000_000_000));
+        assert_eq!(back.created_at, Some(1_600_000_000_000));
         assert_eq!(back.color, HighlightColor::Blue);
     }
 

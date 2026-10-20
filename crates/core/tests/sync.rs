@@ -262,6 +262,12 @@ fn an_existing_library_migrates_keeps_everything_and_uploads_once() {
         (jn316, "\"green\"", "\"pink\"")
     );
     assert_eq!(server.seq(), 4, "only Mark 1:1 was new");
+    // Creation times cross devices: the bookmark B pulled and the highlight it lost both carry
+    // the dates A's library had, not the moment B saw them.
+    assert_eq!(b.store.bookmark(gen11).unwrap().created, 1_700_000_200);
+    let dated =
+        |d: &Device, v: VerseRef| d.store.highlights_dated().into_iter().find(|h| h.0 == v).unwrap().2;
+    assert_eq!(dated(&b, jn316), dated(&a, jn316));
     assert_eq!(server.highlight(VerseId(40_001_001)).unwrap().1, "blue");
     // Opening again doesn't migrate or upload again.
     a.stop();

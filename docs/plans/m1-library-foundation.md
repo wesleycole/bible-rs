@@ -82,7 +82,7 @@ These gate M1's release, because they can't be fixed once users have libraries:
    - `library/notes.upsert({ uid, text, anchors, baseSeq })`, `library/notes.remove({ uid })`, which also
      rebuild the item's `anchors` index rows; a stale `baseSeq` writes the edit as a new note with
      `conflictOf`;
-   - `library/highlights.set({ verse, color | null, baseSeq })`, `library/bookmarks.set({ verse, label | null, baseSeq })`;
+   - `library/highlights.set({ verse, color | null, baseSeq, createdAt? })`, `library/bookmarks.set({ verse, label | null, baseSeq, createdAt? })`;
      a stale `baseSeq` keeps the server's and answers `conflict`; clearing what is already clear
      answers `ok` with the record's current `seq` (0 for none) and consumes no sequence number;
    - `library/chats.save({ uid, title, fileUid, baseSeq })`, `library/chats.remove({ uid })`: the
@@ -139,8 +139,11 @@ These gate M1's release, because they can't be fixed once users have libraries:
    The `convex` crate reconnects on its own and never errors a subscription for want of a network,
    so "offline" comes from its `WebSocketState` channel (`Backend::connected`), and the engine
    backs off as a whole while offline rather than per change. The cache keeps tombstones (a
-   `deleted` flag and the `seq`) so a later edit is made against them; a record that arrives from
-   the feed is dated when it arrived, since the wire carries no creation time. A device's own
+   `deleted` flag and the `seq`) so a later edit is made against them. Highlights and bookmarks
+   carry `createdAt` (server milliseconds): `set` takes the device's own creation time and uses it
+   only for a new record or a tombstone set again, otherwise the server's clock, so a migrated
+   library keeps its dates on every device; the cache stores the feed's `createdAt`, moved by the
+   clock offset, instead of the time it arrived. A device's own
    record over one the server already has, made without a copy (`baseSeq` 0: migration, or an
    edit made before the feed first caught up), is answered `conflict` and the server's stands,
    which is the "skipped" of [Migrating](library.md#migrating-whats-on-the-device); when the two

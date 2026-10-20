@@ -447,7 +447,14 @@ impl Engine {
                         Some("ok") => cache::sent(&mut self.conn, &entry, seq),
                         Some("conflict") => {
                             self.data_changed = true;
-                            cache::conflicted(&mut self.conn, &entry, seq, &answer[field]).map(|_| ())
+                            cache::conflicted(
+                                &mut self.conn,
+                                &entry,
+                                seq,
+                                &answer[field],
+                                answer["createdAt"].as_u64(),
+                            )
+                            .map(|_| ())
                         }
                         _ => self.refused(&entry, &format!("unexpected answer {answer}")),
                     }
@@ -532,6 +539,8 @@ struct FakeState {
     purged_through: u64,
     /// By kind ("highlight", "bookmark"), then verse: (seq, value, deleted).
     records: BTreeMap<&'static str, BTreeMap<u32, (u64, String, bool)>>,
+    /// When each record was made, by kind and verse, in milliseconds.
+    created: BTreeMap<(&'static str, u32), u64>,
     subscribers: Vec<(u64, u64, Sink)>,
     next_backend: u64,
     offline: bool,
@@ -625,6 +634,9 @@ impl FakeState {
                     if *deleted {
                         r["deletedAt"] = json!(1);
                     }
+                    if let Some(created) = self.created.get(&(*kind, *verse)) {
+                        r["createdAt"] = json!(created);
+                    }
                     r
                 })
             })
@@ -656,13 +668,20 @@ impl FakeState {
         if let (Some((seq, v, deleted)), Some(base)) = (&stored, base)
             && *seq > base
         {
-            return Ok(json!({ "result": "conflict", "seq": seq, field: (!deleted).then_some(v) }));
+            let created = self.created.get(&(kind, verse.0));
+            return Ok(
+                json!({ "result": "conflict", "seq": seq, field: (!deleted).then_some(v), "createdAt": created }),
+            );
         }
         if value.is_none() && stored.as_ref().is_none_or(|s| s.2) {
             return Ok(json!({ "result": "ok", "seq": stored.map_or(0, |s| s.0) }));
         }
         self.seq += 1;
         let seq = self.seq;
+        if value.is_some() && stored.as_ref().is_none_or(|s| s.2) {
+            let created = args["createdAt"].as_u64().unwrap_or_else(|| now_ms() as u64);
+            self.created.insert((kind, verse.0), created);
+        }
         let record = match value {
             Some(v) => (seq, v, false),
             None => (seq, stored.map(|s| s.1).unwrap_or_default(), true),

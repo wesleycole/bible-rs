@@ -270,11 +270,18 @@ fn enqueue(
     if !verse.is_valid() {
         return Ok(());
     }
-    let base: i64 = tx
-        .query_row(&format!("SELECT seq FROM {} WHERE verse = ?1", kind.table()), [verse.0], |r| r.get(0))
+    let (base, created): (i64, i64) = tx
+        .query_row(&format!("SELECT seq, created FROM {} WHERE verse = ?1", kind.table()), [verse.0], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .optional()?
-        .unwrap_or(0);
-    let payload = json!({ "verse": verse.0, kind.mutation().1: value }).to_string();
+        .unwrap_or((0, t));
+    let mut payload = json!({ "verse": verse.0, kind.mutation().1: value });
+    if !payload[kind.mutation().1].is_null() {
+        // In this device's milliseconds; the engine moves it to server time when it sends it.
+        payload["createdAt"] = json!(created * 1000);
+    }
+    let payload = payload.to_string();
     tx.execute(
         "INSERT INTO outbox(kind, key, payload, base_seq, created) VALUES(?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(kind, key) DO UPDATE SET payload = excluded.payload, rev = rev + 1, attempts = 0,
@@ -1239,6 +1246,9 @@ pub(crate) mod cache {
         let kind = Kind::from_name(&kind).with_context(|| format!("unknown outbox kind {kind}"))?;
         let mut args: Value = serde_json::from_str(&payload)?;
         args["baseSeq"] = json!(base);
+        if let Some(created) = args["createdAt"].as_i64() {
+            args["createdAt"] = json!((created + clock_offset_ms(conn)?).max(0));
+        }
         Ok(Some(Entry { id, kind, verse, args, rev, attempts, next_at }))
     }
 
@@ -1279,7 +1289,14 @@ pub(crate) mod cache {
     /// aren't: the server already has this edit (a write that reached it before the connection
     /// broke, or the same highlight made on both devices), and a record made here, with no copy,
     /// over a deletion this device never saw, which is sent again against the tombstone.
-    pub(crate) fn conflicted(conn: &mut Connection, e: &Entry, seq: u64, theirs: &Value) -> Result<bool> {
+    pub(crate) fn conflicted(
+        conn: &mut Connection,
+        e: &Entry,
+        seq: u64,
+        theirs: &Value,
+        created_at: Option<u64>,
+    ) -> Result<bool> {
+        let offset = clock_offset_ms(conn)?;
         let tx = conn.transaction()?;
         let (payload, base, rev): (String, i64, i64) =
             tx.query_row("SELECT payload, base_seq, rev FROM outbox WHERE id = ?1", [e.id], |r| {
@@ -1297,7 +1314,7 @@ pub(crate) mod cache {
             return Ok(false);
         }
         tx.execute("DELETE FROM outbox WHERE id = ?1", [e.id])?;
-        write_server(&tx, e.kind, e.verse, seq, theirs)?;
+        write_server(&tx, e.kind, e.verse, seq, theirs, local_time(created_at, offset))?;
         // Base 0 included: an edit made before the feed first caught up has no copy either, and
         // losing it silently is what conflicts exist to prevent. Migration lands here too, and
         // says so when the server's copy differs.
@@ -1361,13 +1378,21 @@ pub(crate) mod cache {
         let tx = conn.transaction()?;
         let mut changed = 0;
         for record in records {
-            let (kind, verse, rseq, value) = match record {
-                FeedRecord::Highlight(h) => {
-                    (Kind::Highlight, h.verse.0, h.seq, h.deleted_at.is_none().then(|| json!(h.color.name())))
-                }
-                FeedRecord::Bookmark(b) => {
-                    (Kind::Bookmark, b.verse.0, b.seq, b.deleted_at.is_none().then(|| json!(b.label)))
-                }
+            let (kind, verse, rseq, created, value) = match record {
+                FeedRecord::Highlight(h) => (
+                    Kind::Highlight,
+                    h.verse.0,
+                    h.seq,
+                    h.created_at,
+                    h.deleted_at.is_none().then(|| json!(h.color.name())),
+                ),
+                FeedRecord::Bookmark(b) => (
+                    Kind::Bookmark,
+                    b.verse.0,
+                    b.seq,
+                    b.created_at,
+                    b.deleted_at.is_none().then(|| json!(b.label)),
+                ),
             };
             let value = value.unwrap_or(Value::Null);
             let waiting: Option<i64> = tx
@@ -1398,7 +1423,7 @@ pub(crate) mod cache {
                 })
                 .optional()?;
             if have.is_none_or(|have| (rseq as i64) > have) {
-                write_server(&tx, kind, verse, rseq, &value)?;
+                write_server(&tx, kind, verse, rseq, &value, local_time(created, clock_offset_ms))?;
                 changed += 1;
             }
         }
@@ -1426,14 +1451,22 @@ pub(crate) mod cache {
         Ok(())
     }
 
+    /// A server time in milliseconds as this device's Unix seconds.
+    fn local_time(server_ms: Option<u64>, clock_offset_ms: i64) -> Option<i64> {
+        server_ms.map(|ms| (ms as i64 - clock_offset_ms + 500).div_euclid(1000))
+    }
+
     /// Writes the server's copy of a record into the cache: a value, or a tombstone for `null`
-    /// (kept, with its `seq`, so a later edit here is made against it).
+    /// (kept, with its `seq`, so a later edit here is made against it). `created` is the server's
+    /// creation time, which stands; without one (a record older than the field) it is dated now
+    /// when new.
     fn write_server(
         tx: &rusqlite::Transaction,
         kind: Kind,
         verse: u32,
         seq: u64,
         value: &Value,
+        created: Option<i64>,
     ) -> Result<()> {
         let t = now();
         let (column, stored): (&str, rusqlite::types::Value) = match kind {
@@ -1447,14 +1480,14 @@ pub(crate) mod cache {
         let deleted = value.is_null() as i64;
         tx.execute(
             &format!(
-                "INSERT INTO {table}(verse, {column}, created, updated, seq, deleted) VALUES(?1, ?2, ?3, ?3, ?4, ?5)
+                "INSERT INTO {table}(verse, {column}, created, updated, seq, deleted) VALUES(?1, ?2, ?3, ?7, ?4, ?5)
                  ON CONFLICT(verse) DO UPDATE SET {column} = CASE WHEN excluded.deleted = 1 THEN {column}
                      ELSE excluded.{column} END,
-                   created = CASE WHEN deleted = 1 THEN excluded.created ELSE created END,
+                   created = CASE WHEN ?6 IS NOT NULL OR deleted = 1 THEN excluded.created ELSE created END,
                    updated = excluded.updated, seq = excluded.seq, deleted = excluded.deleted",
                 table = kind.table()
             ),
-            params![verse, stored, t, seq as i64, deleted],
+            params![verse, stored, created.unwrap_or(t), seq as i64, deleted, created, t],
         )?;
         Ok(())
     }

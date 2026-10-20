@@ -39,6 +39,22 @@ describe("library.highlights (Effect inside Convex)", () => {
     ])
   })
 
+  it("dates a record when it is made: by the device's own time if given, kept on edits, set again when it comes back", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    const created = async () => (await t.run((ctx) => ctx.db.query("highlights").first()))!.createdAt
+    const MIGRATED = Date.UTC(2019, 4, 1)
+    await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "yellow", createdAt: MIGRATED })
+    expect(await created()).toBe(MIGRATED)
+    await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "green", baseSeq: 1, createdAt: Date.UTC(2026, 0, 1) })
+    expect(await created()).toBe(MIGRATED)
+    await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: null, baseSeq: 2 })
+    expect(await created()).toBe(MIGRATED)
+    const before = Date.now()
+    await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "pink", baseSeq: 3 })
+    expect(await created()).toBeGreaterThanOrEqual(before)
+  })
+
   it("keeps the server's copy when the writer's baseSeq is stale", async () => {
     const t = await makeConvex()
     const ann = as(t, "user_ann")
@@ -48,7 +64,8 @@ describe("library.highlights (Effect inside Convex)", () => {
     expect(await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "pink", baseSeq: 1 })).toEqual({
       result: "conflict",
       seq: 2,
-      color: "green"
+      color: "green",
+      createdAt: expect.any(Number)
     })
     expect(await ann.query(api.library.highlights.list, {})).toEqual([{ uid: "h-42003016", seq: 2, verse: JOHN_3_16, color: "green" }])
     // A write without baseSeq (a first write from a device with no copy) still wins.
@@ -95,7 +112,8 @@ describe("library.bookmarks", () => {
     expect(await ann.mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: null, baseSeq: 1 })).toEqual({
       result: "conflict",
       seq: 2,
-      label: "The gospel"
+      label: "The gospel",
+      createdAt: expect.any(Number)
     })
     const rows = await t.run((ctx) => ctx.db.query("bookmarks").collect())
     expect(rows.map((r) => [r.verse, r.seq, r.label, r.deletedAt])).toEqual([[JOHN_3_16, 2, "The gospel", undefined]])
@@ -139,10 +157,10 @@ describe("library.sync.changes", () => {
     // Each record appears once, at its latest seq: 520 records, the last two being the edit and the tombstone.
     expect(all).toHaveLength(verses.length * 2)
     expect(second.seq).toBe(total)
-    expect(all.at(-2)).toEqual({ type: "highlight", uid: `h-${verses[0]}`, seq: total - 1, verse: verses[0], color: "blue" })
+    expect(all.at(-2)).toEqual({ type: "highlight", uid: `h-${verses[0]}`, seq: total - 1, createdAt: expect.any(Number), verse: verses[0], color: "blue" })
     expect(all.at(-1)).toMatchObject({ type: "bookmark", uid: `b-${verses[1]}`, seq: total, verse: verses[1], deletedAt: expect.any(Number) })
     for (const r of all) {
-      const allowed = r.type === "highlight" ? ["type", "uid", "seq", "deletedAt", "verse", "color"] : ["type", "uid", "seq", "deletedAt", "verse", "label"]
+      const allowed = ["type", "uid", "seq", "deletedAt", "createdAt", "verse", r.type === "highlight" ? "color" : "label"]
       expect(Object.keys(r).filter((k) => !allowed.includes(k))).toEqual([])
     }
     expect(first.serverTime).toBeGreaterThan(0)
@@ -168,7 +186,7 @@ describe("library.sync.changes", () => {
     // Bob has no library yet, then one of his own.
     expect(await page(t, "user_bob", 0)).toMatchObject({ records: [], seq: 0 })
     await as(t, "user_bob").mutation(api.library.bookmarks.set, { verse: JOHN_3_16, label: "mine" })
-    expect((await page(t, "user_bob", 0)).records).toEqual([{ type: "bookmark", uid: "b-42003016", seq: 1, verse: JOHN_3_16, label: "mine" }])
+    expect((await page(t, "user_bob", 0)).records).toEqual([{ type: "bookmark", uid: "b-42003016", seq: 1, createdAt: expect.any(Number), verse: JOHN_3_16, label: "mine" }])
     expect((await page(t, "user_ann", 0)).records.map((r) => r.type)).toEqual(["highlight", "bookmark"])
   })
 })

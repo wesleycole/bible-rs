@@ -16,12 +16,14 @@ export const SetArgs = Schema.Struct({
   /** The colour, or `null` to clear the highlight. */
   color: Schema.NullOr(Highlight.fields.color),
   /** The `seq` the client's copy had when the edit began; absent for a first write. */
-  baseSeq: Schema.optionalKey(Schema.Int)
+  baseSeq: Schema.optionalKey(Schema.Int),
+  /** When the device made the record, in server milliseconds; used only for a new record. */
+  createdAt: Highlight.fields.createdAt
 })
 
 export type SetResult =
   | { readonly result: "ok"; readonly seq: number }
-  | { readonly result: "conflict"; readonly seq: number; readonly color: Highlight["color"] | null }
+  | { readonly result: "conflict"; readonly seq: number; readonly createdAt?: number; readonly color: Highlight["color"] | null }
 
 /** The record's id, derived from the verse, so every device makes the same one. */
 export const highlightUid = (verse: number) => `h-${verse}`
@@ -35,13 +37,15 @@ export const set = effectMutation({
     const result = yield* setPerVerse({
       find: Effect.promise(async () => {
         const row = await ctx.db.query("highlights").withIndex("by_user_verse", (q) => q.eq("userId", userId).eq("verse", verse)).unique()
-        return row && { id: row._id, seq: row.seq, value: row.deletedAt === undefined ? row.color : null }
+        return row && { id: row._id, seq: row.seq, createdAt: row.createdAt, value: row.deletedAt === undefined ? row.color : null }
       }),
-      insert: (seq, color: Highlight["color"]) => Effect.promise(() => ctx.db.insert("highlights", { userId, uid: highlightUid(verse), seq, verse, color })),
-      update: (id, seq, color, deletedAt) =>
-        Effect.promise(() => ctx.db.patch(id, color === null ? { seq, deletedAt } : { seq, color, deletedAt: undefined }))
-    }, args.color, args.baseSeq)
-    return result.result === "conflict" ? { result: "conflict", seq: result.seq, color: result.value } : result
+      insert: (seq, color: Highlight["color"], createdAt) => Effect.promise(() => ctx.db.insert("highlights", { userId, uid: highlightUid(verse), seq, createdAt, verse, color })),
+      update: (id, seq, color, deletedAt, createdAt) =>
+        Effect.promise(() =>
+          ctx.db.patch(id, color === null ? { seq, deletedAt } : { seq, color, deletedAt: undefined, ...(createdAt === undefined ? {} : { createdAt }) })
+        )
+    }, args.color, args.baseSeq, args.createdAt)
+    return result.result === "conflict" ? { result: "conflict", seq: result.seq, color: result.value, ...(result.createdAt === undefined ? {} : { createdAt: result.createdAt }) } : result
   })
 })
 
