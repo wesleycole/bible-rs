@@ -21,6 +21,7 @@ import type * as lib_errors from "../lib/errors.js";
 import type * as lib_files from "../lib/files.js";
 import type * as lib_perVerse from "../lib/perVerse.js";
 import type * as lib_pricing from "../lib/pricing.js";
+import type * as lib_purge from "../lib/purge.js";
 import type * as lib_sequence from "../lib/sequence.js";
 import type * as lib_server from "../lib/server.js";
 import type * as lib_services from "../lib/services.js";
@@ -62,6 +63,7 @@ declare const fullApi: ApiFromModules<{
   "lib/files": typeof lib_files;
   "lib/perVerse": typeof lib_perVerse;
   "lib/pricing": typeof lib_pricing;
+  "lib/purge": typeof lib_purge;
   "lib/sequence": typeof lib_sequence;
   "lib/server": typeof lib_server;
   "lib/services": typeof lib_services;

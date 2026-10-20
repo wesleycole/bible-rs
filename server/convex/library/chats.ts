@@ -5,13 +5,13 @@
  */
 import { Clock, Effect, Schema } from "effect"
 import { InvalidRequest } from "../../shared/Errors.js"
-import { Chat } from "../../shared/records.js"
+import { Chat, type WriteAnswer } from "../../shared/records.js"
 import { decideByUid } from "../lib/conflict.js"
 import { effectMutation } from "../lib/effect.js"
 import { Files } from "../lib/files.js"
 import { Sequence } from "../lib/sequence.js"
 import { CurrentUser, MutationCtx } from "../lib/services.js"
-import { Uid, type WriteResult } from "./notes.js"
+import { asRecord, Uid } from "./notes.js"
 
 export const SaveArgs = Schema.Struct({
   uid: Uid,
@@ -23,9 +23,6 @@ export const SaveArgs = Schema.Struct({
 })
 
 export const RemoveArgs = Schema.Struct({ uid: Uid, baseSeq: Schema.optionalKey(Schema.Int) })
-
-/** A stored chat as the feed sends it. */
-const encodeChat = Schema.encodeUnknownEffect(Chat)
 
 const find = Effect.fnUntraced(function*(uid: string) {
   const ctx = yield* MutationCtx
@@ -47,25 +44,28 @@ export const save = effectMutation({
       false,
       args.baseSeq
     )
-    if (decision.kind === "unchanged") return { result: "ok", seq: decision.seq } as WriteResult
+    if (decision.kind === "unchanged") return { result: "ok", seq: decision.seq, record: yield* asRecord("chat", stored!) } satisfies WriteAnswer as WriteAnswer
     if (decision.kind === "conflict") {
       // The losing upload is nobody's now.
       if (stored!.fileUid !== args.fileUid) yield* files.remove(args.fileUid)
-      return { result: "conflict", seq: decision.seq, record: yield* Effect.orDie(encodeChat(stored)) } as WriteResult
+      return { result: "conflict", seq: decision.seq, record: yield* asRecord("chat", stored!) } satisfies WriteAnswer as WriteAnswer
     }
     const ctx = yield* MutationCtx
     const { userId } = yield* CurrentUser
     const seq = yield* (yield* Sequence).next
     const now = yield* Clock.currentTimeMillis
     const fields = { seq, updatedAt: now, title: args.title, fileUid: file.uid, url: file.url, bytes: file.bytes }
+    let id
     if (stored) {
       const revived = stored.deletedAt !== undefined
       yield* Effect.promise(() => ctx.db.patch(stored._id, { ...fields, deletedAt: undefined, ...(revived ? { createdAt: args.createdAt ?? now } : {}) }))
       if (stored.fileUid !== file.uid) yield* files.remove(stored.fileUid)
+      id = stored._id
     } else {
-      yield* Effect.promise(() => ctx.db.insert("chats", { userId, uid: args.uid, createdAt: args.createdAt ?? now, ...fields }))
+      id = yield* Effect.promise(() => ctx.db.insert("chats", { userId, uid: args.uid, createdAt: args.createdAt ?? now, ...fields }))
     }
-    return { result: "ok", seq } as WriteResult
+    const written = (yield* Effect.promise(() => ctx.db.get(id)))!
+    return { result: "ok", seq, record: yield* asRecord("chat", written) } satisfies WriteAnswer as WriteAnswer
   })
 })
 
@@ -74,15 +74,16 @@ export const remove = effectMutation({
   handler: Effect.fn("chats.remove")(function*(args) {
     const stored = yield* find(args.uid)
     const decision = decideByUid(stored && { seq: stored.seq, deleted: stored.deletedAt !== undefined, same: false }, true, args.baseSeq)
-    if (decision.kind === "unchanged") return { result: "ok", seq: decision.seq } as WriteResult
-    if (decision.kind === "conflict") {
-      return { result: "conflict", seq: decision.seq, record: yield* Effect.orDie(encodeChat(stored)) } as WriteResult
+    if (decision.kind === "unchanged") {
+      return { result: "ok", seq: decision.seq, ...(stored ? { record: yield* asRecord("chat", stored) } : {}) } satisfies WriteAnswer as WriteAnswer
     }
+    if (decision.kind === "conflict") return { result: "conflict", seq: decision.seq, record: yield* asRecord("chat", stored!) } satisfies WriteAnswer as WriteAnswer
     const ctx = yield* MutationCtx
     const seq = yield* (yield* Sequence).next
     const deletedAt = yield* Clock.currentTimeMillis
     yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, updatedAt: deletedAt, title: "", url: "", bytes: 0 }))
     yield* (yield* Files).remove(stored!.fileUid)
-    return { result: "ok", seq } as WriteResult
+    const removed = (yield* Effect.promise(() => ctx.db.get(stored!._id)))!
+    return { result: "ok", seq, record: yield* asRecord("chat", removed) } satisfies WriteAnswer as WriteAnswer
   })
 })

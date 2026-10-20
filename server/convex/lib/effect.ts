@@ -15,6 +15,7 @@ import {
 } from "../_generated/server.js"
 import { type ApiError, InvalidRequest } from "../../shared/Errors.js"
 import { Allowance } from "./allowance.js"
+import { Purge } from "./purge.js"
 import { toConvexError } from "./errors.js"
 import { Anchors } from "./anchors.js"
 import { Files } from "./files.js"
@@ -98,7 +99,7 @@ export const effectMutation = <S extends Args, A>(spec: {
 }
 
 /** What a proxy mutation's handler can ask for: it acts for the user the proxy names. */
-export type ServerMutationServices = MutationCtx | QueryCtx | ServerCaller | Allowance
+export type ServerMutationServices = MutationCtx | QueryCtx | ServerCaller | Allowance | Purge
 
 /**
  * A mutation only the proxy calls (it passes the server secret), written as an Effect. Its
@@ -111,7 +112,7 @@ export const effectServerMutation = <V extends PropertyValidators, A>(spec: {
   serverMutation({
     args: spec.args,
     handler: (ctx: RawMutationCtx, args: ObjectType<V>): Promise<A> =>
-      run(spec.handler(args).pipe(Effect.provide(Allowance.layer.pipe(Layer.provideMerge(Layer.mergeAll(mutationCtx(ctx), proxy))))))
+      run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Allowance.layer, Purge.layer).pipe(Layer.provideMerge(Layer.mergeAll(mutationCtx(ctx), proxy))))))
   })
 
 /** A query only the proxy calls, written as an Effect. */
@@ -137,7 +138,7 @@ export const effectServerAction = <V extends PropertyValidators, A>(spec: {
   })
 
 /** What an internal mutation (a cron, a scheduled step) can ask for. */
-export type InternalMutationServices = MutationCtx | QueryCtx | Allowance
+export type InternalMutationServices = MutationCtx | QueryCtx | Allowance | Purge
 
 /** A mutation nothing outside the deployment can call: crons and scheduled steps. */
 export const effectInternalMutation = <V extends PropertyValidators, A>(spec: {
@@ -147,5 +148,5 @@ export const effectInternalMutation = <V extends PropertyValidators, A>(spec: {
   internalMutation({
     args: spec.args,
     handler: (ctx: RawMutationCtx, args: ObjectType<V>): Promise<A> =>
-      run(spec.handler(args).pipe(Effect.provide(Allowance.layer.pipe(Layer.provideMerge(mutationCtx(ctx))))))
+      run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Allowance.layer, Purge.layer).pipe(Layer.provideMerge(mutationCtx(ctx))))))
   })

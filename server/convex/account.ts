@@ -1,9 +1,17 @@
 import { v } from "convex/values"
 import { Effect } from "effect"
-import { purgeSome } from "./library/purge.js"
+import { purgeAccount } from "./library/purge.js"
 import { userByClerk } from "./lib/accounts.js"
 import { effectServerMutation } from "./lib/effect.js"
+import type { Purge } from "./lib/purge.js"
 import { MutationCtx } from "./lib/services.js"
+
+export interface Purged {
+  readonly found: boolean
+  readonly blobPaths: Array<string>
+  readonly assemblyIds: Array<string>
+  readonly stripeCustomerId?: string | undefined
+}
 
 /**
  * Starts deleting everything Linger holds about a user (DELETE /v1/account and Clerk's
@@ -14,19 +22,19 @@ import { MutationCtx } from "./lib/services.js"
  */
 export const purge = effectServerMutation({
   args: { clerkId: v.string() },
-  handler: Effect.fn("account.purge")(function*({ clerkId }) {
+  handler: Effect.fn("account.purge")(function*({ clerkId }): Effect.fn.Return<Purged, never, MutationCtx | Purge> {
     const ctx = yield* MutationCtx
-    return yield* Effect.promise(async () => {
-      const user = await userByClerk(ctx, clerkId)
-      if (!user) return { found: false, blobPaths: [] as string[], assemblyIds: [] as string[] }
-      const sermons = await ctx.db.query("sermons").withIndex("by_user", (q) => q.eq("userId", user._id)).collect()
-      await purgeSome(ctx, user._id)
-      return {
-        found: true,
-        stripeCustomerId: user.stripeCustomerId,
-        blobPaths: sermons.filter((s) => s.status !== "done").map((s) => s.blobPath),
-        assemblyIds: sermons.flatMap((s) => (s.assemblyId ? [s.assemblyId] : []))
-      }
-    })
+    const user = yield* Effect.promise(() => userByClerk(ctx, clerkId))
+    if (!user) return { found: false, blobPaths: [] as string[], assemblyIds: [] as string[] }
+    const sermons = yield* Effect.promise(() => ctx.db.query("sermons").withIndex("by_user", (q) => q.eq("userId", user._id)).collect())
+    // What vendors hold is read before the first step deletes the sermon rows.
+    const left = {
+      found: true,
+      stripeCustomerId: user.stripeCustomerId,
+      blobPaths: sermons.filter((s) => s.status !== "done").map((s) => s.blobPath),
+      assemblyIds: sermons.flatMap((s) => (s.assemblyId ? [s.assemblyId] : []))
+    }
+    yield* purgeAccount(user._id)
+    return left
   })
 })

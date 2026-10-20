@@ -11,5 +11,6 @@ crons.daily("prune questions", { hourUTC: 7, minuteUTC: 15 }, internal.maintenan
 crons.daily("prune ledger", { hourUTC: 7, minuteUTC: 30 }, internal.maintenance.pruneLedger)
 crons.daily("prune webhook events", { hourUTC: 7, minuteUTC: 45 }, internal.webhooks.prune)
 crons.daily("purge library tombstones", { hourUTC: 8, minuteUTC: 0 }, internal.library.purge.tombstones)
+crons.daily("delete orphaned blobs", { hourUTC: 8, minuteUTC: 15 }, internal.library.purge.orphans, {})
 
 export default crons

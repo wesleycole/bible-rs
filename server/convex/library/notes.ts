@@ -6,7 +6,7 @@
 import { Clock, Effect, Schema } from "effect"
 import type { Doc } from "../_generated/dataModel.js"
 import { InvalidRequest } from "../../shared/Errors.js"
-import { Item } from "../../shared/records.js"
+import { FeedRecord, Item, type WriteAnswer } from "../../shared/records.js"
 import { Anchors } from "../lib/anchors.js"
 import { decideByUid } from "../lib/conflict.js"
 import { effectMutation } from "../lib/effect.js"
@@ -28,22 +28,10 @@ export const UpsertArgs = Schema.Struct({
 
 export const RemoveArgs = Schema.Struct({ uid: Uid, baseSeq: Schema.optionalKey(Schema.Int) })
 
-export type WriteResult =
-  | { readonly result: "ok"; readonly seq: number }
-  /**
-   * The server's copy stood, and is `record`, so the client shows it at once; for a note edit, the
-   * edit was kept as the note `copyUid`, written at `copySeq`, which the client's note becomes.
-   */
-  | {
-    readonly result: "conflict"
-    readonly seq: number
-    readonly record: unknown
-    readonly copyUid?: string
-    readonly copySeq?: number
-  }
+const encodeRecord = Schema.encodeUnknownEffect(FeedRecord)
 
-/** A stored note as the feed sends it. */
-export const encodeItem = Schema.encodeUnknownEffect(Item)
+/** A stored note or chat as the feed sends it, for a write's answer (`WriteAnswer`). */
+export const asRecord = (type: "item" | "chat", doc: Doc<"items"> | Doc<"chats">) => Effect.orDie(encodeRecord({ ...doc, type }))
 
 /** A note's title: its first line, trimmed. */
 export const titleOf = (text: string) => (text.split("\n").find((l) => l.trim() !== "")?.trim() ?? "").slice(0, 80)
@@ -59,7 +47,7 @@ const find = Effect.fnUntraced(function*(uid: string) {
 const sameNote = (doc: Doc<"items">, text: string, anchors: ReadonlyArray<unknown>) =>
   doc.text === text && JSON.stringify(doc.anchors) === JSON.stringify(anchors)
 
-/** Writes the note `uid` (inserting or overwriting) with the next `seq`, and its anchor index. */
+/** Writes the note `uid` (inserting or overwriting) with the next `seq`, and its anchor index; returns it as stored. */
 const write = Effect.fnUntraced(function*(
   uid: string,
   existing: Doc<"items"> | null,
@@ -94,7 +82,7 @@ const write = Effect.fnUntraced(function*(
       })
     )
   yield* (yield* Anchors).rebuild(id, args.anchors)
-  return seq
+  return (yield* Effect.promise(() => ctx.db.get(id)))!
 })
 
 export const upsert = effectMutation({
@@ -111,16 +99,21 @@ export const upsert = effectMutation({
     )
     switch (decision.kind) {
       case "unchanged":
-        return { result: "ok", seq: decision.seq } satisfies WriteResult as WriteResult
-      case "write":
-        return { result: "ok", seq: yield* write(args.uid, stored, args) } satisfies WriteResult as WriteResult
+        return { result: "ok", seq: decision.seq, record: yield* asRecord("item", stored!) } satisfies WriteAnswer as WriteAnswer
+      case "write": {
+        const written = yield* write(args.uid, stored, args)
+        return { result: "ok", seq: written.seq, record: yield* asRecord("item", written) } satisfies WriteAnswer as WriteAnswer
+      }
       case "conflict": {
         // The edit is kept as its own note. Its uid comes from the edit's, so a retry finds it.
         const copyUid = `${args.uid}-c${args.baseSeq}`
-        const copy = yield* find(copyUid)
-        const copySeq = copy ? copy.seq : yield* write(copyUid, null, args, args.uid)
-        const record = yield* Effect.orDie(encodeItem(stored))
-        return { result: "conflict", seq: decision.seq, record, copyUid, copySeq } satisfies WriteResult as WriteResult
+        const copy = (yield* find(copyUid)) ?? (yield* write(copyUid, null, args, args.uid))
+        return {
+          result: "conflict",
+          seq: decision.seq,
+          record: yield* asRecord("item", stored!),
+          copy: yield* asRecord("item", copy)
+        } satisfies WriteAnswer as WriteAnswer
       }
     }
   })
@@ -131,16 +124,17 @@ export const remove = effectMutation({
   handler: Effect.fn("notes.remove")(function*(args) {
     const stored = yield* find(args.uid)
     const decision = decideByUid(stored && { seq: stored.seq, deleted: stored.deletedAt !== undefined, same: false }, true, args.baseSeq)
-    if (decision.kind === "unchanged") return { result: "ok", seq: decision.seq } as WriteResult
-    if (decision.kind === "conflict") {
-      return { result: "conflict", seq: decision.seq, record: yield* Effect.orDie(encodeItem(stored)) } as WriteResult
+    if (decision.kind === "unchanged") {
+      return { result: "ok", seq: decision.seq, ...(stored ? { record: yield* asRecord("item", stored) } : {}) } satisfies WriteAnswer as WriteAnswer
     }
+    if (decision.kind === "conflict") return { result: "conflict", seq: decision.seq, record: yield* asRecord("item", stored!) } satisfies WriteAnswer as WriteAnswer
     const ctx = yield* MutationCtx
     const seq = yield* (yield* Sequence).next
     const deletedAt = yield* Clock.currentTimeMillis
     // A tombstone keeps no text: other devices only need to drop the note.
     yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, updatedAt: deletedAt, text: "", title: "", anchors: [] }))
     yield* (yield* Anchors).rebuild(stored!._id, [])
-    return { result: "ok", seq } as WriteResult
+    const removed = (yield* Effect.promise(() => ctx.db.get(stored!._id)))!
+    return { result: "ok", seq, record: yield* asRecord("item", removed) } satisfies WriteAnswer as WriteAnswer
   })
 })

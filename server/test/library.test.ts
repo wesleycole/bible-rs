@@ -121,15 +121,15 @@ describe("library.bookmarks", () => {
   })
 })
 
-describe("library.sync.changes", () => {
-  type Page = Extract<Awaited<ReturnType<typeof pull>>, { records: unknown }>
-  const pull = (t: TestConvex, subject: string, after: number) => as(t, subject).query(api.library.sync.changes, { after })
-  const page = async (t: TestConvex, subject: string, after: number): Promise<Page> => {
-    const p = await pull(t, subject, after)
-    if (!("records" in p)) throw new Error(`expected a page, got ${JSON.stringify(p)}`)
-    return p
-  }
+type Page = Extract<Awaited<ReturnType<typeof pull>>, { records: unknown }>
+const pull = (t: TestConvex, subject: string, after: number) => as(t, subject).query(api.library.sync.changes, { after })
+const page = async (t: TestConvex, subject: string, after: number): Promise<Page> => {
+  const p = await pull(t, subject, after)
+  if (!("records" in p)) throw new Error(`expected a page, got ${JSON.stringify(p)}`)
+  return p
+}
 
+describe("library.sync.changes", () => {
   it("pages every type by seq without skipping, tombstones included, and never leaks ids", async () => {
     const t = await makeConvex()
     const ann = as(t, "user_ann")
@@ -210,17 +210,21 @@ describe("library.notes", () => {
     const ann = as(t, "user_ann")
     const anchors = [{ from: JOHN_3_36, to: JOHN_4_2, origin: "user" as const }]
     const first = { uid: "n1", text: "Belief\nand life", anchors }
-    expect(await ann.mutation(api.library.notes.upsert, first)).toEqual({ result: "ok", seq: 1 })
+    // Every answer carries the record exactly as the feed sends it, so the writer holds what other devices get.
+    const written = await ann.mutation(api.library.notes.upsert, first)
+    expect(written).toEqual({ result: "ok", seq: 1, record: (await page(t, "user_ann", 0)).records[0] })
     // The answer was lost and the device sends it again, now against seq 0: the server already has it.
-    expect(await ann.mutation(api.library.notes.upsert, { ...first, baseSeq: 0 })).toEqual({ result: "ok", seq: 1 })
+    expect(await ann.mutation(api.library.notes.upsert, { ...first, baseSeq: 0 })).toEqual(written)
     const rows = await t.run((ctx) => ctx.db.query("anchors").collect())
     expect(rows.map((r) => [r.chapter, r.from, r.to])).toEqual([[3, JOHN_3_36, JOHN_3_36], [4, 42_004_001, JOHN_4_2]])
-    expect(await ann.mutation(api.library.notes.upsert, { ...first, text: "Edited on A", baseSeq: 1 })).toEqual({ result: "ok", seq: 2 })
+    expect(await ann.mutation(api.library.notes.upsert, { ...first, text: "Edited on A", baseSeq: 1 })).toMatchObject({ result: "ok", seq: 2 })
     // B edited its copy from seq 1 while offline.
-    // The answer carries the note that stood, in the feed's shape, and where the edit went.
+    // The answer carries the note that stood and the copy the edit became, both as the feed sends them.
     const conflict = await ann.mutation(api.library.notes.upsert, { ...first, text: "Edited on B", baseSeq: 1 })
-    expect(conflict).toMatchObject({ result: "conflict", seq: 2, copyUid: "n1-c1", copySeq: 3, record: { uid: "n1", seq: 2, text: "Edited on A" } })
-    expect(Object.keys((conflict as { record: object }).record)).not.toContain("userId")
+    const feed = (await page(t, "user_ann", 1)).records
+    expect(feed.map((r) => [r.uid, r.seq])).toEqual([["n1", 2], ["n1-c1", 3]])
+    expect(conflict).toEqual({ result: "conflict", seq: 2, record: feed[0], copy: feed[1] })
+    expect(Object.keys(feed[1]!)).not.toContain("userId")
     const items = await t.run((ctx) => ctx.db.query("items").collect())
     expect(items.map((i) => [i.uid, i.text, i.title, i.conflictOf])).toEqual([
       ["n1", "Edited on A", "Edited on A", undefined],
@@ -228,7 +232,9 @@ describe("library.notes", () => {
     ])
     // A stale removal leaves the newer note alone.
     expect(await ann.mutation(api.library.notes.remove, { uid: "n1", baseSeq: 1 })).toMatchObject({ result: "conflict", seq: 2, record: { text: "Edited on A" } })
-    expect(await ann.mutation(api.library.notes.remove, { uid: "n1", baseSeq: 2 })).toMatchObject({ result: "ok" })
+    const removed = await ann.mutation(api.library.notes.remove, { uid: "n1", baseSeq: 2 })
+    expect(removed).toEqual({ result: "ok", seq: 4, record: (await page(t, "user_ann", 3)).records[0] })
+    expect(removed).toMatchObject({ record: { uid: "n1", deletedAt: expect.any(Number), updatedAt: expect.any(Number) } })
     expect(await t.run((ctx) => ctx.db.query("anchors").withIndex("by_item", (q) => q.eq("itemId", items[0]!._id)).collect())).toEqual([])
   })
 
@@ -259,18 +265,17 @@ describe("library.chats and files", () => {
     expect(wrongSum.type).toBe("invalid_request")
     const f1 = await ann.mutation(api.library.files.attach, { uid: "f1", ownerUid: "c1", role: "chat", ...one })
     expect(await ann.mutation(api.library.files.attach, { uid: "f1", ownerUid: "c1", role: "chat", ...one })).toEqual(f1)
-    expect(await ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f1" })).toEqual({ result: "ok", seq: 1 })
+    expect(await ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f1" })).toEqual({ result: "ok", seq: 1, record: (await page(t, "user_ann", 0)).records[0] })
     const library = async () => (await t.run((ctx) => ctx.db.query("userLibrary").first()))!
     expect((await library()).storageBytes).toBe(f1.bytes)
     const two = await upload(t, '{"messages":[1,2,3]}')
     const f2 = await ann.mutation(api.library.files.attach, { uid: "f2", ownerUid: "c1", role: "chat", ...two })
-    expect(await ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f2", baseSeq: 1 })).toEqual({ result: "ok", seq: 2 })
+    expect(await ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f2", baseSeq: 1 })).toMatchObject({ result: "ok", seq: 2, record: { fileUid: "f2" } })
     expect((await library()).storageBytes).toBe(f2.bytes)
     expect((await t.run((ctx) => ctx.db.query("files").collect())).map((f) => f.uid)).toEqual(["f2"])
-    const page = await ann.query(api.library.sync.changes, { after: 0 })
-    expect(page).toMatchObject({ records: [{ type: "chat", uid: "c1", seq: 2, fileUid: "f2", url: f2.url, bytes: f2.bytes, title: "Grace" }] })
-    if (!("records" in page)) throw new Error("a page")
-    expect(Object.keys(page.records[0]!).sort()).toEqual(["bytes", "createdAt", "fileUid", "seq", "title", "type", "uid", "updatedAt", "url"])
+    const fed = await page(t, "user_ann", 0)
+    expect(fed).toMatchObject({ records: [{ type: "chat", uid: "c1", seq: 2, fileUid: "f2", url: f2.url, bytes: f2.bytes, title: "Grace" }] })
+    expect(Object.keys(fed.records[0]!).sort()).toEqual(["bytes", "createdAt", "fileUid", "seq", "title", "type", "uid", "updatedAt", "url"])
     // A stale save keeps the server's chat, answers it, and frees the losing upload.
     const three = await upload(t, '{"messages":[9]}')
     await ann.mutation(api.library.files.attach, { uid: "f3", ownerUid: "c1", role: "chat", ...three })
@@ -280,7 +285,7 @@ describe("library.chats and files", () => {
       record: { uid: "c1", fileUid: "f2", title: "Grace" }
     })
     expect((await library()).storageBytes).toBe(f2.bytes)
-    expect(await ann.mutation(api.library.chats.remove, { uid: "c1", baseSeq: 2 })).toEqual({ result: "ok", seq: 3 })
+    expect(await ann.mutation(api.library.chats.remove, { uid: "c1", baseSeq: 2 })).toMatchObject({ result: "ok", seq: 3, record: { uid: "c1", deletedAt: expect.any(Number) } })
     expect((await library()).storageBytes).toBe(0)
   })
 })
@@ -362,5 +367,26 @@ describe("purge, tombstones and storage", () => {
     expect((await t.run((ctx) => ctx.db.query("files").collect())).map((f) => f.uid)).toEqual(["f1"])
     const me = await t.mutation(api.users.me, { secret: SECRET, clerkId: "user_ann" })
     expect(me.library).toEqual({ storageUsed: small.bytes, storageLimit: 10 })
+
+    // The refused upload is nobody's: the daily sweep deletes it once it is a day old, and keeps
+    // the attached file and any blob a sermon's transcript holds.
+    const transcript = await t.run(async (ctx) => {
+      const id = await ctx.storage.store(new Blob(["{}"]))
+      const user = (await ctx.db.query("users").first())!
+      await ctx.db.insert("sermons", { userId: user._id, recordingId: "r", blobPath: "p", durationSec: 1, bytes: 45, trial: false, status: "done", transcript: id, createdAt: 0 })
+      return id
+    })
+    const blobs = async () => (await t.run((ctx) => ctx.db.system.query("_storage").collect())).map((b) => b._id as string)
+    expect(await t.mutation(internal.library.purge.orphans, {})).toEqual({ deleted: 0 })
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      vi.setSystemTime(Date.now() + 25 * 3600_000)
+      expect(await t.mutation(internal.library.purge.orphans, {})).toEqual({ deleted: 1 })
+    } finally {
+      vi.useRealTimers()
+    }
+    const attached = (await t.run((ctx) => ctx.db.query("files").first()))!.storageId
+    expect((await blobs()).sort()).toEqual([attached, transcript].sort())
+    expect(await blobs()).not.toContain(big.storageId)
   })
 })

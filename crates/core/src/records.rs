@@ -296,6 +296,30 @@ impl FeedRecord {
     }
 }
 
+/// What a write of a record kept by uid answers (`library/notes.upsert` and `.remove`,
+/// `library/chats.save` and `.remove`). The records are as the feed sends them at their `seq`, so
+/// the writing device holds exactly what every other device gets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "result", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum WriteAnswer {
+    /// The write is stored at `seq` (or the server already held it), as `record`; absent only for
+    /// the removal of a record the server never had.
+    Ok {
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record: Option<FeedRecord>,
+    },
+    /// Another device changed the record after the writer's copy: the server's, `record`, stood.
+    /// For a note edit, the edit was kept as the conflict copy `copy`, which the writer's note
+    /// becomes.
+    Conflict {
+        seq: u64,
+        record: FeedRecord,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        copy: Option<FeedRecord>,
+    },
+}
+
 /// What `library/sync.changes({ after })` answers: the next page of the feed, or `resync` when
 /// `after` is older than the tombstones the server still keeps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -337,6 +361,10 @@ pub fn schemas() -> Vec<RecordSchema> {
             schema: sorted(generator.root_schema_for::<FeedRecord>().to_value()),
         },
         RecordSchema { name: "Changes", schema: sorted(generator.root_schema_for::<Changes>().to_value()) },
+        RecordSchema {
+            name: "WriteAnswer",
+            schema: sorted(generator.root_schema_for::<WriteAnswer>().to_value()),
+        },
     ]
 }
 

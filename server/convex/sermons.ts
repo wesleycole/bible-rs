@@ -1,14 +1,13 @@
 import { v } from "convex/values"
-import { Effect } from "effect"
+import { Clock, Effect } from "effect"
 import { internal } from "./_generated/api.js"
 import type { Doc, Id } from "./_generated/dataModel.js"
-import { internalMutation } from "./_generated/server.js"
 import { ensureUser, userByClerk } from "./lib/accounts.js"
 import { Allowance } from "./lib/allowance.js"
-import { effectInternalMutation, effectServerMutation } from "./lib/effect.js"
-import { deny, denial, type Denial } from "./lib/errors.js"
-import { serverAction, serverMutation, serverQuery } from "./lib/server.js"
-import { MutationCtx } from "./lib/services.js"
+import { effectInternalMutation, effectServerAction, effectServerMutation, effectServerQuery } from "./lib/effect.js"
+import { InvalidRequest, NotFound } from "../shared/Errors.js"
+import { denial, type Denial } from "./lib/errors.js"
+import { ActionCtx, MutationCtx, QueryCtx } from "./lib/services.js"
 import { DAY, HOUR } from "./lib/time.js"
 
 export { TRIAL_SECONDS } from "./lib/allowance.js"
@@ -30,7 +29,7 @@ export const create = effectServerMutation({
   handler: Effect.fn("sermons.create")(function*(args) {
     const ctx = yield* MutationCtx
     const allowance = yield* Allowance
-    const now = Date.now()
+    const now = yield* Clock.currentTimeMillis
     const user = yield* Effect.promise(() => ensureUser(ctx, args.clerkId))
     return yield* Effect.gen(function*() {
       const { trial } = yield* allowance.admitSermon(user, args.durationSec)
@@ -54,12 +53,13 @@ export const create = effectServerMutation({
   })
 })
 
-const owned = async (ctx: Parameters<typeof userByClerk>[0], clerkId: string, sermonId: string) => {
-  const user = await userByClerk(ctx, clerkId)
+const owned = Effect.fnUntraced(function*(clerkId: string, sermonId: string) {
+  const ctx = yield* QueryCtx
+  const user = yield* Effect.promise(() => userByClerk(ctx, clerkId))
   const id = ctx.db.normalizeId("sermons", sermonId)
-  const sermon = id ? await ctx.db.get(id) : null
+  const sermon = id ? yield* Effect.promise(() => ctx.db.get(id)) : null
   return user && sermon && sermon.userId === user._id ? sermon : null
-}
+})
 
 const view = (s: Doc<"sermons">) => ({
   sermonId: s._id,
@@ -74,52 +74,55 @@ const view = (s: Doc<"sermons">) => ({
   createdAt: s.createdAt
 })
 
-export const get = serverQuery({
+export const get = effectServerQuery({
   args: { clerkId: v.string(), sermonId: v.string() },
-  handler: async (ctx, { clerkId, sermonId }) => {
-    const s = await owned(ctx, clerkId, sermonId)
+  handler: Effect.fn("sermons.get")(function*({ clerkId, sermonId }) {
+    const ctx = yield* QueryCtx
+    const s = yield* owned(clerkId, sermonId)
     if (!s) return null
-    return { ...view(s), transcriptUrl: s.transcript ? await ctx.storage.getUrl(s.transcript) : null }
-  }
+    const transcript = s.transcript
+    return { ...view(s), transcriptUrl: transcript ? yield* Effect.promise(() => ctx.storage.getUrl(transcript)) : null }
+  })
 })
 
-export const startTranscription = serverMutation({
+export const startTranscription = effectServerMutation({
   args: { clerkId: v.string(), sermonId: v.string(), assemblyId: v.string(), webhookSecretHash: v.string() },
-  handler: async (ctx, args) => {
-    const s = await owned(ctx, args.clerkId, args.sermonId)
-    if (!s) return deny("not_found", "No such sermon.")
-    if (s.status !== "uploading") return deny("invalid_request", "That sermon is already being transcribed.")
-    await ctx.db.patch(s._id, {
-      status: "transcribing",
-      assemblyId: args.assemblyId,
-      webhookSecretHash: args.webhookSecretHash,
-      transcribingAt: Date.now()
-    })
-    return { ok: true as const }
-  }
+  handler: Effect.fn("sermons.startTranscription")(function*(args) {
+    const ctx = yield* MutationCtx
+    return yield* Effect.gen(function*() {
+      const s = yield* owned(args.clerkId, args.sermonId)
+      if (!s) return yield* new NotFound({ message: "No such sermon." })
+      if (s.status !== "uploading") return yield* new InvalidRequest({ message: "That sermon is already being transcribed." })
+      const transcribingAt = yield* Clock.currentTimeMillis
+      yield* Effect.promise(() =>
+        ctx.db.patch(s._id, { status: "transcribing", assemblyId: args.assemblyId, webhookSecretHash: args.webhookSecretHash, transcribingAt })
+      )
+      return { ok: true as const } as { ok: true } | Denial
+    }).pipe(Effect.catch((e) => Effect.succeed<{ ok: true } | Denial>(denial(e))))
+  })
 })
 
-export const byAssembly = serverQuery({
+export const byAssembly = effectServerQuery({
   args: { assemblyId: v.string() },
-  handler: async (ctx, { assemblyId }) => {
-    const s = await ctx.db.query("sermons").withIndex("by_assembly", (q) => q.eq("assemblyId", assemblyId)).unique()
+  handler: Effect.fn("sermons.byAssembly")(function*({ assemblyId }) {
+    const ctx = yield* QueryCtx
+    const s = yield* Effect.promise(() => ctx.db.query("sermons").withIndex("by_assembly", (q) => q.eq("assemblyId", assemblyId)).unique())
     return s ? view(s) : null
-  }
+  })
 })
 
 /** Keeps the finished transcript for the client to fetch (for 24 hours) and settles its audio. */
-export const complete = serverAction({
+export const complete = effectServerAction({
   args: { sermonId: v.id("sermons"), transcript: v.string(), audioSeconds: v.number() },
-  handler: async (ctx, args): Promise<{ done: boolean }> => {
-    const storageId = await ctx.storage.store(new Blob([args.transcript], { type: "application/json" }))
-    const done: boolean = await ctx.runMutation(internal.sermons.markDone, {
-      sermonId: args.sermonId,
-      storageId,
-      audioSeconds: args.audioSeconds
-    })
-    if (!done) await ctx.storage.delete(storageId)
+  handler: Effect.fn("sermons.complete")(function*(args): Effect.fn.Return<{ done: boolean }, never, ActionCtx> {
+    const ctx = yield* ActionCtx
+    const storageId = yield* Effect.promise(() => ctx.storage.store(new Blob([args.transcript], { type: "application/json" })))
+    const done: boolean = yield* Effect.promise(() =>
+      ctx.runMutation(internal.sermons.markDone, { sermonId: args.sermonId, storageId, audioSeconds: args.audioSeconds })
+    )
+    if (!done) yield* Effect.promise(() => ctx.storage.delete(storageId))
     return { done }
-  }
+  })
 })
 
 export const markDone = effectInternalMutation({
@@ -130,7 +133,8 @@ export const markDone = effectInternalMutation({
     // A second webhook delivery, or a poll racing the webhook: the first one settled it.
     if (!s || s.status === "done") return false
     const seconds = Math.ceil(audioSeconds)
-    yield* Effect.promise(() => ctx.db.patch(s._id, { status: "done", transcript: storageId, audioSeconds: seconds, doneAt: Date.now() }))
+    const doneAt = yield* Clock.currentTimeMillis
+    yield* Effect.promise(() => ctx.db.patch(s._id, { status: "done", transcript: storageId, audioSeconds: seconds, doneAt }))
     yield* (yield* Allowance).settleSermon(s, seconds)
     return true
   })
@@ -161,7 +165,7 @@ export const failStuck = effectInternalMutation({
   args: {},
   handler: Effect.fn("sermons.failStuck")(function*() {
     const ctx = yield* MutationCtx
-    const now = Date.now()
+    const now = yield* Clock.currentTimeMillis
     const stuck = yield* Effect.promise(async () =>
       [
         ...(await ctx.db
@@ -188,24 +192,24 @@ export const failStuck = effectInternalMutation({
  * Transcripts are kept 24 hours for the client to fetch, then deleted with their sermon rows
  * (the ledger keeps what billing needs). Failed sermons go after a week.
  */
-export const expire = internalMutation({
+export const expire = effectInternalMutation({
   args: {},
-  handler: async (ctx) => {
-    const now = Date.now()
-    const done = await ctx.db
-      .query("sermons")
-      .withIndex("by_status", (q) => q.eq("status", "done").lt("createdAt", now - DAY))
-      .take(500)
-    const failed = await ctx.db
-      .query("sermons")
-      .withIndex("by_status", (q) => q.eq("status", "error").lt("createdAt", now - 7 * DAY))
-      .take(500)
+  handler: Effect.fn("sermons.expire")(function*() {
+    const ctx = yield* MutationCtx
+    const now = yield* Clock.currentTimeMillis
+    const done = yield* Effect.promise(() =>
+      ctx.db.query("sermons").withIndex("by_status", (q) => q.eq("status", "done").lt("createdAt", now - DAY)).take(500)
+    )
+    const failed = yield* Effect.promise(() =>
+      ctx.db.query("sermons").withIndex("by_status", (q) => q.eq("status", "error").lt("createdAt", now - 7 * DAY)).take(500)
+    )
     let deleted = 0
     for (const s of [...done.filter((s) => (s.doneAt ?? 0) < now - DAY), ...failed]) {
-      if (s.transcript) await ctx.storage.delete(s.transcript)
-      await ctx.db.delete(s._id)
+      const transcript = s.transcript
+      if (transcript) yield* Effect.promise(() => ctx.storage.delete(transcript))
+      yield* Effect.promise(() => ctx.db.delete(s._id))
       deleted++
     }
     return { deleted }
-  }
+  })
 })

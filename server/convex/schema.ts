@@ -172,7 +172,8 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_assembly", ["assemblyId"])
-    .index("by_status", ["status", "createdAt"]),
+    .index("by_status", ["status", "createdAt"])
+    .index("by_transcript", ["transcript"]),
 
   webhookEvents: defineTable({
     source: v.string(),
@@ -235,7 +236,8 @@ export default defineSchema({
     page: v.optional(v.number())
   })
     .index("by_user_uid", ["userId", "uid"])
-    .index("by_owner", ["userId", "ownerUid"]),
+    .index("by_owner", ["userId", "ownerUid"])
+    .index("by_storage", ["storageId"]),
 
   /** One row per user: the write sequence, the oldest `seq` still deliverable, and the storage counter. */
   userLibrary: defineTable({

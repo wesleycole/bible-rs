@@ -698,3 +698,666 @@ export const Changes = Schema.Union([Schema.Struct({
 
 export type Changes = typeof Changes["Type"]
 
+/** What a write of a record kept by uid answers (`library/notes.upsert` and `.remove`, `library/chats.save` and `.remove`). The records are as the feed sends them at their `seq`, so the writing device holds exactly what every other device gets. */
+export const WriteAnswerValidator = v.union(v.object({
+    record: v.optional(v.union(v.object({
+      color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }), v.object({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      label: v.string(),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }), v.object({
+      anchors: v.array(v.object({
+        /** Where in a recording the passage comes up, in milliseconds. */
+        atMs: v.optional(v.number()),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        from: v.number(),
+        /** Who said an anchor's verses are what the item is about. */
+        origin: v.union(v.literal("user"), v.literal("typed"), v.literal("model")),
+        /** Which page of a photographed item it is on. */
+        page: v.optional(v.number()),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        to: v.number(),
+      })),
+      /** When it was made or captured, in server milliseconds. */
+      capturedAt: v.number(),
+      /** The note this one is a conflict copy of: an edit made against a copy another device had already changed, kept beside it rather than lost. */
+      conflictOf: v.optional(v.string()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      /** A recording's details, as `recording::Details` holds them, with when it ran (server ms). */
+      details: v.optional(v.object({
+        endedAt: v.optional(v.number()),
+        /** The church, ministry or channel it came from. */
+        from: v.optional(v.string()),
+        speaker: v.optional(v.string()),
+        startedAt: v.number(),
+        title: v.optional(v.string()),
+      })),
+      excerpt: v.optional(v.string()),
+      files: v.array(v.object({
+        bytes: v.number(),
+        contentType: v.string(),
+        durationMs: v.optional(v.number()),
+        page: v.optional(v.number()),
+        /** What a file is to the item or chat that owns it. */
+        role: v.union(v.literal("audio"), v.literal("audioPart"), v.literal("uploadPart"), v.literal("photo"), v.literal("photoMarked"), v.literal("thumbnail"), v.literal("text"), v.literal("chat"), v.literal("export")),
+        uid: v.string(),
+        url: v.string(),
+      })),
+      /** What an item is. */
+      kind: v.union(v.literal("sermon"), v.literal("handwritten"), v.literal("slide"), v.literal("page"), v.literal("note")),
+      offsetMs: v.optional(v.number()),
+      outline: v.optional(v.string()),
+      recordedOn: v.optional(v.string()),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      /** The sermon a slide or page was captured during, and where in it. */
+      sermonUid: v.optional(v.string()),
+      sourceUid: v.optional(v.string()),
+      /** Where an item is in its life: a note is always `ready`; captures move through the rest. */
+      status: v.union(v.literal("recording"), v.literal("uploading"), v.literal("waiting"), v.literal("processing"), v.literal("review"), v.literal("ready"), v.literal("error")),
+      summary: v.optional(v.string()),
+      /** A note's text, inline because it is edited offline. */
+      text: v.optional(v.string()),
+      /** A sermon's or photo's text, as a `text` file. */
+      textFileUid: v.optional(v.string()),
+      title: v.string(),
+      type: v.literal("item"),
+      /** The record's id, a UUID the client makes. */
+      uid: v.string(),
+      /** Whether a model wrote parts the person hasn't reviewed. */
+      unreviewed: v.boolean(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
+    }), v.object({
+      bytes: v.number(),
+      /** When the conversation began, in server milliseconds. */
+      createdAt: v.number(),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      fileUid: v.string(),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      title: v.string(),
+      type: v.literal("chat"),
+      /** The record's id, a UUID the client makes. */
+      uid: v.string(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
+      url: v.string(),
+    }))),
+    result: v.literal("ok"),
+    seq: v.number(),
+  }), v.object({
+    copy: v.optional(v.union(v.object({
+      color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }), v.object({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      label: v.string(),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }), v.object({
+      anchors: v.array(v.object({
+        /** Where in a recording the passage comes up, in milliseconds. */
+        atMs: v.optional(v.number()),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        from: v.number(),
+        /** Who said an anchor's verses are what the item is about. */
+        origin: v.union(v.literal("user"), v.literal("typed"), v.literal("model")),
+        /** Which page of a photographed item it is on. */
+        page: v.optional(v.number()),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        to: v.number(),
+      })),
+      /** When it was made or captured, in server milliseconds. */
+      capturedAt: v.number(),
+      /** The note this one is a conflict copy of: an edit made against a copy another device had already changed, kept beside it rather than lost. */
+      conflictOf: v.optional(v.string()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      /** A recording's details, as `recording::Details` holds them, with when it ran (server ms). */
+      details: v.optional(v.object({
+        endedAt: v.optional(v.number()),
+        /** The church, ministry or channel it came from. */
+        from: v.optional(v.string()),
+        speaker: v.optional(v.string()),
+        startedAt: v.number(),
+        title: v.optional(v.string()),
+      })),
+      excerpt: v.optional(v.string()),
+      files: v.array(v.object({
+        bytes: v.number(),
+        contentType: v.string(),
+        durationMs: v.optional(v.number()),
+        page: v.optional(v.number()),
+        /** What a file is to the item or chat that owns it. */
+        role: v.union(v.literal("audio"), v.literal("audioPart"), v.literal("uploadPart"), v.literal("photo"), v.literal("photoMarked"), v.literal("thumbnail"), v.literal("text"), v.literal("chat"), v.literal("export")),
+        uid: v.string(),
+        url: v.string(),
+      })),
+      /** What an item is. */
+      kind: v.union(v.literal("sermon"), v.literal("handwritten"), v.literal("slide"), v.literal("page"), v.literal("note")),
+      offsetMs: v.optional(v.number()),
+      outline: v.optional(v.string()),
+      recordedOn: v.optional(v.string()),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      /** The sermon a slide or page was captured during, and where in it. */
+      sermonUid: v.optional(v.string()),
+      sourceUid: v.optional(v.string()),
+      /** Where an item is in its life: a note is always `ready`; captures move through the rest. */
+      status: v.union(v.literal("recording"), v.literal("uploading"), v.literal("waiting"), v.literal("processing"), v.literal("review"), v.literal("ready"), v.literal("error")),
+      summary: v.optional(v.string()),
+      /** A note's text, inline because it is edited offline. */
+      text: v.optional(v.string()),
+      /** A sermon's or photo's text, as a `text` file. */
+      textFileUid: v.optional(v.string()),
+      title: v.string(),
+      type: v.literal("item"),
+      /** The record's id, a UUID the client makes. */
+      uid: v.string(),
+      /** Whether a model wrote parts the person hasn't reviewed. */
+      unreviewed: v.boolean(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
+    }), v.object({
+      bytes: v.number(),
+      /** When the conversation began, in server milliseconds. */
+      createdAt: v.number(),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      fileUid: v.string(),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      title: v.string(),
+      type: v.literal("chat"),
+      /** The record's id, a UUID the client makes. */
+      uid: v.string(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
+      url: v.string(),
+    }))),
+    /** One record in the change feed, of any synced type, tagged with that type. */
+    record: v.union(v.object({
+      color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }), v.object({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: v.optional(v.number()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      label: v.string(),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      type: v.literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: v.string(),
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: v.number(),
+    }), v.object({
+      anchors: v.array(v.object({
+        /** Where in a recording the passage comes up, in milliseconds. */
+        atMs: v.optional(v.number()),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        from: v.number(),
+        /** Who said an anchor's verses are what the item is about. */
+        origin: v.union(v.literal("user"), v.literal("typed"), v.literal("model")),
+        /** Which page of a photographed item it is on. */
+        page: v.optional(v.number()),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        to: v.number(),
+      })),
+      /** When it was made or captured, in server milliseconds. */
+      capturedAt: v.number(),
+      /** The note this one is a conflict copy of: an edit made against a copy another device had already changed, kept beside it rather than lost. */
+      conflictOf: v.optional(v.string()),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      /** A recording's details, as `recording::Details` holds them, with when it ran (server ms). */
+      details: v.optional(v.object({
+        endedAt: v.optional(v.number()),
+        /** The church, ministry or channel it came from. */
+        from: v.optional(v.string()),
+        speaker: v.optional(v.string()),
+        startedAt: v.number(),
+        title: v.optional(v.string()),
+      })),
+      excerpt: v.optional(v.string()),
+      files: v.array(v.object({
+        bytes: v.number(),
+        contentType: v.string(),
+        durationMs: v.optional(v.number()),
+        page: v.optional(v.number()),
+        /** What a file is to the item or chat that owns it. */
+        role: v.union(v.literal("audio"), v.literal("audioPart"), v.literal("uploadPart"), v.literal("photo"), v.literal("photoMarked"), v.literal("thumbnail"), v.literal("text"), v.literal("chat"), v.literal("export")),
+        uid: v.string(),
+        url: v.string(),
+      })),
+      /** What an item is. */
+      kind: v.union(v.literal("sermon"), v.literal("handwritten"), v.literal("slide"), v.literal("page"), v.literal("note")),
+      offsetMs: v.optional(v.number()),
+      outline: v.optional(v.string()),
+      recordedOn: v.optional(v.string()),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      /** The sermon a slide or page was captured during, and where in it. */
+      sermonUid: v.optional(v.string()),
+      sourceUid: v.optional(v.string()),
+      /** Where an item is in its life: a note is always `ready`; captures move through the rest. */
+      status: v.union(v.literal("recording"), v.literal("uploading"), v.literal("waiting"), v.literal("processing"), v.literal("review"), v.literal("ready"), v.literal("error")),
+      summary: v.optional(v.string()),
+      /** A note's text, inline because it is edited offline. */
+      text: v.optional(v.string()),
+      /** A sermon's or photo's text, as a `text` file. */
+      textFileUid: v.optional(v.string()),
+      title: v.string(),
+      type: v.literal("item"),
+      /** The record's id, a UUID the client makes. */
+      uid: v.string(),
+      /** Whether a model wrote parts the person hasn't reviewed. */
+      unreviewed: v.boolean(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
+    }), v.object({
+      bytes: v.number(),
+      /** When the conversation began, in server milliseconds. */
+      createdAt: v.number(),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: v.optional(v.number()),
+      fileUid: v.string(),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      title: v.string(),
+      type: v.literal("chat"),
+      /** The record's id, a UUID the client makes. */
+      uid: v.string(),
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: v.optional(v.number()),
+      url: v.string(),
+    })),
+    result: v.literal("conflict"),
+    seq: v.number(),
+  }))
+
+export const WriteAnswer = Schema.Union([Schema.Struct({
+    record: Schema.optionalKey(Schema.Union([Schema.Struct({
+      color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    }), Schema.Struct({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      label: Schema.String,
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    }), Schema.Struct({
+      anchors: Schema.Array(Schema.Struct({
+        /** Where in a recording the passage comes up, in milliseconds. */
+        atMs: Schema.optionalKey(Schema.Int),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        from: Schema.Int,
+        /** Who said an anchor's verses are what the item is about. */
+        origin: Schema.Union([Schema.Literal("user"), Schema.Literal("typed"), Schema.Literal("model")]),
+        /** Which page of a photographed item it is on. */
+        page: Schema.optionalKey(Schema.Int),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        to: Schema.Int,
+      })),
+      /** When it was made or captured, in server milliseconds. */
+      capturedAt: Schema.Int,
+      /** The note this one is a conflict copy of: an edit made against a copy another device had already changed, kept beside it rather than lost. */
+      conflictOf: Schema.optionalKey(Schema.String),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      /** A recording's details, as `recording::Details` holds them, with when it ran (server ms). */
+      details: Schema.optionalKey(Schema.Struct({
+        endedAt: Schema.optionalKey(Schema.Int),
+        /** The church, ministry or channel it came from. */
+        from: Schema.optionalKey(Schema.String),
+        speaker: Schema.optionalKey(Schema.String),
+        startedAt: Schema.Int,
+        title: Schema.optionalKey(Schema.String),
+      })),
+      excerpt: Schema.optionalKey(Schema.String),
+      files: Schema.Array(Schema.Struct({
+        bytes: Schema.Int,
+        contentType: Schema.String,
+        durationMs: Schema.optionalKey(Schema.Int),
+        page: Schema.optionalKey(Schema.Int),
+        /** What a file is to the item or chat that owns it. */
+        role: Schema.Literals(["audio", "audioPart", "uploadPart", "photo", "photoMarked", "thumbnail", "text", "chat", "export"]),
+        uid: Schema.String,
+        url: Schema.String,
+      })),
+      /** What an item is. */
+      kind: Schema.Literals(["sermon", "handwritten", "slide", "page", "note"]),
+      offsetMs: Schema.optionalKey(Schema.Int),
+      outline: Schema.optionalKey(Schema.String),
+      recordedOn: Schema.optionalKey(Schema.String),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      /** The sermon a slide or page was captured during, and where in it. */
+      sermonUid: Schema.optionalKey(Schema.String),
+      sourceUid: Schema.optionalKey(Schema.String),
+      /** Where an item is in its life: a note is always `ready`; captures move through the rest. */
+      status: Schema.Literals(["recording", "uploading", "waiting", "processing", "review", "ready", "error"]),
+      summary: Schema.optionalKey(Schema.String),
+      /** A note's text, inline because it is edited offline. */
+      text: Schema.optionalKey(Schema.String),
+      /** A sermon's or photo's text, as a `text` file. */
+      textFileUid: Schema.optionalKey(Schema.String),
+      title: Schema.String,
+      type: Schema.Literal("item"),
+      /** The record's id, a UUID the client makes. */
+      uid: Schema.String,
+      /** Whether a model wrote parts the person hasn't reviewed. */
+      unreviewed: Schema.Boolean,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
+    }), Schema.Struct({
+      bytes: Schema.Int,
+      /** When the conversation began, in server milliseconds. */
+      createdAt: Schema.Int,
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      fileUid: Schema.String,
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      title: Schema.String,
+      type: Schema.Literal("chat"),
+      /** The record's id, a UUID the client makes. */
+      uid: Schema.String,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
+      url: Schema.String,
+    })])),
+    result: Schema.Literal("ok"),
+    seq: Schema.Int,
+  }), Schema.Struct({
+    copy: Schema.optionalKey(Schema.Union([Schema.Struct({
+      color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    }), Schema.Struct({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      label: Schema.String,
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    }), Schema.Struct({
+      anchors: Schema.Array(Schema.Struct({
+        /** Where in a recording the passage comes up, in milliseconds. */
+        atMs: Schema.optionalKey(Schema.Int),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        from: Schema.Int,
+        /** Who said an anchor's verses are what the item is about. */
+        origin: Schema.Union([Schema.Literal("user"), Schema.Literal("typed"), Schema.Literal("model")]),
+        /** Which page of a photographed item it is on. */
+        page: Schema.optionalKey(Schema.Int),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        to: Schema.Int,
+      })),
+      /** When it was made or captured, in server milliseconds. */
+      capturedAt: Schema.Int,
+      /** The note this one is a conflict copy of: an edit made against a copy another device had already changed, kept beside it rather than lost. */
+      conflictOf: Schema.optionalKey(Schema.String),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      /** A recording's details, as `recording::Details` holds them, with when it ran (server ms). */
+      details: Schema.optionalKey(Schema.Struct({
+        endedAt: Schema.optionalKey(Schema.Int),
+        /** The church, ministry or channel it came from. */
+        from: Schema.optionalKey(Schema.String),
+        speaker: Schema.optionalKey(Schema.String),
+        startedAt: Schema.Int,
+        title: Schema.optionalKey(Schema.String),
+      })),
+      excerpt: Schema.optionalKey(Schema.String),
+      files: Schema.Array(Schema.Struct({
+        bytes: Schema.Int,
+        contentType: Schema.String,
+        durationMs: Schema.optionalKey(Schema.Int),
+        page: Schema.optionalKey(Schema.Int),
+        /** What a file is to the item or chat that owns it. */
+        role: Schema.Literals(["audio", "audioPart", "uploadPart", "photo", "photoMarked", "thumbnail", "text", "chat", "export"]),
+        uid: Schema.String,
+        url: Schema.String,
+      })),
+      /** What an item is. */
+      kind: Schema.Literals(["sermon", "handwritten", "slide", "page", "note"]),
+      offsetMs: Schema.optionalKey(Schema.Int),
+      outline: Schema.optionalKey(Schema.String),
+      recordedOn: Schema.optionalKey(Schema.String),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      /** The sermon a slide or page was captured during, and where in it. */
+      sermonUid: Schema.optionalKey(Schema.String),
+      sourceUid: Schema.optionalKey(Schema.String),
+      /** Where an item is in its life: a note is always `ready`; captures move through the rest. */
+      status: Schema.Literals(["recording", "uploading", "waiting", "processing", "review", "ready", "error"]),
+      summary: Schema.optionalKey(Schema.String),
+      /** A note's text, inline because it is edited offline. */
+      text: Schema.optionalKey(Schema.String),
+      /** A sermon's or photo's text, as a `text` file. */
+      textFileUid: Schema.optionalKey(Schema.String),
+      title: Schema.String,
+      type: Schema.Literal("item"),
+      /** The record's id, a UUID the client makes. */
+      uid: Schema.String,
+      /** Whether a model wrote parts the person hasn't reviewed. */
+      unreviewed: Schema.Boolean,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
+    }), Schema.Struct({
+      bytes: Schema.Int,
+      /** When the conversation began, in server milliseconds. */
+      createdAt: Schema.Int,
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      fileUid: Schema.String,
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      title: Schema.String,
+      type: Schema.Literal("chat"),
+      /** The record's id, a UUID the client makes. */
+      uid: Schema.String,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
+      url: Schema.String,
+    })])),
+    /** One record in the change feed, of any synced type, tagged with that type. */
+    record: Schema.Union([Schema.Struct({
+      color: Schema.Literals(["yellow", "green", "blue", "pink", "purple", "orange"]),
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("highlight"),
+      /** The record's id, made by the client: for a highlight, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    }), Schema.Struct({
+      /** When the record was made, in server milliseconds: the device's own time on a first upload (so a migrated library keeps its dates), else the server's; kept on update, and set again when a tombstone comes back. Absent only on records written before the field existed. */
+      createdAt: Schema.optionalKey(Schema.Int),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      label: Schema.String,
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      type: Schema.Literal("bookmark"),
+      /** The record's id, made by the client: for a bookmark, derived from the verse. */
+      uid: Schema.String,
+      /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+      verse: Schema.Int,
+    }), Schema.Struct({
+      anchors: Schema.Array(Schema.Struct({
+        /** Where in a recording the passage comes up, in milliseconds. */
+        atMs: Schema.optionalKey(Schema.Int),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        from: Schema.Int,
+        /** Who said an anchor's verses are what the item is about. */
+        origin: Schema.Union([Schema.Literal("user"), Schema.Literal("typed"), Schema.Literal("model")]),
+        /** Which page of a photographed item it is on. */
+        page: Schema.optionalKey(Schema.Int),
+        /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+        to: Schema.Int,
+      })),
+      /** When it was made or captured, in server milliseconds. */
+      capturedAt: Schema.Int,
+      /** The note this one is a conflict copy of: an edit made against a copy another device had already changed, kept beside it rather than lost. */
+      conflictOf: Schema.optionalKey(Schema.String),
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      /** A recording's details, as `recording::Details` holds them, with when it ran (server ms). */
+      details: Schema.optionalKey(Schema.Struct({
+        endedAt: Schema.optionalKey(Schema.Int),
+        /** The church, ministry or channel it came from. */
+        from: Schema.optionalKey(Schema.String),
+        speaker: Schema.optionalKey(Schema.String),
+        startedAt: Schema.Int,
+        title: Schema.optionalKey(Schema.String),
+      })),
+      excerpt: Schema.optionalKey(Schema.String),
+      files: Schema.Array(Schema.Struct({
+        bytes: Schema.Int,
+        contentType: Schema.String,
+        durationMs: Schema.optionalKey(Schema.Int),
+        page: Schema.optionalKey(Schema.Int),
+        /** What a file is to the item or chat that owns it. */
+        role: Schema.Literals(["audio", "audioPart", "uploadPart", "photo", "photoMarked", "thumbnail", "text", "chat", "export"]),
+        uid: Schema.String,
+        url: Schema.String,
+      })),
+      /** What an item is. */
+      kind: Schema.Literals(["sermon", "handwritten", "slide", "page", "note"]),
+      offsetMs: Schema.optionalKey(Schema.Int),
+      outline: Schema.optionalKey(Schema.String),
+      recordedOn: Schema.optionalKey(Schema.String),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      /** The sermon a slide or page was captured during, and where in it. */
+      sermonUid: Schema.optionalKey(Schema.String),
+      sourceUid: Schema.optionalKey(Schema.String),
+      /** Where an item is in its life: a note is always `ready`; captures move through the rest. */
+      status: Schema.Literals(["recording", "uploading", "waiting", "processing", "review", "ready", "error"]),
+      summary: Schema.optionalKey(Schema.String),
+      /** A note's text, inline because it is edited offline. */
+      text: Schema.optionalKey(Schema.String),
+      /** A sermon's or photo's text, as a `text` file. */
+      textFileUid: Schema.optionalKey(Schema.String),
+      title: Schema.String,
+      type: Schema.Literal("item"),
+      /** The record's id, a UUID the client makes. */
+      uid: Schema.String,
+      /** Whether a model wrote parts the person hasn't reviewed. */
+      unreviewed: Schema.Boolean,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
+    }), Schema.Struct({
+      bytes: Schema.Int,
+      /** When the conversation began, in server milliseconds. */
+      createdAt: Schema.Int,
+      /** When the record was deleted (a tombstone other devices drop), in server milliseconds. */
+      deletedAt: Schema.optionalKey(Schema.Int),
+      fileUid: Schema.String,
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      title: Schema.String,
+      type: Schema.Literal("chat"),
+      /** The record's id, a UUID the client makes. */
+      uid: Schema.String,
+      /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
+      updatedAt: Schema.optionalKey(Schema.Int),
+      url: Schema.String,
+    })]),
+    result: Schema.Literal("conflict"),
+    seq: Schema.Int,
+  })])
+
+export type WriteAnswer = typeof WriteAnswer["Type"]
+
