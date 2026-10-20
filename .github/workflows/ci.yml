@@ -26,6 +26,22 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+      - name: Two devices against a local Convex backend
+        run: |
+          (cd server && pnpm install --frozen-lockfile)
+          eval "$(server/scripts/library-local.sh)"
+          cargo test -p linger --test library_local -- --nocapture
+          (cd server && npx tsx scripts/time-writes.ts --n 100)
+          echo "LINGER_TEST_CONVEX_URL=$LINGER_TEST_CONVEX_URL" >> "$GITHUB_ENV"
+          echo "LINGER_TEST_TOKEN=$LINGER_TEST_TOKEN" >> "$GITHUB_ENV"
       - name: Search smoke test (release)
         run: cargo run --release -p linger -- search "love one another" --limit 3
       - name: Benchmarks (quick)
@@ -34,6 +50,8 @@ jobs:
           cargo bench -p linger --bench layout -- --warm-up-time 1 --measurement-time 2
       - name: Startup and scrolling under Xvfb (software OpenGL)
         run: RUNS=5 scripts/bench-startup.sh
+      - name: Startup with library sync on, against the local backend
+        run: SYNC=1 RUNS=5 scripts/bench-startup.sh
 
   server:
     name: Server · typecheck and tests
