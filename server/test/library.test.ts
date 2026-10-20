@@ -199,3 +199,87 @@ describe("library.sync.changes", () => {
     expect((await page(t, "user_ann", 0)).records.map((r) => r.type)).toEqual(["highlight", "bookmark"])
   })
 })
+
+describe("library.notes", () => {
+  const JOHN_3_36 = 42_003_036
+  const JOHN_4_2 = 42_004_002
+
+  it("writes a note with its anchors split per chapter, answers a retry without a new seq, and keeps a stale edit as a conflict copy", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    const anchors = [{ from: JOHN_3_36, to: JOHN_4_2, origin: "user" as const }]
+    const first = { uid: "n1", text: "Belief\nand life", anchors }
+    expect(await ann.mutation(api.library.notes.upsert, first)).toEqual({ result: "ok", seq: 1 })
+    // The answer was lost and the device sends it again, now against seq 0: the server already has it.
+    expect(await ann.mutation(api.library.notes.upsert, { ...first, baseSeq: 0 })).toEqual({ result: "ok", seq: 1 })
+    const rows = await t.run((ctx) => ctx.db.query("anchors").collect())
+    expect(rows.map((r) => [r.chapter, r.from, r.to])).toEqual([[3, JOHN_3_36, JOHN_3_36], [4, 42_004_001, JOHN_4_2]])
+    expect(await ann.mutation(api.library.notes.upsert, { ...first, text: "Edited on A", baseSeq: 1 })).toEqual({ result: "ok", seq: 2 })
+    // B edited its copy from seq 1 while offline.
+    // The answer carries the note that stood, in the feed's shape, and where the edit went.
+    const conflict = await ann.mutation(api.library.notes.upsert, { ...first, text: "Edited on B", baseSeq: 1 })
+    expect(conflict).toMatchObject({ result: "conflict", seq: 2, copyUid: "n1-c1", copySeq: 3, record: { uid: "n1", seq: 2, text: "Edited on A" } })
+    expect(Object.keys((conflict as { record: object }).record)).not.toContain("userId")
+    const items = await t.run((ctx) => ctx.db.query("items").collect())
+    expect(items.map((i) => [i.uid, i.text, i.title, i.conflictOf])).toEqual([
+      ["n1", "Edited on A", "Edited on A", undefined],
+      ["n1-c1", "Edited on B", "Edited on B", "n1"]
+    ])
+    // A stale removal leaves the newer note alone.
+    expect(await ann.mutation(api.library.notes.remove, { uid: "n1", baseSeq: 1 })).toMatchObject({ result: "conflict", seq: 2, record: { text: "Edited on A" } })
+    expect(await ann.mutation(api.library.notes.remove, { uid: "n1", baseSeq: 2 })).toMatchObject({ result: "ok" })
+    expect(await t.run((ctx) => ctx.db.query("anchors").withIndex("by_item", (q) => q.eq("itemId", items[0]!._id)).collect())).toEqual([])
+  })
+
+  it("refuses an anchor off the grid or backwards", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    for (const anchors of [[{ from: 42_022_001, to: 42_022_001, origin: "user" as const }], [{ from: JOHN_4_2, to: JOHN_3_36, origin: "typed" as const }]]) {
+      expect((await errorOf(ann.mutation(api.library.notes.upsert, { uid: "n", text: "x", anchors }))).type).toBe("invalid_request")
+    }
+    expect(await t.run((ctx) => ctx.db.query("items").collect())).toEqual([])
+  })
+})
+
+describe("library.chats and files", () => {
+  const upload = (t: TestConvex, text: string) =>
+    t.run(async (ctx) => {
+      const id = await ctx.storage.store(new Blob([text], { type: "application/json" }))
+      // Convex keeps it as base64 (as convex-test does); the client sends hex.
+      return { storageId: id as string, sha256: Buffer.from((await ctx.db.system.get(id))!.sha256, "base64").toString("hex") }
+    })
+
+  it("saves a chat over its attached file, counts storage, frees a replaced file, and feeds no _ids", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    const one = await upload(t, '{"messages":[1]}')
+    expect((await errorOf(ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f1" }))).type).toBe("invalid_request")
+    const wrongSum = await errorOf(ann.mutation(api.library.files.attach, { uid: "f1", ownerUid: "c1", role: "chat", ...one, sha256: "00" }))
+    expect(wrongSum.type).toBe("invalid_request")
+    const f1 = await ann.mutation(api.library.files.attach, { uid: "f1", ownerUid: "c1", role: "chat", ...one })
+    expect(await ann.mutation(api.library.files.attach, { uid: "f1", ownerUid: "c1", role: "chat", ...one })).toEqual(f1)
+    expect(await ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f1" })).toEqual({ result: "ok", seq: 1 })
+    const library = async () => (await t.run((ctx) => ctx.db.query("userLibrary").first()))!
+    expect((await library()).storageBytes).toBe(f1.bytes)
+    const two = await upload(t, '{"messages":[1,2,3]}')
+    const f2 = await ann.mutation(api.library.files.attach, { uid: "f2", ownerUid: "c1", role: "chat", ...two })
+    expect(await ann.mutation(api.library.chats.save, { uid: "c1", title: "Grace", fileUid: "f2", baseSeq: 1 })).toEqual({ result: "ok", seq: 2 })
+    expect((await library()).storageBytes).toBe(f2.bytes)
+    expect((await t.run((ctx) => ctx.db.query("files").collect())).map((f) => f.uid)).toEqual(["f2"])
+    const page = await ann.query(api.library.sync.changes, { after: 0 })
+    expect(page).toMatchObject({ records: [{ type: "chat", uid: "c1", seq: 2, fileUid: "f2", url: f2.url, bytes: f2.bytes, title: "Grace" }] })
+    if (!("records" in page)) throw new Error("a page")
+    expect(Object.keys(page.records[0]!).sort()).toEqual(["bytes", "createdAt", "fileUid", "seq", "title", "type", "uid", "url"])
+    // A stale save keeps the server's chat, answers it, and frees the losing upload.
+    const three = await upload(t, '{"messages":[9]}')
+    await ann.mutation(api.library.files.attach, { uid: "f3", ownerUid: "c1", role: "chat", ...three })
+    expect(await ann.mutation(api.library.chats.save, { uid: "c1", title: "Stale", fileUid: "f3", baseSeq: 1 })).toMatchObject({
+      result: "conflict",
+      seq: 2,
+      record: { uid: "c1", fileUid: "f2", title: "Grace" }
+    })
+    expect((await library()).storageBytes).toBe(f2.bytes)
+    expect(await ann.mutation(api.library.chats.remove, { uid: "c1", baseSeq: 2 })).toEqual({ result: "ok", seq: 3 })
+    expect((await library()).storageBytes).toBe(0)
+  })
+})

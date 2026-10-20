@@ -101,12 +101,180 @@ pub struct Bookmark {
     pub label: String,
 }
 
+/// What an item is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ItemKind {
+    Sermon,
+    Handwritten,
+    Slide,
+    Page,
+    Note,
+}
+
+/// Where an item is in its life: a note is always `ready`; captures move through the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ItemStatus {
+    Recording,
+    Uploading,
+    Waiting,
+    Processing,
+    Review,
+    Ready,
+    Error,
+}
+
+/// Who said an anchor's verses are what the item is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AnchorOrigin {
+    /// The person: the verse a note is attached to, or references confirmed on review.
+    User,
+    /// `reference::find_all` over text typed in the apps.
+    Typed,
+    /// A model, from a photo or the digest step.
+    Model,
+}
+
+/// A range of verses an item is anchored to, `from` ≤ `to` on the canonical grid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Anchor {
+    pub from: VerseId,
+    pub to: VerseId,
+    pub origin: AnchorOrigin,
+    /// Where in a recording the passage comes up, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<u64>,
+    /// Which page of a photographed item it is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+}
+
+/// What a file is to the item or chat that owns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FileRole {
+    Audio,
+    AudioPart,
+    UploadPart,
+    Photo,
+    PhotoMarked,
+    Thumbnail,
+    Text,
+    Chat,
+    Export,
+}
+
+/// A file attached to a record: its bytes are downloaded from `url`, a permanent link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRef {
+    pub uid: String,
+    pub role: FileRole,
+    pub content_type: String,
+    pub bytes: u64,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// A recording's details, as `recording::Details` holds them, with when it ran (server ms).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+    /// The church, ministry or channel it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    pub started_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<u64>,
+}
+
+/// A library item: a note, a sermon or a photographed page, with the verses it is anchored to and
+/// its files. A verse can have several.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Item {
+    /// The record's id, a UUID the client makes.
+    pub uid: String,
+    /// The per-user sequence number of the write that last changed this record.
+    pub seq: u64,
+    /// When the record was deleted (a tombstone other devices drop), in server milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
+    pub kind: ItemKind,
+    pub title: String,
+    pub status: ItemStatus,
+    /// A note's text, inline because it is edited offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A sermon's or photo's text, as a `text` file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_file_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_uid: Option<String>,
+    /// The sermon a slide or page was captured during, and where in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sermon_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<ItemDetails>,
+    /// The note this one is a conflict copy of: an edit made against a copy another device had
+    /// already changed, kept beside it rather than lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_of: Option<String>,
+    /// When it was made or captured, in server milliseconds.
+    pub captured_at: u64,
+    /// Whether a model wrote parts the person hasn't reviewed.
+    pub unreviewed: bool,
+    pub anchors: Vec<Anchor>,
+    pub files: Vec<FileRef>,
+}
+
+/// A saved Ask conversation; the conversation itself is a `chat` file, downloaded from `url`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Chat {
+    /// The record's id, a UUID the client makes.
+    pub uid: String,
+    /// The per-user sequence number of the write that last changed this record.
+    pub seq: u64,
+    /// When the record was deleted (a tombstone other devices drop), in server milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
+    /// When the conversation began, in server milliseconds.
+    pub created_at: u64,
+    pub title: String,
+    pub file_uid: String,
+    pub url: String,
+    pub bytes: u64,
+}
+
 /// One record in the change feed, of any synced type, tagged with that type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeedRecord {
     Highlight(Highlight),
     Bookmark(Bookmark),
+    Item(Box<Item>),
+    Chat(Chat),
 }
 
 impl FeedRecord {
@@ -114,6 +282,8 @@ impl FeedRecord {
         match self {
             FeedRecord::Highlight(r) => r.seq,
             FeedRecord::Bookmark(r) => r.seq,
+            FeedRecord::Item(r) => r.seq,
+            FeedRecord::Chat(r) => r.seq,
         }
     }
 }
@@ -152,6 +322,8 @@ pub fn schemas() -> Vec<RecordSchema> {
             schema: sorted(generator.root_schema_for::<Highlight>().to_value()),
         },
         RecordSchema { name: "Bookmark", schema: sorted(generator.root_schema_for::<Bookmark>().to_value()) },
+        RecordSchema { name: "Item", schema: sorted(generator.root_schema_for::<Item>().to_value()) },
+        RecordSchema { name: "Chat", schema: sorted(generator.root_schema_for::<Chat>().to_value()) },
         RecordSchema {
             name: "FeedRecord",
             schema: sorted(generator.root_schema_for::<FeedRecord>().to_value()),

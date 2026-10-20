@@ -34,3 +34,36 @@ export const checkVerse = (id: number): Effect.Effect<number, InvalidRequest> =>
   verseParts(id) === null
     ? Effect.fail(new InvalidRequest({ message: `${id} isn't a verse on the canonical grid.` }))
     : Effect.succeed(id)
+
+/** One chapter's part of an anchor: what the server indexes, so "what is anchored to this chapter" is one indexed read. */
+export interface ChapterSpan {
+  readonly book: number
+  readonly chapter: number
+  readonly from: number
+  readonly to: number
+}
+
+/**
+ * Splits a verse range into its chapters, checking both ends against the grid and that `from` comes
+ * first; a range across a chapter break becomes two spans or more.
+ */
+export const splitRange = (from: number, to: number): Effect.Effect<Array<ChapterSpan>, InvalidRequest> => {
+  const a = verseParts(from)
+  const b = verseParts(to)
+  if (a === null || b === null || from > to) {
+    return Effect.fail(new InvalidRequest({ message: `${from}–${to} isn't a range of verses on the canonical grid.` }))
+  }
+  const spans: Array<ChapterSpan> = []
+  for (let book = a.book; book <= b.book; book++) {
+    const chapters = canon.books[book]!.verses
+    const first = book === a.book ? a.chapter : 1
+    const last = book === b.book ? b.chapter : chapters.length
+    for (let chapter = first; chapter <= last; chapter++) {
+      const start = book === a.book && chapter === a.chapter ? a.verse : 1
+      const end = book === b.book && chapter === b.chapter ? b.verse : chapters[chapter - 1]!
+      const id = (v: number) => book * 1_000_000 + chapter * 1_000 + v
+      spans.push({ book, chapter, from: id(start), to: id(end) })
+    }
+  }
+  return Effect.succeed(spans)
+}

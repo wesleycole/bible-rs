@@ -1,6 +1,6 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
-import { BookmarkFields, HighlightFields } from "../shared/records.js"
+import { BookmarkFields, ChatFields, HighlightFields, ItemFields } from "../shared/records.js"
 
 /** Token prices for one model, in micro-dollars per million tokens. */
 export const prices = v.object({
@@ -187,6 +187,47 @@ export default defineSchema({
   bookmarks: defineTable({ userId: v.id("users"), ...BookmarkFields })
     .index("by_user_seq", ["userId", "seq"])
     .index("by_user_verse", ["userId", "verse"]),
+
+  items: defineTable({ userId: v.id("users"), ...ItemFields })
+    .index("by_user_seq", ["userId", "seq"])
+    .index("by_user_uid", ["userId", "uid"]),
+
+  chats: defineTable({ userId: v.id("users"), ...ChatFields })
+    .index("by_user_seq", ["userId", "seq"])
+    .index("by_user_uid", ["userId", "uid"]),
+
+  /** Server-only: one row per chapter an item's anchor touches, rebuilt from the item's anchors. */
+  anchors: defineTable({
+    userId: v.id("users"),
+    itemId: v.id("items"),
+    book: v.number(),
+    chapter: v.number(),
+    from: v.number(),
+    to: v.number(),
+    origin: ItemFields.anchors.element.fields.origin,
+    atMs: v.optional(v.number()),
+    page: v.optional(v.number())
+  })
+    .index("by_user_chapter", ["userId", "book", "chapter"])
+    .index("by_item", ["itemId"]),
+
+  /** Server-only: every stored file, counted in `userLibrary.storageBytes`. */
+  files: defineTable({
+    userId: v.id("users"),
+    uid: v.string(),
+    /** The item or chat it belongs to; none for an export. */
+    ownerUid: v.optional(v.string()),
+    role: ItemFields.files.element.fields.role,
+    storageId: v.id("_storage"),
+    contentType: v.string(),
+    bytes: v.number(),
+    sha256: v.string(),
+    url: v.string(),
+    partIndex: v.optional(v.number()),
+    page: v.optional(v.number())
+  })
+    .index("by_user_uid", ["userId", "uid"])
+    .index("by_owner", ["userId", "ownerUid"]),
 
   /** One row per user: the write sequence, the oldest `seq` still deliverable, and the storage counter. */
   userLibrary: defineTable({

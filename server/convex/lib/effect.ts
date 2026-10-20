@@ -9,6 +9,8 @@ import type { Doc } from "../_generated/dataModel.js"
 import type { MutationCtx as RawMutationCtx, QueryCtx as RawQueryCtx } from "../_generated/server.js"
 import { type ApiError, InvalidRequest } from "../../shared/Errors.js"
 import { toConvexError } from "./errors.js"
+import { Anchors } from "./anchors.js"
+import { Files } from "./files.js"
 import { Sequence } from "./sequence.js"
 import { CurrentUser, MutationCtx, QueryCtx } from "./services.js"
 import { userMutation, userQuery } from "./user.js"
@@ -41,7 +43,8 @@ const queryServices = (ctx: WithUser<RawQueryCtx>) =>
   Layer.mergeAll(Layer.succeed(QueryCtx, QueryCtx.of(ctx)), Layer.succeed(CurrentUser, currentUser(ctx.user)))
 
 const mutationServices = (ctx: WithUser<RawMutationCtx>) =>
-  Sequence.layer.pipe(
+  Layer.mergeAll(Files.layer, Anchors.layer).pipe(
+    Layer.provideMerge(Sequence.layer),
     Layer.provideMerge(
       Layer.mergeAll(
         Layer.succeed(MutationCtx, MutationCtx.of(ctx)),
@@ -72,10 +75,13 @@ export const effectQuery = <S extends Args, A>(spec: {
   })
 }
 
+/** What a library mutation's handler can ask for. */
+export type MutationServices = MutationCtx | QueryCtx | CurrentUser | Sequence | Files | Anchors
+
 /** A mutation the apps call with their Clerk token, written as an Effect. */
 export const effectMutation = <S extends Args, A>(spec: {
   readonly args: S
-  readonly handler: (args: S["Type"]) => Effect.Effect<A, ApiError, MutationCtx | QueryCtx | CurrentUser | Sequence>
+  readonly handler: (args: S["Type"]) => Effect.Effect<A, ApiError, MutationServices>
 }) => {
   const decode = decoder(spec.args)
   return userMutation({
