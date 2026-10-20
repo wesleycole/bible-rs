@@ -2,9 +2,8 @@ import { v } from "convex/values"
 import { Effect } from "effect"
 import { ensureUser, userByClerk } from "./lib/accounts.js"
 import { Allowance } from "./lib/allowance.js"
-import { effectServerMutation } from "./lib/effect.js"
-import { serverMutation, serverQuery } from "./lib/server.js"
-import { MutationCtx } from "./lib/services.js"
+import { effectServerMutation, effectServerQuery } from "./lib/effect.js"
+import { MutationCtx, QueryCtx } from "./lib/services.js"
 
 /** Everything GET /v1/me shows: the plan, what is left of it, library storage, and the StoreKit account token. */
 export const me = effectServerMutation({
@@ -17,22 +16,24 @@ export const me = effectServerMutation({
   })
 })
 
-export const setStripeCustomer = serverMutation({
+export const setStripeCustomer = effectServerMutation({
   args: { clerkId: v.string(), stripeCustomerId: v.string() },
-  handler: async (ctx, { clerkId, stripeCustomerId }) => {
-    const user = await ensureUser(ctx, clerkId)
-    await ctx.db.patch(user._id, { stripeCustomerId })
+  handler: Effect.fn("users.setStripeCustomer")(function*({ clerkId, stripeCustomerId }) {
+    const ctx = yield* MutationCtx
+    const user = yield* Effect.promise(() => ensureUser(ctx, clerkId))
+    yield* Effect.promise(() => ctx.db.patch(user._id, { stripeCustomerId }))
     return { userId: user._id }
-  }
+  })
 })
 
 /** The user behind a Clerk id, for billing: their Convex id and Stripe customer, if any. */
-export const billingProfile = serverQuery({
+export const billingProfile = effectServerQuery({
   args: { clerkId: v.string() },
-  handler: async (ctx, { clerkId }) => {
-    const user = await userByClerk(ctx, clerkId)
+  handler: Effect.fn("users.billingProfile")(function*({ clerkId }) {
+    const ctx = yield* QueryCtx
+    const user = yield* Effect.promise(() => userByClerk(ctx, clerkId))
     return user
       ? { userId: user._id, email: user.email, stripeCustomerId: user.stripeCustomerId, appAccountToken: user.appAccountToken }
       : null
-  }
+  })
 })

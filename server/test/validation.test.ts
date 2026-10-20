@@ -117,3 +117,17 @@ describe("the Ask contract", () => {
     expect(contractDigest({ ...c, system: c.system + " " })).not.toBe(c.sha256)
   })
 })
+
+describe("every Convex function", () => {
+  it("is an Effect handler: only convex/lib builds functions from Convex's own constructors", async () => {
+    const { readdir, readFile } = await import("node:fs/promises")
+    const root = new URL("../convex/", import.meta.url)
+    const files = (await readdir(root, { recursive: true }))
+      .filter((f) => f.endsWith(".ts") && !f.startsWith("_generated") && !f.startsWith("lib") && f !== "crons.ts" && !f.endsWith(".config.ts"))
+    expect(files).toContain("users.ts")
+    const raw = /=\s*(mutation|query|action|internalMutation|internalQuery|internalAction|httpAction|serverMutation|serverQuery|serverAction|userMutation|userQuery)\(/
+    const plain = []
+    for (const f of files) if (raw.test(await readFile(new URL(f, root), "utf8"))) plain.push(f)
+    expect(plain).toEqual([])
+  })
+})

@@ -1,8 +1,10 @@
 import { v } from "convex/values"
+import { Clock, Effect } from "effect"
 import type { Doc, Id } from "./_generated/dataModel.js"
-import type { MutationCtx } from "./_generated/server.js"
+import type { MutationCtx as RawMutationCtx } from "./_generated/server.js"
 import { ensureUser } from "./lib/accounts.js"
-import { serverMutation } from "./lib/server.js"
+import { effectServerMutation } from "./lib/effect.js"
+import { MutationCtx } from "./lib/services.js"
 
 const source = v.union(v.literal("app_store"), v.literal("stripe"), v.literal("grant"))
 const status = v.union(
@@ -22,7 +24,7 @@ const owner = v.union(
 )
 
 const findOwner = async (
-  ctx: MutationCtx,
+  ctx: RawMutationCtx,
   who: { clerkId: string } | { appAccountToken: string } | { stripeCustomerId: string }
 ): Promise<Id<"users"> | null> => {
   if ("clerkId" in who) return (await ensureUser(ctx, who.clerkId))._id
@@ -45,7 +47,7 @@ const findOwner = async (
  * notification delivered twice (or out of order with the client's own post) lands once. A later
  * notification for the same subscription finds its owner through the existing row.
  */
-export const upsert = serverMutation({
+export const upsert = effectServerMutation({
   args: {
     owner: v.optional(owner),
     source,
@@ -56,12 +58,12 @@ export const upsert = serverMutation({
     originalId: v.string(),
     environment: v.string()
   },
-  handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("entitlements")
-      .withIndex("by_original", (q) => q.eq("source", args.source).eq("originalId", args.originalId))
-      .unique()
-    const fromOwner = args.owner ? await findOwner(ctx, args.owner) : null
+  handler: Effect.fn("entitlements.upsert")(function*(args) {
+    const ctx = yield* MutationCtx
+    const existing = yield* Effect.promise(() =>
+      ctx.db.query("entitlements").withIndex("by_original", (q) => q.eq("source", args.source).eq("originalId", args.originalId)).unique()
+    )
+    const fromOwner = args.owner ? yield* Effect.promise(() => findOwner(ctx, args.owner!)) : null
     const userId = fromOwner ?? existing?.userId ?? null
     if (!userId) return { ok: false as const, reason: "unknown_user" as const }
     const row: Omit<Doc<"entitlements">, "_id" | "_creationTime"> = {
@@ -73,12 +75,12 @@ export const upsert = serverMutation({
       expiresAt: args.expiresAt,
       originalId: args.originalId,
       environment: args.environment,
-      updatedAt: Date.now()
+      updatedAt: yield* Clock.currentTimeMillis
     }
     if (existing) {
-      await ctx.db.patch(existing._id, row)
+      yield* Effect.promise(() => ctx.db.patch(existing._id, row))
       return { ok: true as const, entitlementId: existing._id, created: false }
     }
-    return { ok: true as const, entitlementId: await ctx.db.insert("entitlements", row), created: true }
-  }
+    return { ok: true as const, entitlementId: yield* Effect.promise(() => ctx.db.insert("entitlements", row)), created: true }
+  })
 })

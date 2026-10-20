@@ -3,8 +3,10 @@
  * proxy or the app.
  */
 import { v } from "convex/values"
-import { internalMutation, internalQuery } from "./_generated/server.js"
+import { Clock, Effect } from "effect"
 import { ensureUser } from "./lib/accounts.js"
+import { effectInternalMutation, effectInternalQuery } from "./lib/effect.js"
+import { MutationCtx, QueryCtx } from "./lib/services.js"
 import { DEFAULT_PRICES } from "./lib/pricing.js"
 import { DAY } from "./lib/time.js"
 
@@ -48,9 +50,16 @@ const MODELS = [
  * values retuned in the dashboard survive a re-seed; a field a plan row lacks (one added since it
  * was seeded) is filled in either way.
  */
-export const seed = internalMutation({
+export const seed = effectInternalMutation({
   args: { overwrite: v.optional(v.boolean()) },
-  handler: async (ctx, { overwrite }) => {
+  handler: Effect.fn("admin.seed")(function*({ overwrite }) {
+    const ctx = yield* MutationCtx
+    return yield* Effect.promise(() => seedWith(ctx, overwrite))
+  })
+})
+
+/** The seed's writes: plain database calls with no time and nothing that can fail but a defect. */
+const seedWith = async (ctx: MutationCtx["Service"], overwrite: boolean | undefined) => {
     const changed: string[] = []
     for (const plan of PLANS) {
       const row = await ctx.db.query("plans").withIndex("by_key", (q) => q.eq("key", plan.key)).unique()
@@ -93,26 +102,27 @@ export const seed = internalMutation({
       changed.push("routing")
     }
     return { changed }
-  }
-})
+}
 
 /** Points new questions at other providers (an outage drill or a real outage). */
-export const setRouting = internalMutation({
+export const setRouting = effectInternalMutation({
   args: { providers: v.array(v.string()), note: v.string() },
-  handler: async (ctx, args) => {
-    const routing = await ctx.db.query("routing").first()
-    if (routing) await ctx.db.replace(routing._id, args)
-    else await ctx.db.insert("routing", args)
-  }
+  handler: Effect.fn("admin.setRouting")(function*(args) {
+    const ctx = yield* MutationCtx
+    const routing = yield* Effect.promise(() => ctx.db.query("routing").first())
+    if (routing) yield* Effect.promise(() => ctx.db.replace(routing._id, args))
+    else yield* Effect.promise(() => ctx.db.insert("routing", args))
+  })
 })
 
 /** Comps, press and family: Pro for `days` days. */
-export const grant = internalMutation({
+export const grant = effectInternalMutation({
   args: { clerkId: v.string(), days: v.number(), note: v.optional(v.string()) },
-  handler: async (ctx, { clerkId, days, note }) => {
-    const user = await ensureUser(ctx, clerkId)
-    const now = Date.now()
-    return await ctx.db.insert("entitlements", {
+  handler: Effect.fn("admin.grant")(function*({ clerkId, days, note }) {
+    const ctx = yield* MutationCtx
+    const user = yield* Effect.promise(() => ensureUser(ctx, clerkId))
+    const now = yield* Clock.currentTimeMillis
+    return yield* Effect.promise(() => ctx.db.insert("entitlements", {
       userId: user._id,
       source: "grant",
       productId: note ?? "grant",
@@ -122,16 +132,17 @@ export const grant = internalMutation({
       originalId: `grant:${user._id}:${now}`,
       environment: "production",
       updatedAt: now
-    })
-  }
+    }))
+  })
 })
 
 /** Open reservations and what the ledger recorded since `sinceMs`, by status: a settlement check. */
-export const stats = internalQuery({
+export const stats = effectInternalQuery({
   args: { sinceMs: v.number() },
-  handler: async (ctx, { sinceMs }) => {
-    const open = await ctx.db.query("reservations").collect()
-    const ledger = await ctx.db.query("ledger").withIndex("by_at", (q) => q.gte("at", sinceMs)).collect()
+  handler: Effect.fn("admin.stats")(function*({ sinceMs }) {
+    const ctx = yield* QueryCtx
+    const open = yield* Effect.promise(() => ctx.db.query("reservations").collect())
+    const ledger = yield* Effect.promise(() => ctx.db.query("ledger").withIndex("by_at", (q) => q.gte("at", sinceMs)).collect())
     const byStatus: Record<string, number> = {}
     for (const row of ledger) byStatus[row.status] = (byStatus[row.status] ?? 0) + 1
     return {
@@ -140,5 +151,5 @@ export const stats = internalQuery({
       byStatus,
       costMicros: ledger.reduce((sum, row) => sum + row.costMicros, 0)
     }
-  }
+  })
 })

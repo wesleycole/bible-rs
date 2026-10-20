@@ -1,42 +1,47 @@
 import { v } from "convex/values"
-import { internalMutation } from "./_generated/server.js"
-import { serverMutation } from "./lib/server.js"
+import { Clock, Effect } from "effect"
+import { effectInternalMutation, effectServerMutation } from "./lib/effect.js"
+import { MutationCtx } from "./lib/services.js"
 import { DAY } from "./lib/time.js"
 
+const find = Effect.fnUntraced(function*(source: string, eventId: string) {
+  const ctx = yield* MutationCtx
+  return yield* Effect.promise(() =>
+    ctx.db.query("webhookEvents").withIndex("by_source_event", (q) => q.eq("source", source).eq("eventId", eventId)).unique()
+  )
+})
+
 /** Records a webhook delivery; `fresh` is false when this event was already handled. */
-export const claim = serverMutation({
+export const claim = effectServerMutation({
   args: { source: v.string(), eventId: v.string() },
-  handler: async (ctx, { source, eventId }) => {
-    const seen = await ctx.db
-      .query("webhookEvents")
-      .withIndex("by_source_event", (q) => q.eq("source", source).eq("eventId", eventId))
-      .unique()
-    if (seen) return { fresh: false }
-    await ctx.db.insert("webhookEvents", { source, eventId, receivedAt: Date.now() })
+  handler: Effect.fn("webhooks.claim")(function*({ source, eventId }) {
+    if (yield* find(source, eventId)) return { fresh: false }
+    const ctx = yield* MutationCtx
+    const receivedAt = yield* Clock.currentTimeMillis
+    yield* Effect.promise(() => ctx.db.insert("webhookEvents", { source, eventId, receivedAt }))
     return { fresh: true }
-  }
+  })
 })
 
 /** Lets a failed handler be retried by the sender. */
-export const release = serverMutation({
+export const release = effectServerMutation({
   args: { source: v.string(), eventId: v.string() },
-  handler: async (ctx, { source, eventId }) => {
-    const seen = await ctx.db
-      .query("webhookEvents")
-      .withIndex("by_source_event", (q) => q.eq("source", source).eq("eventId", eventId))
-      .unique()
-    if (seen) await ctx.db.delete(seen._id)
-  }
+  handler: Effect.fn("webhooks.release")(function*({ source, eventId }) {
+    const seen = yield* find(source, eventId)
+    const ctx = yield* MutationCtx
+    if (seen) yield* Effect.promise(() => ctx.db.delete(seen._id))
+  })
 })
 
-export const prune = internalMutation({
+export const prune = effectInternalMutation({
   args: {},
-  handler: async (ctx) => {
-    const old = await ctx.db
-      .query("webhookEvents")
-      .withIndex("by_received", (q) => q.lt("receivedAt", Date.now() - 30 * DAY))
-      .take(1000)
-    for (const e of old) await ctx.db.delete(e._id)
+  handler: Effect.fn("webhooks.prune")(function*() {
+    const ctx = yield* MutationCtx
+    const cutoff = (yield* Clock.currentTimeMillis) - 30 * DAY
+    const old = yield* Effect.promise(() =>
+      ctx.db.query("webhookEvents").withIndex("by_received", (q) => q.lt("receivedAt", cutoff)).take(1000)
+    )
+    for (const e of old) yield* Effect.promise(() => ctx.db.delete(e._id))
     return { deleted: old.length }
-  }
+  })
 })

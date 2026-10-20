@@ -8,7 +8,9 @@ import type { ObjectType, PropertyValidators } from "convex/values"
 import { Cause, Effect, Exit, Layer, Option, Schema } from "effect"
 import type { Doc } from "../_generated/dataModel.js"
 import {
+  internalAction,
   internalMutation,
+  internalQuery,
   type ActionCtx as RawActionCtx,
   type MutationCtx as RawMutationCtx,
   type QueryCtx as RawQueryCtx
@@ -149,4 +151,26 @@ export const effectInternalMutation = <V extends PropertyValidators, A>(spec: {
     args: spec.args,
     handler: (ctx: RawMutationCtx, args: ObjectType<V>): Promise<A> =>
       run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Allowance.layer, Purge.layer).pipe(Layer.provideMerge(mutationCtx(ctx))))))
+  })
+
+/** A query nothing outside the deployment can call: the operator's reports. */
+export const effectInternalQuery = <V extends PropertyValidators, A>(spec: {
+  readonly args: V
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, QueryCtx>
+}) =>
+  internalQuery({
+    args: spec.args,
+    handler: (ctx: RawQueryCtx, args: ObjectType<V>): Promise<A> =>
+      run(spec.handler(args).pipe(Effect.provide(Layer.succeed(QueryCtx, QueryCtx.of(ctx)))))
+  })
+
+/** An action nothing outside the deployment can call: crons that reach the proxy. */
+export const effectInternalAction = <V extends PropertyValidators, A>(spec: {
+  readonly args: V
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, ActionCtx>
+}) =>
+  internalAction({
+    args: spec.args,
+    handler: (ctx: RawActionCtx, args: ObjectType<V>): Promise<A> =>
+      run(spec.handler(args).pipe(Effect.provide(Layer.succeed(ActionCtx, ActionCtx.of(ctx)))))
   })
