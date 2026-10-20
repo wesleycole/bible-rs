@@ -13,7 +13,8 @@ transcription (M5), the digest (M2), playback of synced audio in the desktop app
 ## Before any code ships
 
 1. **AssemblyAI's written no-training commitment**, or a move to a transcription provider that gives
-   one ([backend.md](backend.md#privacy-and-consent)).
+   one ([backend.md](backend.md#privacy-and-consent)). Waived (owner's decision, October 20): M1b
+   ships on AssemblyAI; the Transcriber stays an Effect layer so the provider can change.
 2. **Two spikes, two days each:**
    - **The encoder from Rust** (done, October 20): `recording::aac` on `objc2-audio-toolbox` 0.3
      (its `AudioConverter` feature) and `objc2-core-audio-types`, behind core's `apple-audio` feature;
@@ -101,6 +102,23 @@ transcription (M5), the digest (M2), playback of synced audio in the desktop app
    `/v1/webhooks/assemblyai`, `/v1/internal/cleanup`, the `sermons.expire` cron, and the Blob and
    AssemblyAI variables. Disconnect the `linger-sermons` Blob store after the deploy.
 7. **The purge chain** covers sermon jobs and every audio file.
+
+**Built (October 20), where it is smaller than the above:** `finish` takes no `partCount`: the
+device attaches the slices before it calls `finish`, so `finish` is the word that they are all there,
+and the item is `uploading` while the workflow joins them. The join is `library/audio.join({ sermonId })`,
+a step of the workflow rather than a function the device calls (a `"use node"` file can hold only
+actions, so it is not in `library/files.ts`); it stores the M4A as `audio/mp4` and a dead device's
+ADTS parts as `audio/aac`, which is how the item says the timeline is approximate (no new Item
+field). The transcript is kept as the item's `text` file, JSON in core's `transcribe::Transcript`
+shape, and the sermon row keeps no copy. `transcribeNow` is for any `waiting` sermon with audio that
+`Allowance.admitSermon` admits now (Pro hours, or a Free trial still unused). The webhook wakes the
+workflow with an event; the hourly `check transcription jobs` cron asks the provider about a job
+whose webhook is 30 minutes late and wakes it if done, and fails one stuck for 3 hours; the hourly
+`finish dead recordings` cron is item 5's first clause. Item 7 is M1's `purgeAccount`, which already
+deletes a user's `sermons` rows and every `files` row with its blob; nothing was added. Until item 6
+removes the proxy's flow, `blobPath`, `recordingId` and `bytes` stay as optional columns, the
+`expire transcripts` cron stays, and `convex/sermons.ts` ignores rows that have an `itemId`. Tests
+fake the provider at `fetch`; the Transcriber is the one provider abstraction.
 
 ## The desktop app
 
