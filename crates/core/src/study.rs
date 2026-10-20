@@ -1354,6 +1354,14 @@ pub(crate) mod cache {
         Ok(state(conn, "clock_offset_ms")?.unwrap_or(0))
     }
 
+    /// The device's clock offset from the server's, measured from an uncached answer.
+    pub(crate) fn set_clock_offset_ms(conn: &mut Connection, ms: i64) -> Result<()> {
+        let tx = conn.transaction()?;
+        set_state(&tx, "clock_offset_ms", ms)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     fn state(conn: &Connection, key: &str) -> Result<Option<i64>> {
         Ok(conn.query_row("SELECT value FROM sync_state WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }
@@ -1370,12 +1378,8 @@ pub(crate) mod cache {
     /// record with a change of this device's still waiting keeps the local value (the outbox entry
     /// settles it), but the cache learns the server's `seq`, so that entry conflicts if another
     /// device moved the record past it. Returns how many records changed what the app shows.
-    pub(crate) fn apply_page(
-        conn: &mut Connection,
-        records: &[FeedRecord],
-        seq: u64,
-        clock_offset_ms: i64,
-    ) -> Result<usize> {
+    pub(crate) fn apply_page(conn: &mut Connection, records: &[FeedRecord], seq: u64) -> Result<usize> {
+        let clock_offset_ms = clock_offset_ms(conn)?;
         let tx = conn.transaction()?;
         let mut changed = 0;
         for record in records {
@@ -1429,7 +1433,6 @@ pub(crate) mod cache {
             }
         }
         set_state(&tx, "cursor", seq as i64)?;
-        set_state(&tx, "clock_offset_ms", clock_offset_ms)?;
         tx.commit()?;
         Ok(changed)
     }

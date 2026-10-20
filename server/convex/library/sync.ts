@@ -7,7 +7,7 @@
  */
 import { Clock, Effect, Schema } from "effect"
 import { type Changes, FeedRecord } from "../../shared/records.js"
-import { effectQuery } from "../lib/effect.js"
+import { effectMutation, effectQuery } from "../lib/effect.js"
 import { CurrentUser, QueryCtx } from "../lib/services.js"
 
 /** A page holds at most this many records… */
@@ -55,6 +55,16 @@ export const changes = effectQuery({
     }
     return { records, seq: records.at(-1)?.seq ?? after, serverTime } satisfies Changes
   })
+})
+
+/**
+ * The server's clock, for a device's clock offset. A mutation, because Convex serves a query's
+ * cached result until a write invalidates it, `Clock` included: the feed's `serverTime` is the
+ * time that query last ran, not now. It writes nothing.
+ */
+export const now = effectMutation({
+  args: Schema.Struct({}),
+  handler: () => Effect.map(Clock.currentTimeMillis, (serverTime) => ({ serverTime }))
 })
 
 type Tagged = { readonly type: string; readonly seq: number }

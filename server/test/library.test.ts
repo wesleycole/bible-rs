@@ -166,6 +166,15 @@ describe("library.sync.changes", () => {
     expect(first.serverTime).toBeGreaterThan(0)
   })
 
+  it("tells the time from a mutation, which writes nothing", async () => {
+    const t = await makeConvex()
+    const before = Date.now()
+    const { serverTime } = await as(t, "user_ann").mutation(api.library.sync.now, {})
+    expect(serverTime).toBeGreaterThanOrEqual(before)
+    expect(serverTime).toBeLessThanOrEqual(Date.now())
+    expect(await t.run((ctx) => ctx.db.query("userLibrary").collect())).toEqual([])
+  })
+
   it("tells a cursor older than the purged tombstones to resync, but not a device starting from 0", async () => {
     const t = await makeConvex()
     const ann = as(t, "user_ann")

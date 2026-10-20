@@ -34,6 +34,8 @@ use crate::study::cache;
 
 /// The change feed's query.
 pub const FEED: &str = "library/sync:changes";
+/// The server's clock, from a mutation (never cached).
+pub const CLOCK: &str = "library/sync:now";
 /// Install the token again this long before it expires.
 const TOKEN_EARLY: Duration = Duration::from_secs(30);
 /// The longest a failing change waits before it is tried again.
@@ -173,6 +175,7 @@ pub fn start(data_dir: &Path, backend: Box<dyn Backend>, tokens: Arc<dyn TokenSo
         offline_attempts: 0,
         connected: true,
         feed_error: None,
+        clock_known: false,
         token_due: None,
         data_changed: false,
     };
@@ -290,6 +293,9 @@ struct Engine {
     offline_attempts: u32,
     connected: bool,
     feed_error: Option<String>,
+    /// The clock offset was measured on this connection; changes wait for it, since they carry
+    /// creation times moved into server time.
+    clock_known: bool,
     token_due: Option<Instant>,
     /// The cache changed since the last `on_change`.
     data_changed: bool,
@@ -310,6 +316,7 @@ impl Engine {
             if connected && !self.connected {
                 // Back online: what was waiting goes at once, and a feed that ended offline resumes.
                 self.online();
+                self.clock_known = false;
                 if !self.caught_up {
                     let after = self.subscribed;
                     self.subscribe(after);
@@ -319,7 +326,12 @@ impl Engine {
             if !connected {
                 self.offline.get_or_insert_with(|| "Can't reach Linger's server".into());
             } else if self.caught_up_once {
-                self.drain();
+                if !self.clock_known && self.feed_error.is_none() {
+                    self.measure_clock();
+                }
+                if self.clock_known {
+                    self.drain();
+                }
             }
             if self.token_due.is_some_and(|due| Instant::now() >= due) {
                 self.authenticate();
@@ -397,9 +409,8 @@ impl Engine {
     /// Applies one result of the feed.
     fn apply(&mut self, value: Value) -> Result<()> {
         match serde_json::from_value::<Changes>(value)? {
-            Changes::Page { records, seq, server_time } => {
-                let offset = server_time as i64 - now_ms();
-                if cache::apply_page(&mut self.conn, &records, seq, offset)? > 0 {
+            Changes::Page { records, seq, .. } => {
+                if cache::apply_page(&mut self.conn, &records, seq)? > 0 {
                     self.data_changed = true;
                 }
                 self.feed_error = None;
@@ -417,6 +428,35 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// Measures the device's clock against the server's with a mutation, which Convex never
+    /// serves from a cache (a query's `Clock` is the time of its last execution, so the feed's
+    /// `serverTime` is not a clock), corrected by half the round trip.
+    fn measure_clock(&mut self) {
+        if self.offline_until.is_some_and(|t| Instant::now() < t) {
+            return;
+        }
+        let sent = now_ms();
+        match self.backend.mutate(CLOCK, json!({})) {
+            Ok(answer) => {
+                let back = now_ms();
+                let Some(server) = answer["serverTime"].as_i64() else {
+                    self.feed_error = Some(format!("unexpected answer from {CLOCK}: {answer}"));
+                    return;
+                };
+                self.online();
+                if cache::set_clock_offset_ms(&mut self.conn, server - (sent + back) / 2).is_ok() {
+                    self.clock_known = true;
+                }
+            }
+            Err(CallError::Offline(m)) => {
+                self.offline = Some(m);
+                self.offline_attempts += 1;
+                self.offline_until = Some(Instant::now() + backoff(self.offline_attempts as i64));
+            }
+            Err(CallError::Refused(m)) => self.feed_error = Some(m),
+        }
     }
 
     /// The server answered: changes can go again at once.
@@ -546,6 +586,9 @@ struct FakeState {
     offline: bool,
     failures: VecDeque<CallError>,
     page_records: Option<usize>,
+    /// When the user last wrote: like Convex, the feed is a cached query, so its `serverTime` is
+    /// the time it last ran, which a write causes.
+    last_write_ms: i64,
     uploads: BTreeMap<String, Vec<u8>>,
 }
 
@@ -644,7 +687,7 @@ impl FakeState {
         records.sort_by_key(|r| r["seq"].as_u64());
         records.truncate(self.page_records.unwrap_or(500));
         let seq = records.last().map_or(after, |r| r["seq"].as_u64().unwrap_or(after));
-        json!({ "records": records, "seq": seq, "serverTime": now_ms() })
+        json!({ "records": records, "seq": seq, "serverTime": self.last_write_ms })
     }
 
     fn deliver_all(&self) {
@@ -687,6 +730,7 @@ impl FakeState {
             None => (seq, stored.map(|s| s.1).unwrap_or_default(), true),
         };
         self.records.entry(kind).or_default().insert(verse.0, record);
+        self.last_write_ms = now_ms();
         self.deliver_all();
         Ok(json!({ "result": "ok", "seq": seq }))
     }
@@ -712,6 +756,7 @@ impl FakeBackend {
             "library/highlights:set" => s.set("highlight", "color", args),
             "library/bookmarks:set" => s.set("bookmark", "label", args),
             FEED => Ok(s.page(args["after"].as_u64().unwrap_or(0))),
+            CLOCK => Ok(json!({ "serverTime": now_ms() })),
             "library/files:uploadUrl" => Ok(json!(format!("fake://upload/{}", s.uploads.len()))),
             _ => Err(CallError::Refused(format!("no function {name}"))),
         }

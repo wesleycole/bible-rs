@@ -212,7 +212,10 @@ for the web's wasm build):
   cache replaces a record the user has open, and show a conflict copy beside the note it collided with.
 - **Server time.** Times that cross devices (when a recording started, when a slide was taken) are
   stored in server time. The engine keeps the device's clock offset in its local `sync_state`, measured
-  from the server time each feed page carries.
+  on each connect from `library/sync.now`, a mutation that writes nothing, corrected by half the
+  round trip; changes wait for it, since they carry creation times. Clock in a query is the time of
+  that query's last execution, and Convex serves the cached result until a write invalidates it,
+  so the feed's `serverTime` is not a clock and nothing measures from it.
 - **The cache** is `study.sqlite`, which gains versioned migrations (`PRAGMA user_version`) in M1: the
   synced records, a per-chapter anchor index built from them, the cursor and the outbox. Reading, the
   margin, the notes page, Recents and the library list work offline from it. File bytes are fetched on

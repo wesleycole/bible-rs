@@ -131,6 +131,23 @@ fn changes_made_offline_survive_a_restart_and_go_in_order() {
 }
 
 #[test]
+fn a_record_keeps_its_exact_date_on_another_device_after_an_idle_gap() {
+    let server = FakeServer::new();
+    let mut a = Device::new("clock-a");
+    a.start(&server);
+    a.settle(&server);
+    a.store.set_highlight(verse(5, 5), Some(HighlightColor::Purple)).unwrap();
+    a.settle(&server);
+    // Nobody writes for a while, so the feed's cached serverTime falls behind the real clock.
+    std::thread::sleep(Duration::from_millis(2_500));
+    let mut b = Device::new("clock-b");
+    b.start(&server);
+    b.settle(&server);
+    let dated = |d: &Device| d.store.highlights_dated().into_iter().find(|h| h.0 == verse(5, 5)).unwrap().2;
+    assert_eq!(dated(&b), dated(&a));
+}
+
+#[test]
 fn a_stale_edit_becomes_a_conflict_and_the_newer_one_stands() {
     let server = FakeServer::new();
     let (mut a, mut b) = (Device::new("a3"), Device::new("b3"));

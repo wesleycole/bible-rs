@@ -143,7 +143,8 @@ These gate M1's release, because they can't be fixed once users have libraries:
    carry `createdAt` (server milliseconds): `set` takes the device's own creation time and uses it
    only for a new record or a tombstone set again, otherwise the server's clock, so a migrated
    library keeps its dates on every device; the cache stores the feed's `createdAt`, moved by the
-   clock offset, instead of the time it arrived. A device's own
+   clock offset, instead of the time it arrived. The offset comes from `library/sync.now` (a mutation, so never a
+   cached answer) on every connect, not from the feed's `serverTime`. A device's own
    record over one the server already has, made without a copy (`baseSeq` 0: migration, or an
    edit made before the feed first caught up), is answered `conflict` and the server's stands,
    which is the "skipped" of [Migrating](library.md#migrating-whats-on-the-device); when the two
