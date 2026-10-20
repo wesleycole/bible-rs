@@ -355,7 +355,15 @@ fn a_note_syncs_and_a_stale_edit_is_kept_beside_the_newer_one() {
     );
     for d in [&a, &b] {
         assert_eq!(d.store.note(verse(3, 16)).unwrap().body, "Love, endlessly");
+        // The copy is shown beside the note it collided with, on both devices.
+        let copies: Vec<&str> =
+            d.store.conflict_copies(verse(3, 16)).iter().map(|n| n.body.as_str()).collect();
+        assert_eq!(copies, ["God's love"]);
     }
+    // B's note was replaced by A's edit: B's notes page says it was edited on another device.
+    // A wrote what stands, so its own doesn't.
+    assert!(b.store.note(verse(3, 16)).unwrap().edited_elsewhere);
+    assert!(!a.store.note(verse(3, 16)).unwrap().edited_elsewhere);
     let conflicts = b.store.conflicts();
     assert_eq!(
         (conflicts[0].kind.as_str(), conflicts[0].verse, conflicts[0].mine.as_str()),
@@ -370,12 +378,20 @@ fn a_note_syncs_and_a_stale_edit_is_kept_beside_the_newer_one() {
     assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(notes.iter().any(|n| n["note"] == "God's love" && n["conflict_of"] == original.uid.as_str()));
 
+    // Editing it here again is this device's edit.
+    b.store.set_note(verse(3, 16), "Love, endlessly.").unwrap();
+    assert!(!b.store.note(verse(3, 16)).unwrap().edited_elsewhere);
+    b.settle(&server);
+    a.settle(&server);
+    assert!(a.store.note(verse(3, 16)).unwrap().edited_elsewhere);
+
     // A deletes the original: the copy is now an ordinary note, the verse's own, on both devices.
     a.store.set_note(verse(3, 16), "").unwrap();
     a.settle(&server);
     b.settle(&server);
     for d in [&a, &b] {
         assert_eq!(d.store.note(verse(3, 16)).unwrap().body, "God's love");
+        assert!(d.store.conflict_copies(verse(3, 16)).is_empty());
     }
     // And a backup imported elsewhere brings both notes back as two, not one over the other.
     let mut c = StudyStore::open_in_memory().unwrap();
@@ -442,6 +458,61 @@ fn the_writer_holds_the_same_note_as_every_other_device_times_included() {
     a.store.set_note(verse(3, 17), "That the world might be saved").unwrap();
     assert_eq!(a.store.pending_changes(), 0);
     assert_eq!(exported_notes(&a), notes);
+}
+
+#[test]
+fn a_slide_attached_to_a_sermon_on_one_device_is_attached_on_the_other() {
+    use linger_core::records::{Item, ItemDetails, ItemKind, ItemStatus};
+    let server = FakeServer::new();
+    let item = |uid: &str, kind| Item {
+        uid: uid.into(),
+        seq: 0,
+        deleted_at: None,
+        kind,
+        title: String::new(),
+        status: ItemStatus::Ready,
+        text: None,
+        text_file_uid: None,
+        excerpt: None,
+        summary: None,
+        outline: None,
+        source_uid: None,
+        sermon_uid: None,
+        offset_ms: None,
+        recorded_on: None,
+        details: None,
+        conflict_of: None,
+        captured_at: 1_800_000_000_000,
+        updated_at: None,
+        unreviewed: false,
+        anchors: Vec::new(),
+        files: Vec::new(),
+    };
+    // Captured on a phone, which this build doesn't make yet.
+    server.add_item(item("sermon", ItemKind::Sermon));
+    server.add_item(item("slide", ItemKind::Slide));
+    let (mut a, mut b) = (Device::new("details-a"), Device::new("details-b"));
+    a.start(&server);
+    b.start(&server);
+    a.settle(&server);
+    let details = ItemDetails {
+        title: Some("Romans 8".into()),
+        speaker: Some("A. Preacher".into()),
+        from: None,
+        started_at: 1_800_000_000_000,
+        ended_at: None,
+    };
+    a.store.set_item_details("sermon", "Romans 8", Some(details.clone()), None).unwrap();
+    a.store.set_item_details("slide", "Slide 3", None, Some(("sermon".into(), Some(90_000)))).unwrap();
+    a.settle(&server);
+    b.settle(&server);
+    let items = server.notes();
+    let get = |uid: &str| items.iter().find(|i| i.uid == uid).unwrap().clone();
+    assert_eq!((get("sermon").title, get("sermon").details), ("Romans 8".to_string(), Some(details)));
+    assert_eq!((get("slide").sermon_uid.as_deref(), get("slide").offset_ms), (Some("sermon"), Some(90_000)));
+    // Neither is a note, on either device.
+    assert!(a.store.notes().is_empty() && b.store.notes().is_empty());
+    assert_eq!(b.store.pending_changes(), 0);
 }
 
 #[test]

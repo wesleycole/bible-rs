@@ -40,6 +40,14 @@ pub enum Action {
     RemoveNote(VerseRef),
     /// Save a note's text (an empty text removes it).
     SaveNote(VerseRef, String),
+    /// Delete a note item by uid (a conflict copy).
+    DeleteNoteItem(String),
+    /// Make a conflict copy's text the verse's note, and delete the copy.
+    KeepCopy {
+        verse: VerseRef,
+        uid: String,
+        body: String,
+    },
     /// Start (or restart) a reading plan today; stop one.
     StartPlan(String),
     StopPlan(String),
@@ -123,6 +131,8 @@ pub enum Action {
     SignOutNow,
     /// Try the library's waiting changes again (the sidebar footer's Retry).
     RetrySync,
+    /// Show the library consent sheet again, to turn sync on.
+    TurnOnSync,
     RefreshAccount,
     Upgrade {
         yearly: bool,

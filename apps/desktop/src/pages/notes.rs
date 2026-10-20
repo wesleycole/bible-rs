@@ -84,17 +84,67 @@ fn plain(md: &str) -> String {
         .join(" ")
 }
 
-/// Verse references a note mentions ("Isaiah 9:2", "1 John 2:8", "Romans 8"), in order, without
-/// repeats: the first verse of each reference core's `find_all` finds.
-pub fn mentioned(text: &str) -> Vec<VerseRef> {
-    let mut out: Vec<VerseRef> = Vec::new();
+/// References a note mentions ("Isaiah 9:2", "1 John 4:7–8", "Romans 8"), as written, in order,
+/// without repeats (core's `find_all`).
+pub fn mentioned(text: &str) -> Vec<linger_core::reference::Reference> {
+    let mut out = Vec::new();
     for (_, r) in linger_core::reference::find_all(text) {
-        let v = r.verse_ref();
-        if !out.contains(&v) {
-            out.push(v);
+        if !out.contains(&r) {
+            out.push(r);
         }
     }
     out
+}
+
+/// A conflict copy beside its note: its text, when it was made, and what to do with it. Returns the
+/// card's bottom.
+#[allow(clippy::too_many_arguments)]
+fn conflict_card(
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    p: &Palette,
+    x: f32,
+    y: f32,
+    width: f32,
+    v: VerseRef,
+    copy: &linger_core::study::Note,
+    actions: &mut Vec<Action>,
+) -> f32 {
+    let inner = width - 32.0;
+    let body = painter.layout(plain(&copy.body), FontId::new(14.0, theme::family(theme::UI)), p.ink, inner);
+    let h = 16.0 + 16.0 + 8.0 + body.size().y + 12.0 + 28.0 + 16.0;
+    let card = Rect::from_min_size(pos2(x, y), vec2(width, h));
+    painter.rect_filled(card, 12.0, p.fill);
+    painter.rect_stroke(card, 12.0, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    let ago = crate::time::ago(copy.updated);
+    // Made while the note changed on another device; which device wrote it doesn't matter.
+    let head = format!("Conflict copy · {}", ago.to_lowercase());
+    text(painter, x + 16.0, y + 16.0, 16.0, &head, theme::ui_semibold(12.0), p.ink_2, false);
+    let by = y + 16.0 + 16.0 + 8.0;
+    let bh = body.size().y;
+    painter.galley(pos2(x + 16.0, by), body, p.ink);
+    let row = by + bh + 12.0;
+    let (keep, keep_resp) = Button::new(Kind::Secondary, "Use This Version").small().show_left(
+        ui,
+        p,
+        x + 16.0,
+        row + 14.0,
+        egui::Id::new(("copy-keep", &copy.uid)),
+    );
+    if keep_resp.clicked() {
+        actions.push(Action::KeepCopy { verse: v, uid: copy.uid.clone(), body: copy.body.clone() });
+    }
+    let (_, delete) = Button::new(Kind::Plain, "Delete Copy").small().show_left(
+        ui,
+        p,
+        keep.right() + 8.0,
+        row + 14.0,
+        egui::Id::new(("copy-delete", &copy.uid)),
+    );
+    if delete.clicked() {
+        actions.push(Action::DeleteNoteItem(copy.uid.clone()));
+    }
+    card.bottom()
 }
 
 impl State {
@@ -149,6 +199,16 @@ impl State {
             self.flush(actions);
             let body = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
             self.editor = Some(Editor::new(v, &body));
+        }
+        // The open note changed under the editor (another device's edit, or a kept copy): show it,
+        // unless there's typing here not yet saved.
+        if let Some(e) = &mut self.editor
+            && e.changed.is_none()
+            && let Some(n) = env.study.note(e.verse)
+            && n.body != e.saved
+            && to_markdown(&e.text) == e.saved
+        {
+            *e = Editor::new(e.verse, &n.body);
         }
 
         let list = Rect::from_min_max(area.min, pos2(area.left() + LIST_W, area.bottom()));
@@ -346,7 +406,12 @@ impl State {
                 ];
                 meta.push(format!("Created {} {}", l.day, MONTHS[(l.month as usize + 11) % 12]));
                 let ago = crate::time::ago(n.updated);
-                meta.push(format!("Edited {}", if ago == "Just now" { "just now".into() } else { ago }));
+                let ago = if ago == "Just now" { "just now".into() } else { ago.to_lowercase() };
+                meta.push(if n.edited_elsewhere {
+                    format!("Edited on another device {ago}")
+                } else {
+                    format!("Edited {ago}")
+                });
             } else {
                 meta.push("New note".into());
             }
@@ -400,8 +465,13 @@ impl State {
                 }
             }
 
+            // Conflict copies: edits another device made to an older copy, kept beside the note.
+            let mut y = top + 54.0 + 20.0;
+            for copy in env.study.conflict_copies(v) {
+                y = conflict_card(ui, &painter, p, x, y, width.min(MEASURE + 40.0), v, copy, actions) + 12.0;
+            }
+
             // The verse, quoted on its highlight.
-            let y = top + 54.0 + 20.0;
             let colour = env.study.highlight(v);
             let verse = t.and_then(|t| t.find(v)).map(|v| v.plain_text()).unwrap_or_default();
             let serif = FontId::new(20.0, theme::family(theme::SERIF));
@@ -568,7 +638,11 @@ impl State {
                 if chip.right() > inner.right() {
                     break;
                 }
-                let resp = ui.interact(chip, ui.id().with(("linked", r.key())), Sense::click());
+                let resp = ui.interact(
+                    chip,
+                    ui.id().with(("linked", r.verse_ref().key(), r.verse, r.verse_end)),
+                    Sense::click(),
+                );
                 painter.rect_filled(chip, 12.0, if resp.hovered() { p.selection } else { p.accent_soft });
                 let icon = Rect::from_min_size(pos2(chip.left() + 10.0, y + 6.0), vec2(12.0, 12.0));
                 icons::heavy(|| icons::link(&painter, icon, p.accent));
@@ -585,8 +659,8 @@ impl State {
                 if resp.clicked() {
                     actions.push(Action::Jump {
                         chapter: r.chapter_idx(),
-                        verse: Some(r.verse),
-                        flash: true,
+                        verse: r.verse,
+                        flash: r.verse.is_some(),
                     });
                 }
                 cx = chip.right() + 8.0;
@@ -875,9 +949,9 @@ mod tests {
         let md = "# Title\n- one\n* two\nplain - not a bullet";
         assert_eq!(to_display(md), "# Title\n• one\n• two\nplain - not a bullet");
         assert_eq!(to_markdown(&to_display(md)), "# Title\n- one\n- two\nplain - not a bullet");
-        let refs = mentioned("Compare Isaiah 9:2 and 1 John 2:8, also (John 8:12).");
+        let refs = mentioned("Compare Isaiah 9:2 and 1 John 4:7-8, also (John 8:12) and Romans 5.");
         let shown: Vec<String> = refs.iter().map(|r| r.display()).collect();
-        assert_eq!(shown, ["Isaiah 9:2", "1 John 2:8", "John 8:12"]);
+        assert_eq!(shown, ["Isaiah 9:2", "1 John 4:7–8", "John 8:12", "Romans 5"]);
     }
 
     #[test]

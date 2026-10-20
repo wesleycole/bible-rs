@@ -1084,25 +1084,29 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
 /// The sidebar footer's height, when the library syncs.
 pub const FOOTER: f32 = 32.0;
 
+/// What the sidebar footer shows.
+pub enum Footer<'a> {
+    Status(&'a SyncStatus),
+    /// Sync couldn't start.
+    Error(&'a str),
+    /// The library consent sheet was declined: the library stays on this Mac.
+    Off,
+}
+
 /// The sidebar footer: the library's sync status. Quiet when synced, the count waiting when
-/// offline, and the error with Retry when something was refused.
-pub fn sync_footer(
-    ui: &mut Ui,
-    p: &Palette,
-    rect: Rect,
-    status: Result<&SyncStatus, &str>,
-    actions: &mut Vec<Action>,
-) {
+/// offline, the error with Retry when something was refused, and Turn On when sync is off.
+pub fn sync_footer(ui: &mut Ui, p: &Palette, rect: Rect, status: Footer<'_>, actions: &mut Vec<Action>) {
     let waiting = |n: usize| format!("{n} change{} waiting", if n == 1 { "" } else { "s" });
-    let (label, color, retry) = match status {
-        Ok(SyncStatus::Synced) => ("Synced".to_string(), p.ink_3, false),
-        Ok(SyncStatus::Syncing(0)) => ("Syncing…".to_string(), p.ink_3, false),
-        Ok(SyncStatus::Syncing(n)) => (format!("Syncing · {}", waiting(*n)), p.ink_3, false),
-        Ok(SyncStatus::Offline(0)) => ("Offline".to_string(), p.ink_3, false),
-        Ok(SyncStatus::Offline(n)) => (format!("Offline · {}", waiting(*n)), p.ink_2, false),
-        Ok(SyncStatus::SignedOut) => return,
-        Ok(SyncStatus::Error(e)) => (e.clone(), p.danger, true),
-        Err(e) => (e.to_string(), p.danger, true),
+    let (label, color, button) = match status {
+        Footer::Status(SyncStatus::Synced) => ("Synced".to_string(), p.ink_3, None),
+        Footer::Status(SyncStatus::Syncing(0)) => ("Syncing…".to_string(), p.ink_3, None),
+        Footer::Status(SyncStatus::Syncing(n)) => (format!("Syncing · {}", waiting(*n)), p.ink_3, None),
+        Footer::Status(SyncStatus::Offline(0)) => ("Offline".to_string(), p.ink_3, None),
+        Footer::Status(SyncStatus::Offline(n)) => (format!("Offline · {}", waiting(*n)), p.ink_2, None),
+        Footer::Status(SyncStatus::SignedOut) => return,
+        Footer::Status(SyncStatus::Error(e)) => (e.clone(), p.danger, Some(("Retry", Action::RetrySync))),
+        Footer::Error(e) => (e.to_string(), p.danger, Some(("Retry", Action::RetrySync))),
+        Footer::Off => ("Only on this Mac".to_string(), p.ink_3, Some(("Turn On Sync", Action::TurnOnSync))),
     };
     let painter = ui.painter_at(rect);
     painter.hline(rect.x_range().shrink(LIST_INSET), rect.top() + 0.5, egui::Stroke::new(1.0, p.separator));
@@ -1112,8 +1116,8 @@ pub fn sync_footer(
     let line = |text: &str, color, width: f32| {
         painter.layout_job(wrapped(text, text::CAPTION.font(), 16.0, color, width, 1))
     };
-    if retry {
-        let galley = line("Retry", p.accent, f32::INFINITY);
+    if let Some((button, action)) = button {
+        let galley = line(button, p.accent, f32::INFINITY);
         let w = galley.size().x;
         let hit = Rect::from_min_max(pos2(right - w - 4.0, rect.top()), pos2(right + 4.0, rect.bottom()));
         let resp = ui
@@ -1121,7 +1125,7 @@ pub fn sync_footer(
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         painter.galley(pos2(right - w, cy - galley.size().y / 2.0), galley, p.accent);
         if resp.clicked() {
-            actions.push(Action::RetrySync);
+            actions.push(action);
         }
         right -= w + GAP;
     }

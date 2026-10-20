@@ -102,6 +102,10 @@ These gate M1's release, because they can't be fixed once users have libraries:
      conversation JSON is uploaded and attached first as a `chat` file owned by the chat, so it counts
      toward storage;
    - `library/items.updateDetails({ uid, title?, details?, sermonUid?, offsetMs?, baseSeq })`.
+     Built: a field given replaces the stored one and `null` clears it; a `sermonUid` must name a
+     live sermon item other than this one; it answers a `WriteAnswer`, and never touches a note's
+     text or anchors. In the cache, `StudyStore::set_item_details` edits a non-note item and the
+     outbox sends it as `updateDetails` (the uid-keyed `note` outbox kind covers every item).
 7. **The change feed:** `library/sync.changes({ after })` returns every synced record with `seq > after`,
    tombstones included, in `seq` order, up to 500 records or 2 MB, with the last `seq` and the server's
    time, or `resync` when `0 < after < userLibrary.purgedThrough` (a device at 0 has nothing to
@@ -235,12 +239,24 @@ library consent sheet.
 3. **Notes** (`note_popover.rs`, `pages/notes.rs`): the popover edits the verse's own note item; the notes
    page lists note items, and a note carries every anchor `find_all` finds. "Edited on another device"
    when the feed replaces the open note, and a conflict copy shown beside the note it collided with.
+   Built: core keeps each verse's conflict copies (`StudyStore::conflict_copies`) and marks a note
+   whose text the feed changed this session (`Note::edited_elsewhere`); the page's meta line then
+   reads "Edited on another device …", and the open editor takes the new text unless there's unsaved
+   typing. A copy is a card above the verse with "Use This Version" (its text becomes the note and
+   the copy is deleted) and "Delete Copy". Linked chips show each reference as written ("1 John
+   4:7–8", "Romans 5"), jumping to its first verse.
 4. **Recents** (`sidebar.rs`, `ask_panel.rs`): `uid`s instead of row ids; a conversation is saved as a
    file through the outbox and downloaded when opened on another device.
 5. **Migration** ([library.md](library.md#migrating-whats-on-the-device)): a one-time sheet ("Bringing
    your notes into your library") with progress, then the library consent sheet
    ([backend.md](backend.md#privacy-and-consent)). Recordings follow in M1b, through the same sheet.
    The Ask consent text drops "conversations stay on the device".
+   Built: the library consent sheet shows once, signed in, after onboarding; sync starts only after
+   "Turn On Sync". "Keep on This Mac" leaves the library here, unsynced (nothing is uploaded), and
+   the sidebar footer then reads "Only on this Mac · Turn On Sync", which shows the sheet again. The
+   answer is a per-device setting (`library_consent`). Departure: the migration sheet ("Bringing your
+   notes into your library") isn't separate; the outbox's existing migration runs once sync starts,
+   with progress in the footer.
 6. **The CLI** (`cli.rs`) reads notes from the cache.
 7. **Export** (`linger export --json`, the user's backup) lists every live note item, several to a
    verse allowed, each `{ reference, book, chapter, verse, text?, note, created, updated, uid,
@@ -249,21 +265,20 @@ library consent sheet.
    its first note there, and otherwise adds another note item, so a conflict copy comes back as a
    copy.
 
-## Owed (picked up by the next machine)
+## Owed
 
-Still to come in pass 2: the library consent sheet (desktop item 5), the notes UI (a conflict copy
-beside its note, "edited on another device"), and `library/items.updateDetails`. Also owed:
-1. The `satisfies WriteAnswer as WriteAnswer` casts in `library/notes.ts` and `chats.ts`: annotate
-   the handler's return type instead.
-2. `lib/purge.ts`'s header says its steps read `Clock` so tests set it rather than faking `Date`,
-   but `test/library.test.ts` still fakes `Date` for the orphan and tombstone sweeps. Give the
-   harness a test `Clock` layer, or drop the claim.
-3. Before M1 ships: a generated answer type for the verse-keyed writes (`highlights.set`,
-   `bookmarks.set`), so the engine reads no answer JSON by hand.
-4. Export's `updated` (and `created`) can differ by one second between devices: `local_time` rounds
-   `(ms - offset + 500) div 1000`, and per-device offset jitter moves a stamp near .5 across the
-   second (Linux prover, 1 of 4 edits: stamp 1792505334916, A 14:08:54Z, B 14:08:55Z). Fix by
-   exporting from the server's milliseconds (or storing milliseconds), not the rounded column.
+Before M1 ships: a generated answer type for the verse-keyed writes (`highlights.set`,
+`bookmarks.set`), so the engine reads no answer JSON by hand.
+
+Done since (October 20): the consent sheet, the notes UI and `items.updateDetails` (above); the
+handlers' `satisfies … as` casts became annotated return types; `lib/purge.ts` no longer claims
+tests set `Clock` (they fake `Date`, because the sweeps compare Convex's `_creationTime`); and
+`local_time` takes the server's second and moves it by the offset rounded to whole seconds, instead
+of rounding the moved time, so offset jitter between devices (tens of ms) no longer puts one stamp
+on different seconds (Linux prover: stamp 1792505334916, A 14:08:54Z, B 14:08:55Z). The cache still
+stores seconds; that is the departure from "export from the server's milliseconds": it fixes every
+record type, highlights included, with one rule, and two devices can still differ only if their
+measured offsets fall either side of ±0.5 s.
 
 ## Tests
 

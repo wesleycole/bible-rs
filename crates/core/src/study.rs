@@ -76,6 +76,9 @@ pub struct Note {
     pub body: String,
     pub created: i64,
     pub updated: i64,
+    /// The last change to it this session came from another device (through the change feed),
+    /// not from this one: the notes page says so when it's open.
+    pub edited_elsewhere: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +91,8 @@ pub struct StudyStore {
     conn: Connection,
     highlights: HashMap<u32, (HighlightColor, i64)>,
     notes: HashMap<u32, Note>,
+    /// Conflict copies of each verse's own note, oldest first.
+    copies: HashMap<u32, Vec<Note>>,
     bookmarks: BTreeMap<u32, Bookmark>,
     generation: u64,
     /// SQLite's `data_version` when the mirrors were last read: it moves when another connection
@@ -456,9 +461,12 @@ fn own_verse(item: &Item, live: &std::collections::HashSet<String>) -> Option<Ve
     verse_of(a.from.0 as i64)
 }
 
-/// Every verse's own note in the cache. A verse with several (two devices each wrote one before
-/// either saw the other's) has the oldest as its own; the rest stay in the library.
-fn own_notes(conn: &Connection) -> Result<HashMap<u32, Note>> {
+/// Every verse's own note in the cache, and the live conflict copies of each. A verse with several
+/// notes (two devices each wrote one before either saw the other's) has the oldest as its own; the
+/// rest stay in the library.
+type Notes = (HashMap<u32, Note>, HashMap<u32, Vec<Note>>);
+
+fn own_notes(conn: &Connection) -> Result<Notes> {
     let mut st = conn.prepare(
         "SELECT uid, created, updated, record FROM items WHERE kind = 'note' AND deleted = 0 ORDER BY created, uid",
     )?;
@@ -474,13 +482,27 @@ fn own_notes(conn: &Connection) -> Result<HashMap<u32, Note>> {
         }
     }
     let live = notes.iter().map(|n| n.0.clone()).collect();
-    let mut out = HashMap::new();
-    for (uid, created, updated, item) in notes {
-        if let Some(v) = own_verse(&item, &live) {
-            out.entry(v.key()).or_insert(Note { uid, body: item.text.unwrap_or_default(), created, updated });
+    let note = |uid: &str, created, updated, item: &Item| Note {
+        uid: uid.into(),
+        body: item.text.clone().unwrap_or_default(),
+        created,
+        updated,
+        edited_elsewhere: false,
+    };
+    let mut own: HashMap<u32, Note> = HashMap::new();
+    for (uid, created, updated, item) in &notes {
+        if let Some(v) = own_verse(item, &live) {
+            own.entry(v.key()).or_insert_with(|| note(uid, *created, *updated, item));
         }
     }
-    Ok(out)
+    let verse_of_own: HashMap<&str, u32> = own.iter().map(|(v, n)| (n.uid.as_str(), *v)).collect();
+    let mut copies: HashMap<u32, Vec<Note>> = HashMap::new();
+    for (uid, created, updated, item) in &notes {
+        if let Some(v) = item.conflict_of.as_deref().and_then(|of| verse_of_own.get(of)) {
+            copies.entry(*v).or_default().push(note(uid, *created, *updated, item));
+        }
+    }
+    Ok((own, copies))
 }
 
 /// Saves `body` as the verse's own note `own` (a new note item when there is none), or deletes
@@ -515,7 +537,7 @@ fn write_note(
     if queue {
         enqueue_uid(tx, Kind::Note, &uid, updated)?;
     }
-    Ok(Some(Note { uid, body: body.into(), created, updated }))
+    Ok(Some(Note { uid, body: body.into(), created, updated, edited_elsewhere: false }))
 }
 
 /// A verse range split at chapter breaks, as (book, chapter, first, last) on the KJV grid.
@@ -795,6 +817,7 @@ impl StudyStore {
             conn,
             highlights: HashMap::new(),
             notes: HashMap::new(),
+            copies: HashMap::new(),
             bookmarks: BTreeMap::new(),
             generation: 1,
             data_version: 0,
@@ -881,7 +904,20 @@ impl StudyStore {
                 self.highlights.insert(vr.key(), (color, created));
             }
         }
-        self.notes = own_notes(&self.conn)?;
+        let (notes, copies) = own_notes(&self.conn)?;
+        // A note whose text changed under this session came from another device.
+        let before: HashMap<&str, &Note> = self.notes.values().map(|n| (n.uid.as_str(), n)).collect();
+        let notes = notes
+            .into_iter()
+            .map(|(v, mut n)| {
+                if let Some(old) = before.get(n.uid.as_str()) {
+                    n.edited_elsewhere = old.body != n.body || old.edited_elsewhere;
+                }
+                (v, n)
+            })
+            .collect();
+        self.notes = notes;
+        self.copies = copies;
         let mut st = self.conn.prepare("SELECT verse, label, created FROM bookmarks WHERE deleted = 0")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get(2)?)))?;
         for row in rows {
@@ -944,7 +980,7 @@ impl StudyStore {
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let standing = write_note(&tx, own.as_ref(), v, body, t, t)?;
         tx.commit()?;
-        let changed = own != standing;
+        let changed = own.as_ref().map(|n| (&n.uid, &n.body)) != standing.as_ref().map(|n| (&n.uid, &n.body));
         match standing {
             Some(n) => self.notes.insert(v.key(), n),
             None => self.notes.remove(&v.key()),
@@ -1010,6 +1046,57 @@ impl StudyStore {
             .collect();
         v.sort_by_key(|(r, _, t)| (std::cmp::Reverse(*t), *r));
         v
+    }
+
+    /// The conflict copies of the verse's own note: edits another device made against a copy that
+    /// had since changed, kept beside it rather than lost. Oldest first.
+    pub fn conflict_copies(&self, v: VerseRef) -> &[Note] {
+        self.copies.get(&v.key()).map_or(&[], Vec::as_slice)
+    }
+
+    /// Sets an item's details (a sermon's title, speaker and times; which sermon a slide or page
+    /// was captured during, and where in it), and queues the change. Not for notes, whose title
+    /// is their first line.
+    pub fn set_item_details(
+        &mut self,
+        uid: &str,
+        title: &str,
+        details: Option<crate::records::ItemDetails>,
+        sermon: Option<(String, Option<u64>)>,
+    ) -> Result<()> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let Some(mut item) =
+            load_item(&tx, uid)?.filter(|i| i.kind != ItemKind::Note && i.deleted_at.is_none())
+        else {
+            anyhow::bail!("no item {uid} with details here");
+        };
+        item.title = title.into();
+        item.details = details;
+        (item.sermon_uid, item.offset_ms) = sermon.map_or((None, None), |(s, at)| (Some(s), at));
+        let created: i64 = tx.query_row("SELECT created FROM items WHERE uid = ?1", [uid], |r| r.get(0))?;
+        let t = now();
+        put_item(&tx, &item, created, t)?;
+        enqueue_uid(&tx, Kind::Note, uid, t)?;
+        tx.commit()?;
+        self.generation += 1;
+        self.queued();
+        Ok(())
+    }
+
+    /// Deletes a note by its uid (a conflict copy, say), and queues the change.
+    pub fn delete_note(&mut self, uid: &str) -> Result<()> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let t = now();
+        let deleted = delete_item(&tx, uid, t)?;
+        if deleted {
+            enqueue_uid(&tx, Kind::Note, uid, t)?;
+        }
+        tx.commit()?;
+        if deleted {
+            self.reload()?;
+            self.queued();
+        }
+        Ok(())
     }
 
     pub fn notes(&self) -> Vec<(VerseRef, &Note)> {
@@ -1457,7 +1544,7 @@ impl StudyStore {
             {
                 enqueue_uid(&tx, Kind::Note, &uid, now())?;
             }
-            own = own_notes(&tx)?;
+            own = own_notes(&tx)?.0;
         }
         for b in &doc.bookmarks {
             put_bookmark(
@@ -1656,6 +1743,14 @@ pub(crate) mod cache {
                     if deleted {
                         let args = json!({ "uid": uid, "baseSeq": base });
                         return Ok(Some(entry(Key::Uid(uid), "library/notes:remove", args, None)));
+                    }
+                    if item.kind != ItemKind::Note {
+                        // A sermon or a captured page: only its details are edited on a device.
+                        let args = json!({
+                            "uid": uid, "title": item.title, "details": item.details,
+                            "sermonUid": item.sermon_uid, "offsetMs": item.offset_ms, "baseSeq": base
+                        });
+                        return Ok(Some(entry(Key::Uid(uid), "library/items:updateDetails", args, None)));
                     }
                     if seq == 0 && base == 0 && already_there(conn, &item)? {
                         let tx = rusqlite::Transaction::new_unchecked(
@@ -2186,9 +2281,24 @@ pub(crate) mod cache {
         Ok(())
     }
 
-    /// A server time in milliseconds as this device's Unix seconds.
-    fn local_time(server_ms: Option<u64>, clock_offset_ms: i64) -> Option<i64> {
-        server_ms.map(|ms| (ms as i64 - clock_offset_ms + 500).div_euclid(1000))
+    /// A server time in milliseconds as this device's Unix seconds: the server's second, moved by
+    /// the offset in whole seconds. Rounding the offset, not the moved time, keeps every device on
+    /// the same second for the same stamp: measured offsets jitter by tens of milliseconds, which
+    /// moved a stamp near half a second across the boundary on one device and not another.
+    pub(crate) fn local_time(server_ms: Option<u64>, clock_offset_ms: i64) -> Option<i64> {
+        server_ms.map(|ms| (ms as i64).div_euclid(1000) - (clock_offset_ms + 500).div_euclid(1000))
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn one_stamp_is_the_same_second_whatever_each_device_measured() {
+        // The Mac prover's case: a stamp at .613 s, offsets 95 and 136 ms.
+        let stamp = Some(1_792_505_303_613);
+        assert_eq!(local_time(stamp, 95), Some(1_792_505_303));
+        assert_eq!(local_time(stamp, 136), local_time(stamp, 95));
+        assert_eq!(local_time(stamp, -92), local_time(stamp, 95));
+        // A device whose clock is 5 s fast sees it 5 s later on its own clock.
+        assert_eq!(local_time(stamp, -5_000), Some(1_792_505_308));
     }
 
     /// Writes the server's copy of a record into the cache: a value, or a tombstone for `null`

@@ -809,6 +809,16 @@ impl FakeServer {
         self.lock().items.values().filter(|i| i.deleted_at.is_none()).cloned().collect()
     }
 
+    /// Stores an item as another device would have made it (a sermon or a captured page, which
+    /// this build can't make yet), at the next `seq`, and delivers it.
+    pub fn add_item(&self, mut item: Item) {
+        let mut s = self.lock();
+        item.seq = s.next_seq();
+        item.updated_at = Some(now_ms() as u64);
+        s.items.insert(item.uid.clone(), item);
+        s.wrote();
+    }
+
     /// The live chats.
     pub fn chats(&self) -> Vec<Chat> {
         self.lock().chats.values().filter(|c| c.deleted_at.is_none()).cloned().collect()
@@ -999,6 +1009,50 @@ impl FakeState {
         seq
     }
 
+    /// `items.updateDetails`: a field given replaces the stored one (`null` clears it).
+    fn update_details(&mut self, args: &Value) -> Result<Value, CallError> {
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        let Some(stored) = self.items.get(&uid).filter(|i| i.deleted_at.is_none()).cloned() else {
+            return Err(refused("That item isn't in your library."));
+        };
+        if let Some(sermon) = args["sermonUid"].as_str()
+            && !self
+                .items
+                .get(sermon)
+                .is_some_and(|s| s.kind == ItemKind::Sermon && s.deleted_at.is_none() && s.uid != uid)
+        {
+            return Err(refused("That sermon isn't in your library."));
+        }
+        let mut item = stored.clone();
+        if let Some(t) = args["title"].as_str() {
+            item.title = t.into();
+        }
+        if args.get("details").is_some() {
+            item.details = serde_json::from_value(args["details"].clone()).map_err(refused)?;
+        }
+        if args.get("sermonUid").is_some() {
+            item.sermon_uid = args["sermonUid"].as_str().map(Into::into);
+        }
+        if args.get("offsetMs").is_some() {
+            item.offset_ms = args["offsetMs"].as_u64();
+        }
+        let same = item == stored;
+        Ok(answer(match decide_by_uid(Some((stored.seq, false, same)), false, args["baseSeq"].as_u64()) {
+            ByUid::Unchanged(seq) => WriteAnswer::Ok { seq, record: self.item(&uid) },
+            ByUid::Conflict(seq) => {
+                WriteAnswer::Conflict { seq, record: self.item(&uid).expect("stored"), copy: None }
+            }
+            ByUid::Write => {
+                item.seq = self.next_seq();
+                item.updated_at = Some(now_ms() as u64);
+                let seq = item.seq;
+                self.items.insert(uid.clone(), item);
+                self.wrote();
+                WriteAnswer::Ok { seq, record: self.item(&uid) }
+            }
+        }))
+    }
+
     /// The item `uid` as the feed sends it.
     fn item(&self, uid: &str) -> Option<FeedRecord> {
         self.items.get(uid).map(|i| FeedRecord::Item(Box::new(i.clone())))
@@ -1152,6 +1206,7 @@ impl FakeBackend {
             "library/bookmarks:set" => s.set("bookmark", "label", args),
             "library/notes:upsert" => s.upsert_note(args),
             "library/notes:remove" => s.remove_note(args),
+            "library/items:updateDetails" => s.update_details(args),
             "library/chats:save" => s.save_chat(args),
             "library/chats:remove" => s.remove_chat(args),
             ATTACH => s.attach(args),

@@ -689,7 +689,7 @@ fn consent(ui: &mut Ui, p: &Palette, body: Rect, actions: &mut Vec<Action>) -> b
         "Your questions, and the passages Ask reads to answer them, are sent to Anthropic's Claude \
          through Vercel.",
         "Nothing you send is kept to train models.",
-        "Your conversations are kept on this device, in Recents. Linger's server doesn't store them.",
+        "Your conversations are saved in your library, in Recents, so they're on all your devices.",
     ];
     for point in points {
         ui.painter().circle_filled(pos2(left + 3.0, y + 10.0), 2.5, p.ink_3);

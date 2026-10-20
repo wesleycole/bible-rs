@@ -67,6 +67,9 @@ pub struct Settings {
     pub ask_translation: String,
     /// The one-time Ask sheet (what is sent where) was accepted.
     pub ask_consent: bool,
+    /// The library consent sheet's answer: `None` not yet asked (it shows once signed in),
+    /// `Some(true)` the library syncs, `Some(false)` it stays on this Mac.
+    pub library_consent: Option<bool>,
     /// The user's own church, as named when saving a recording's details: it fills in where a
     /// microphone recording is from, and tells Ask which sermons are their church's.
     pub home_church: Option<String>,
@@ -97,6 +100,7 @@ impl Default for Settings {
             plan_reminder: false,
             ask_translation: linger_core::chat::ASK_TRANSLATIONS[0].into(),
             ask_consent: false,
+            library_consent: None,
             home_church: None,
             accent: theme::Accent::Ink,
             toolbar_translation: true,
@@ -303,6 +307,8 @@ pub struct BibleApp {
     gated: bool,
     /// Offscreen renders skip the sign-in screen unless a demo step asks for it.
     demo_sign_in: bool,
+    /// Offscreen: show the library consent sheet as if signed in.
+    demo_consent: bool,
     /// Compare Verse as a popover on the selected verse (frame 23).
     compare: Option<crate::compare_popover::ComparePopover>,
     /// Sharing the selected verses as an image or text (frame 22).
@@ -457,6 +463,7 @@ impl BibleApp {
             sign_in: Default::default(),
             gated,
             demo_sign_in: false,
+            demo_consent: false,
             import_sheet: None,
             share_sheet: None,
             details_sheet: None,
@@ -972,6 +979,16 @@ impl BibleApp {
                     self.toast(ctx, format!("Couldn't save note: {e:#}"));
                 }
             }
+            Action::DeleteNoteItem(uid) => {
+                if let Err(e) = self.study.delete_note(&uid) {
+                    self.toast(ctx, format!("Couldn't delete the note: {e:#}"));
+                }
+            }
+            Action::KeepCopy { verse, uid, body } => {
+                if let Err(e) = self.study.set_note(verse, &body).and_then(|_| self.study.delete_note(&uid)) {
+                    self.toast(ctx, format!("Couldn't keep that version: {e:#}"));
+                }
+            }
             Action::StartPlan(id) => {
                 let today = crate::time::day_start(linger_core::study::now());
                 if let Err(e) = self.study.start_plan(&id, today) {
@@ -1133,6 +1150,8 @@ impl BibleApp {
             Action::DeleteAccount => self.account.delete(),
             Action::SetDevToken(token) => self.account.set_dev_token(&token),
             Action::AcceptAskConsent => self.settings.ask_consent = true,
+            // Shows the library consent sheet again.
+            Action::TurnOnSync => self.settings.library_consent = None,
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
@@ -1330,6 +1349,16 @@ impl BibleApp {
                     ),
                     _ => self.account.demo(None, None, None),
                 }
+            }
+            // `library-consent:<ask|yes|no>`: the library consent sheet showing, accepted, or
+            // declined (the sidebar footer then offers to turn sync on).
+            "library-consent" => {
+                self.settings.library_consent = match arg {
+                    "yes" => Some(true),
+                    "no" => Some(false),
+                    _ => None,
+                };
+                self.demo_consent = true;
             }
             // `consent:<yes|no>`: the Ask sheet accepted or not.
             "consent" => self.settings.ask_consent = arg != "no",
@@ -2551,7 +2580,9 @@ impl BibleApp {
     fn library_sync(&mut self, ctx: &egui::Context) {
         use linger_core::sync::{self, ConvexBackend};
         use std::sync::atomic::Ordering;
-        let tokens = self.account.api().map(|a| a.tokens());
+        // Only once the library consent sheet was accepted.
+        let tokens =
+            self.account.api().filter(|_| self.settings.library_consent == Some(true)).map(|a| a.tokens());
         match (&self.sync, tokens) {
             (None, Some(tokens)) if self.sync_error.is_none() && !crate::offscreen() => {
                 let started = ConvexBackend::new(&linger_core::api::convex_url())
@@ -2570,7 +2601,8 @@ impl BibleApp {
                 }
             }
             (Some(_), None) => {
-                // The session ended: stop, keeping the cache and anything still waiting.
+                // The session ended (or sync was turned off): stop, keeping the cache and
+                // anything still waiting.
                 self.sync = None;
                 self.study.on_outbox(|| {});
             }
@@ -2868,9 +2900,13 @@ impl eframe::App for BibleApp {
                     let mut content =
                         egui::Rect::from_min_max(panel.min + vec2(0.0, SIDEBAR_HEADER), panel.max);
                     let status = self.sync.as_ref().map(|s| s.status()).or(self.demo_sync.clone());
+                    let declined = self.settings.library_consent == Some(false)
+                        && ((self.account.signed_in() && !crate::offscreen()) || self.demo_consent);
+                    use crate::sidebar::Footer;
                     let status = match (&self.sync_error, &status) {
-                        (Some(e), _) => Some(Err(e.as_str())),
-                        (None, Some(s)) => Some(Ok(s)),
+                        (Some(e), _) => Some(Footer::Error(e.as_str())),
+                        (None, Some(s)) => Some(Footer::Status(s)),
+                        (None, None) if declined => Some(Footer::Off),
                         (None, None) => None,
                     };
                     if let Some(status) = status {
@@ -3173,6 +3209,18 @@ impl eframe::App for BibleApp {
                     self.import_sheet = None;
                     self.install_import(&ctx, *imported);
                 }
+            }
+        }
+        let signed_in = (self.account.signed_in() && !crate::offscreen()) || self.demo_consent;
+        if signed_in
+            && self.settings.library_consent.is_none()
+            && self.onboarding.is_none()
+            && !self.sign_in_required()
+        {
+            match crate::consent_sheet::show(&ctx, p) {
+                crate::consent_sheet::Outcome::Open => {}
+                crate::consent_sheet::Outcome::Accept => self.settings.library_consent = Some(true),
+                crate::consent_sheet::Outcome::Decline => self.settings.library_consent = Some(false),
             }
         }
         if let Some(sheet) = &mut self.share_sheet {
