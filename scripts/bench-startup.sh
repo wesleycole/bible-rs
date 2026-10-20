@@ -47,8 +47,12 @@ db.commit()
 PY
 fi
 # Signed in with sync on (only for the SYNC=1 home's runs).
+# LINGER_API_URL: nothing answers there. Without it the app asks the production proxy for /v1/me,
+# which refuses the local backend's dev token and signs the app out, stopping sync mid-run
+# (whether that lands before the engine catches up is a race).
 sync_env() {
-  LINGER_API_TOKEN="$LINGER_TEST_TOKEN" LINGER_CONVEX_URL="$LINGER_TEST_CONVEX_URL" \
+  LINGER_API_URL=http://127.0.0.1:9 \
+    LINGER_API_TOKEN="$LINGER_TEST_TOKEN" LINGER_CONVEX_URL="$LINGER_TEST_CONVEX_URL" \
     LINGER_KEYCHAIN_SERVICE="${LINGER_KEYCHAIN_SERVICE:-linger-bench}" "$@"
 }
 # Another device's write, straight to the backend: prints its seq, which the next run must pull.

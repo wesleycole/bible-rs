@@ -362,7 +362,11 @@ inside `Effect.promise`; then the proxy becomes a `Context.Service` like the ven
   becomes the conflict copy on both. Without the backend it skips. CI's Linux job runs it. On Linux
   the prebuilt backend needs glibc 2.39 or newer (Ubuntu 24.04; not Debian 12), and the script says
   so rather than failing on a missing symbol.
-- **Sync load:** 1,000 clients subscribed to the feed while 100 write, against a dev deployment.
+- **Sync load: deferred** (October 20, the owner's call). 1,000 clients on the feed while 100 write
+  tests fan-out against Convex's limits, which matters before launch, not for M1. When it is picked
+  up: the script exists (`server/scripts/sync-load.ts`, kept off main), and dev Clerk's bot
+  protection refuses API sign-ups, so its 50 test users are created and deleted through the Backend
+  API with the development instance's secret key.
 - **Start-up:** CI's startup probe stays within 5% of today's numbers with sync on. CI also records
   Convex's execution time for `highlights.set` so the Effect overhead is watched.
   Built: `scripts/bench-startup.sh` with `SYNC=1` alternates launches without sync and launches
@@ -373,7 +377,14 @@ inside `Effect.promise`; then the proxy becomes a `Context.Service` like the ven
   nothing fails the job on the 5% yet, it is read. First numbers, this Mac, `RUNS=4`: first frame
   presented 115.6 ms without sync and 109.7 ms with it (−5%), caught up 60 ms after the first frame;
   sync doesn't slow start-up (the engine starts after the first frame). Whether the remaining gap is
-  the homes' sign-in state is unchecked; `RUNS=20` on both machines is next. `server/scripts/time-writes.ts` makes 100
+  the homes' sign-in state is unchecked; `RUNS=20` on both machines is next.
+  The sync launches must not reach the production proxy: the app asks it for `/v1/me`, it refuses
+  the local backend's dev token, and the app signs out, which stops the engine. Whether that lands
+  before or after the engine catches up is a race, so on slower hosts (CI, the Linux orb) a launch
+  sometimes never reported Synced: the cause is the bench's environment and the app's account
+  lifecycle, not the engine (CLI syncs, which never ask `/v1/me`, always caught up). The bench points
+  `LINGER_API_URL` at a closed port, which the app treats as unreachable, not signed out. On timeout
+  the probe prints the engine's status, the account's state and both errors. `server/scripts/time-writes.ts` makes 100
   `highlights.set` writes there and reports Convex's own `executionTime` from the log stream
   (median and p95, in the job summary). Departure: it is the local backend's time, not a cloud
   deployment's; on this Mac 50 writes took a median of 19 ms and a p95 of 40 ms.
@@ -386,8 +397,8 @@ write and the window's repaint both landed 0.019–0.024 s after the writer's sy
 0.019 s visible but not frontmost), editor, list and "Edited on another device just now" current;
 the earlier "lag" was a window covered by a call, which macOS doesn't draw. For the fifth,
 offline reading, notes and Recents work, and start-up with sync on is no slower on this Mac
-(`RUNS=4`, see Tests); `RUNS=20` on both machines settles it. Still open from Tests: the 1,000-client
-load test. Parked for the cut-over push: the production defaults in `auth.rs`, production Convex
+(`RUNS=4`, see Tests); `RUNS=20` on both machines settles it. Nothing from Tests is open but that
+rerun; the load test is deferred. Parked for the cut-over push: the production defaults in `auth.rs`, production Convex
 and the proxy (the production Clerk instance and its OAuth application exist).
 
 - A note written on one Mac appears on another within a second, and survives editing on both while one
