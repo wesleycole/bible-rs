@@ -379,6 +379,8 @@ fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
     let store = linger_core::secrets::SecretStore::new(data_dir);
     let tokens = linger_core::auth::saved(&store).context("not signed in; run `linger signin`")?;
     let url = linger_core::api::convex_url();
+    // Conflicts are a log kept for the UI; this run reports only the ones it records.
+    let before = StudyStore::open(&data_dir.join("study.sqlite"))?.conflicts().len();
     let handle = sync::start(data_dir, Box::new(ConvexBackend::new(&url)?), tokens)?;
     let secs =
         flag(rest, "--timeout").map(|s| s.parse()).transpose().context("--timeout <seconds>")?.unwrap_or(120);
@@ -388,7 +390,9 @@ fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
     let study = StudyStore::open(&data_dir.join("study.sqlite"))?;
     let (h, _, b) = study.counts();
     println!("synced with {url}: cursor {cursor}, {h} highlights, {b} bookmarks");
-    for c in study.conflicts() {
+    let conflicts = study.conflicts();
+    // Newest first, so this run's are the head of the list.
+    for c in &conflicts[..conflicts.len().saturating_sub(before)] {
         println!("conflict on {} {}: kept {} over this device's {}", c.kind, c.verse, c.theirs, c.mine);
     }
     Ok(())
