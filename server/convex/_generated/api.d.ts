@@ -12,6 +12,7 @@ import type * as account from "../account.js";
 import type * as admin from "../admin.js";
 import type * as crons from "../crons.js";
 import type * as entitlements from "../entitlements.js";
+import type * as http from "../http.js";
 import type * as lib_accounts from "../lib/accounts.js";
 import type * as lib_allowance from "../lib/allowance.js";
 import type * as lib_anchors from "../lib/anchors.js";
@@ -26,8 +27,10 @@ import type * as lib_sequence from "../lib/sequence.js";
 import type * as lib_server from "../lib/server.js";
 import type * as lib_services from "../lib/services.js";
 import type * as lib_time from "../lib/time.js";
+import type * as lib_transcriber from "../lib/transcriber.js";
 import type * as lib_user from "../lib/user.js";
 import type * as lib_verses from "../lib/verses.js";
+import type * as library_audio from "../library/audio.js";
 import type * as library_bookmarks from "../library/bookmarks.js";
 import type * as library_chats from "../library/chats.js";
 import type * as library_files from "../library/files.js";
@@ -35,6 +38,7 @@ import type * as library_highlights from "../library/highlights.js";
 import type * as library_items from "../library/items.js";
 import type * as library_notes from "../library/notes.js";
 import type * as library_purge from "../library/purge.js";
+import type * as library_sermons from "../library/sermons.js";
 import type * as library_sync from "../library/sync.js";
 import type * as library_whoami from "../library/whoami.js";
 import type * as maintenance from "../maintenance.js";
@@ -55,6 +59,7 @@ declare const fullApi: ApiFromModules<{
   admin: typeof admin;
   crons: typeof crons;
   entitlements: typeof entitlements;
+  http: typeof http;
   "lib/accounts": typeof lib_accounts;
   "lib/allowance": typeof lib_allowance;
   "lib/anchors": typeof lib_anchors;
@@ -69,8 +74,10 @@ declare const fullApi: ApiFromModules<{
   "lib/server": typeof lib_server;
   "lib/services": typeof lib_services;
   "lib/time": typeof lib_time;
+  "lib/transcriber": typeof lib_transcriber;
   "lib/user": typeof lib_user;
   "lib/verses": typeof lib_verses;
+  "library/audio": typeof library_audio;
   "library/bookmarks": typeof library_bookmarks;
   "library/chats": typeof library_chats;
   "library/files": typeof library_files;
@@ -78,6 +85,7 @@ declare const fullApi: ApiFromModules<{
   "library/items": typeof library_items;
   "library/notes": typeof library_notes;
   "library/purge": typeof library_purge;
+  "library/sermons": typeof library_sermons;
   "library/sync": typeof library_sync;
   "library/whoami": typeof library_whoami;
   maintenance: typeof maintenance;
@@ -116,4 +124,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+  workflow: import("@convex-dev/workflow/_generated/component.js").ComponentApi<"workflow">;
 };

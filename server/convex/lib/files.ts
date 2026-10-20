@@ -12,9 +12,13 @@ import { CurrentUser, MutationCtx } from "./services.js"
 
 export type FileRole = Item["files"][number]["role"]
 
+const hex = (bytes: Iterable<number>) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
+
 /** Convex keeps a file's SHA-256 as base64; clients send (and files are named by) hex. */
-export const hexOf = (base64: string) =>
-  Array.from(atob(base64), (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("")
+export const hexOf = (base64: string) => hex(Array.from(atob(base64), (c) => c.charCodeAt(0)))
+
+/** The hex SHA-256 of some bytes, as a file is named. */
+export const sha256Hex = async (bytes: Uint8Array<ArrayBuffer>) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
 
 export interface Attach {
   readonly uid: string

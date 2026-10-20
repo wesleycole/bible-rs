@@ -8,7 +8,8 @@
 #
 # It never touches .env.local: the CLI reaches the backend through a self-hosted env file of its own.
 # On Linux, Convex's prebuilt backend needs glibc 2.39 or newer (Ubuntu 24.04 has it; Debian 12
-# doesn't).
+# doesn't). The deploy bundles "use node" actions with the `node` on PATH, which must be a version
+# Convex supports (20, 22 or 24).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

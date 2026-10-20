@@ -24,6 +24,7 @@ import { Files } from "./files.js"
 import { Sequence } from "./sequence.js"
 import { serverAction, serverMutation, serverQuery } from "./server.js"
 import { ActionCtx, CurrentUser, MutationCtx, QueryCtx, ServerCaller } from "./services.js"
+import { Transcriber } from "./transcriber.js"
 import { userMutation, userQuery } from "./user.js"
 
 /** Runs a handler's effect: a typed failure becomes a ConvexError, a defect stays thrown. */
@@ -56,11 +57,19 @@ const queryServices = (ctx: WithUser<RawQueryCtx>) =>
 const mutationCtx = (ctx: RawMutationCtx) =>
   Layer.mergeAll(Layer.succeed(MutationCtx, MutationCtx.of(ctx)), Layer.succeed(QueryCtx, QueryCtx.of(ctx)))
 
-const mutationServices = (ctx: WithUser<RawMutationCtx>) =>
+/**
+ * The library services acting for `user`, over a mutation's `MutationCtx` and `Allowance`: what a
+ * user's own mutation gets, and what an internal mutation (a workflow step, a cron) provides
+ * itself when it writes to a user's library.
+ */
+export const userServices = (user: Doc<"users">) =>
   Layer.mergeAll(Files.layer, Anchors.layer).pipe(
-    Layer.provideMerge(Layer.mergeAll(Sequence.layer, Allowance.layer)),
-    Layer.provideMerge(Layer.mergeAll(mutationCtx(ctx), Layer.succeed(CurrentUser, currentUser(ctx.user))))
+    Layer.provideMerge(Sequence.layer),
+    Layer.provideMerge(Layer.succeed(CurrentUser, currentUser(user)))
   )
+
+const mutationServices = (ctx: WithUser<RawMutationCtx>) =>
+  userServices(ctx.user).pipe(Layer.provideMerge(Allowance.layer), Layer.provideMerge(mutationCtx(ctx)))
 
 const proxy = Layer.succeed(ServerCaller, ServerCaller.of({ proxy: true }))
 
@@ -164,13 +173,13 @@ export const effectInternalQuery = <V extends PropertyValidators, A>(spec: {
       run(spec.handler(args).pipe(Effect.provide(Layer.succeed(QueryCtx, QueryCtx.of(ctx)))))
   })
 
-/** An action nothing outside the deployment can call: crons that reach the proxy. */
+/** An action nothing outside the deployment can call: crons and workflow steps that reach a vendor. */
 export const effectInternalAction = <V extends PropertyValidators, A>(spec: {
   readonly args: V
-  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, ActionCtx>
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, ActionCtx | Transcriber>
 }) =>
   internalAction({
     args: spec.args,
     handler: (ctx: RawActionCtx, args: ObjectType<V>): Promise<A> =>
-      run(spec.handler(args).pipe(Effect.provide(Layer.succeed(ActionCtx, ActionCtx.of(ctx)))))
+      run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Layer.succeed(ActionCtx, ActionCtx.of(ctx)), Transcriber.layer))))
   })

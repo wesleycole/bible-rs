@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest"
+import { createHash } from "node:crypto"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { WEBHOOK_HEADER } from "../convex/lib/transcriber.js"
 import { PAGE_RECORDS } from "../convex/library/sync.js"
 import { api, internal } from "../convex/_generated/api.js"
-import { SECRET } from "./harness.js"
+import { accountOf, SECRET } from "./harness.js"
 import { makeConvex, type TestConvex } from "./harness.js"
 
 const JOHN_3_16 = 42_003_016
@@ -420,5 +422,210 @@ describe("purge, tombstones and storage", () => {
     const attached = (await t.run((ctx) => ctx.db.query("files").first()))!.storageId
     expect((await blobs()).sort()).toEqual([attached, transcript].sort())
     expect(await blobs()).not.toContain(big.storageId)
+  })
+})
+
+describe("library.sermons (the transcription workflow)", () => {
+  const SITE = "https://linger.convex.site"
+  const HOUR = 3600_000
+  const details = { title: "Grace", startedAt: 1_700_000_000_000 }
+  const M4A = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+  const ADTS = new Uint8Array([0xff, 0xf1, 0x50, 0x80, 0x01, 0x7f, 0xfc, 42])
+  const hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+  const job = { status: "completed", text: "In the beginning God.", audio_duration: 61.2, language_code: "en", utterances: [{ start: 0, end: 61_200, speaker: "A", text: "In the beginning God." }] }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+    vi.useRealTimers()
+  })
+
+  /** The provider at `fetch`: one job, in whatever state `state` holds when it is asked. */
+  const fakeProvider = (state: { job: object }) => {
+    vi.stubEnv("ASSEMBLYAI_API_KEY", "key")
+    vi.stubEnv("CONVEX_SITE_URL", SITE)
+    const calls: Array<{ method: string; path: string; body?: any }> = []
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const path = new URL(url).pathname
+      calls.push({ method: init.method ?? "GET", path, body: init.body ? JSON.parse(String(init.body)) : undefined })
+      const json = (o: object) => new Response(JSON.stringify(o), { status: 200, headers: { "content-type": "application/json" } })
+      return init.method === "POST" ? json({ id: "job1" }) : init.method === "DELETE" ? json({}) : json({ id: "job1", ...state.job })
+    })
+    return calls
+  }
+
+  const upload = (t: TestConvex, bytes: Uint8Array<ArrayBuffer>, type: string) =>
+    t.run(async (ctx) => {
+      const id = await ctx.storage.store(new Blob([bytes], { type }))
+      return { storageId: id as string, sha256: Buffer.from((await ctx.db.system.get(id))!.sha256, "base64").toString("hex") }
+    })
+  /** Uploads and attaches `bytes` in two slices (or parts) of the given role. */
+  const attachSlices = async (t: TestConvex, user: string, uid: string, role: "uploadPart" | "audioPart", bytes: Uint8Array<ArrayBuffer>) => {
+    const slices = [bytes.subarray(0, 5), bytes.subarray(5)]
+    for (const [partIndex, slice] of slices.entries()) {
+      await as(t, user).mutation(api.library.files.attach, { uid: `${uid}-${partIndex}`, ownerUid: uid, role, partIndex, ...(await upload(t, slice, "application/octet-stream")) })
+    }
+  }
+  const itemOf = async (t: TestConvex, uid: string) => (await t.run((ctx) => ctx.db.query("items").filter((q) => q.eq(q.field("uid"), uid)).unique()))!
+  const userOf = async (t: TestConvex, clerkId: string) => (await t.run((ctx) => ctx.db.query("users").withIndex("by_clerk", (q) => q.eq("clerkId", clerkId)).unique()))!
+  /** The stored file: its bytes and type (convex-test keeps the Blob but not the `_storage` row's contentType, so the rows say octet-stream). */
+  const storedOf = (t: TestConvex, uid: string) =>
+    t.run(async (ctx) => {
+      const file = (await ctx.db.query("files").filter((q) => q.eq(q.field("uid"), uid)).unique())!
+      const blob = (await ctx.storage.get(file.storageId))!
+      return { bytes: await blob.arrayBuffer(), type: blob.type }
+    })
+    .then(({ bytes, type }) => ({ bytes: new Uint8Array(bytes), type }))
+  const hook = (t: TestConvex, secret: string) =>
+    t.fetch("/assemblyai", { method: "POST", headers: { [WEBHOOK_HEADER]: secret, "content-type": "application/json" }, body: JSON.stringify({ transcript_id: "job1", status: "completed" }) })
+
+  it("transcribes a Pro sermon: the slices join byte for byte, the transcript is its text, the real duration settles, the job and slices go", async () => {
+    vi.useFakeTimers()
+    const t = await makeConvex()
+    await t.mutation(internal.admin.grant, { clerkId: "user_ann", days: 30 })
+    const ann = as(t, "user_ann")
+    const calls = fakeProvider({ job })
+    expect(await ann.mutation(api.library.sermons.begin, { uid: "s1", details, recordedOn: "2026-10-18" })).toEqual({ uploadAudio: true, cloudTranscript: true })
+    // Beginning again (a retry) makes nothing new.
+    await ann.mutation(api.library.sermons.begin, { uid: "s1", details, recordedOn: "2026-10-18" })
+    expect(await t.run((ctx) => ctx.db.query("sermons").collect())).toHaveLength(1)
+    await attachSlices(t, "user_ann", "s1", "uploadPart", M4A)
+    expect(await ann.mutation(api.library.sermons.finish, { uid: "s1", durationMs: 60_000, audioFileUid: hex(M4A) })).toMatchObject({
+      result: "ok",
+      record: { type: "item", uid: "s1", status: "uploading", details, files: [] }
+    })
+    // A second finish (the device's retry) answers the same and starts nothing new.
+    expect(await ann.mutation(api.library.sermons.finish, { uid: "s1", durationMs: 60_000, audioFileUid: hex(M4A) })).toMatchObject({ result: "ok", record: { status: "uploading" } })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect(await itemOf(t, "s1")).toMatchObject({ status: "processing", files: [{ role: "audio", uid: hex(M4A), bytes: M4A.length, durationMs: 60_000 }] })
+    expect(await storedOf(t, hex(M4A))).toEqual({ bytes: M4A, type: "audio/mp4" })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      path: "/v2/transcript",
+      body: { audio_url: expect.stringContaining("/api/storage/"), speaker_labels: true, webhook_url: `${SITE}/assemblyai`, webhook_auth_header_name: WEBHOOK_HEADER }
+    })
+    const secret: string = calls[0]!.body.webhook_auth_header_value
+    expect((await hook(t, "not-the-secret")).status).toBe(401)
+    expect((await hook(t, secret)).status).toBe(200)
+    // A second delivery is acknowledged and changes nothing.
+    expect((await hook(t, secret)).status).toBe(200)
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    const ready = await itemOf(t, "s1")
+    expect(ready).toMatchObject({ status: "ready", excerpt: "In the beginning God.", textFileUid: expect.any(String) })
+    expect(ready.files.map((f) => [f.role, f.durationMs])).toEqual([["audio", 62_000], ["text", undefined]])
+    const text = await storedOf(t, ready.textFileUid!)
+    expect(text.type).toBe("application/json")
+    expect(JSON.parse(Buffer.from(text.bytes).toString())).toEqual({
+      language: "en",
+      durationMs: 61_200,
+      segments: [{ start_ms: 0, end_ms: 61_200, speaker: "A", text: "In the beginning God." }]
+    })
+    expect((await t.run((ctx) => ctx.db.query("files").collect())).map((f) => f.role).sort()).toEqual(["audio", "text"])
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /v2/transcript", "GET /v2/transcript/job1", "DELETE /v2/transcript/job1"])
+    const account = await accountOf(t, "user_ann")
+    expect(account.reservations).toEqual([])
+    expect(account.usage.map((u) => u.sermonSeconds)).toEqual([62])
+    expect(account.ledger.map((l) => [l.kind, l.status, l.audioSeconds])).toEqual([["sermon", "ok", 62]])
+    // The feed carries the item as the webhook left it.
+    expect((await page(t, "user_ann", 0)).records.at(-1)).toMatchObject({ type: "item", uid: "s1", status: "ready", textFileUid: ready.textFileUid })
+  })
+
+  it("spends a Free user's trial hour once: a failed join gives it back, a trial transcript keeps no audio, and then the plan allows nothing", async () => {
+    vi.useFakeTimers()
+    const t = await makeConvex()
+    const bob = as(t, "user_bob")
+    fakeProvider({ job })
+    expect(await bob.mutation(api.library.sermons.begin, { uid: "s1", details, recordedOn: "2026-10-18" })).toEqual({ uploadAudio: true, cloudTranscript: true })
+    await attachSlices(t, "user_bob", "s1", "uploadPart", M4A)
+    // The device named a different file than it uploaded.
+    await bob.mutation(api.library.sermons.finish, { uid: "s1", durationMs: 60_000, audioFileUid: hex(ADTS) })
+    expect((await userOf(t, "user_bob")).trialHourUsed).toBe(true)
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect(await itemOf(t, "s1")).toMatchObject({ status: "error" })
+    expect((await userOf(t, "user_bob")).trialHourUsed).toBe(false)
+    expect((await accountOf(t, "user_bob")).reservations).toEqual([])
+
+    expect(await bob.mutation(api.library.sermons.begin, { uid: "s2", details, recordedOn: "2026-10-19" })).toEqual({ uploadAudio: true, cloudTranscript: true })
+    await attachSlices(t, "user_bob", "s2", "uploadPart", M4A)
+    await bob.mutation(api.library.sermons.finish, { uid: "s2", durationMs: 60_000, audioFileUid: hex(M4A) })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    const secret = (await t.run((ctx) => ctx.db.query("sermons").filter((q) => q.eq(q.field("status"), "transcribing")).unique()))!.webhookSecretHash
+    expect(secret).toBeDefined()
+    // The hash of the secret is all Convex keeps, so the webhook is sent from the workflow's side here.
+    await t.mutation(internal.library.sermons.webhook, { assemblyId: "job1", secretHash: secret! })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    const ready = await itemOf(t, "s2")
+    expect(ready.status).toBe("ready")
+    expect(ready.files.map((f) => f.role)).toEqual(["text"])
+    expect((await accountOf(t, "user_bob")).ledger.map((l) => l.status)).toEqual(["trial"])
+
+    expect(await bob.mutation(api.library.sermons.begin, { uid: "s3", details, recordedOn: "2026-10-20" })).toEqual({ uploadAudio: false, cloudTranscript: false })
+    expect(await bob.mutation(api.library.sermons.finish, { uid: "s3", durationMs: 60_000 })).toMatchObject({ result: "ok", record: { status: "waiting" } })
+    expect((await errorOf(bob.mutation(api.library.sermons.transcribeNow, { uid: "s3" }))).type).toBe("invalid_request")
+  })
+
+  it("checks on a job whose webhook is late from the cron, wakes it once done, and fails one stuck for three hours", async () => {
+    vi.useFakeTimers()
+    const t = await makeConvex()
+    await t.mutation(internal.admin.grant, { clerkId: "user_ann", days: 30 })
+    const ann = as(t, "user_ann")
+    const state = { job: { status: "processing" } }
+    fakeProvider(state)
+    for (const uid of ["s1", "s2"]) {
+      await ann.mutation(api.library.sermons.begin, { uid, details, recordedOn: "2026-10-18" })
+      await attachSlices(t, "user_ann", uid, "uploadPart", M4A)
+      await ann.mutation(api.library.sermons.finish, { uid, durationMs: 60_000, audioFileUid: hex(M4A) })
+    }
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect((await itemOf(t, "s1")).status).toBe("processing")
+    vi.setSystemTime(Date.now() + 31 * 60_000)
+    expect(await t.action(internal.library.sermons.checkJobs, {})).toEqual({ failed: 0, woken: 0 })
+    state.job = job
+    expect(await t.action(internal.library.sermons.checkJobs, {})).toEqual({ failed: 0, woken: 2 })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect((await itemOf(t, "s1")).status).toBe("ready")
+    expect((await itemOf(t, "s2")).status).toBe("ready")
+
+    await ann.mutation(api.library.sermons.begin, { uid: "s3", details, recordedOn: "2026-10-19" })
+    await attachSlices(t, "user_ann", "s3", "uploadPart", M4A)
+    state.job = { status: "processing" }
+    await ann.mutation(api.library.sermons.finish, { uid: "s3", durationMs: 60_000, audioFileUid: hex(M4A) })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    const before = await accountOf(t, "user_ann")
+    expect(before.reservations.map((r) => r.seconds)).toEqual([60])
+    vi.setSystemTime(Date.now() + 3 * HOUR + 60_000)
+    expect(await t.action(internal.library.sermons.checkJobs, {})).toEqual({ failed: 1, woken: 0 })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect(await itemOf(t, "s3")).toMatchObject({ status: "error" })
+    const after = await accountOf(t, "user_ann")
+    expect(after.reservations).toEqual([])
+    expect(after.usage.map((u) => u.sermonSeconds)).toEqual(before.usage.map((u) => u.sermonSeconds))
+  })
+
+  it("finishes a recording whose device died with the parts it has, as an AAC stream the sermon waits on until \"Transcribe now\"", async () => {
+    vi.useFakeTimers()
+    const t = await makeConvex()
+    await t.mutation(internal.admin.grant, { clerkId: "user_ann", days: 30 })
+    const ann = as(t, "user_ann")
+    fakeProvider({ job })
+    await ann.mutation(api.library.sermons.begin, { uid: "dead", details, recordedOn: "2026-10-18" })
+    await attachSlices(t, "user_ann", "dead", "audioPart", ADTS)
+    await ann.mutation(api.library.sermons.begin, { uid: "alive", details, recordedOn: "2026-10-18" })
+    vi.setSystemTime(Date.now() + 2 * HOUR - 60_000)
+    // Still recording: its newest part is under two hours old.
+    await attachSlices(t, "user_ann", "alive", "audioPart", ADTS)
+    vi.setSystemTime(Date.now() + 2 * 60_000)
+    expect(await t.mutation(internal.library.sermons.finishDead, {})).toEqual({ finished: 1 })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect((await itemOf(t, "alive")).status).toBe("recording")
+    const dead = await itemOf(t, "dead")
+    expect(dead.status).toBe("waiting")
+    expect(dead.files.map((f) => [f.role, f.bytes])).toEqual([["audio", ADTS.length]])
+    expect(await storedOf(t, hex(ADTS))).toEqual({ bytes: ADTS, type: "audio/aac" })
+    expect(await ann.mutation(api.library.sermons.transcribeNow, { uid: "dead" })).toMatchObject({ result: "ok", record: { status: "uploading" } })
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect((await itemOf(t, "dead")).status).toBe("processing")
+    expect((await errorOf(ann.mutation(api.library.sermons.transcribeNow, { uid: "dead" }))).type).toBe("invalid_request")
   })
 })
