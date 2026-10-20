@@ -270,6 +270,9 @@ pub struct BibleApp {
     sync_dirty: Arc<std::sync::atomic::AtomicBool>,
     /// The cache changed while the window was hidden, so what it shows is stale until a frame paints.
     stale_while_hidden: bool,
+    /// The startup probe with library sync on: when it began waiting for the engine's first
+    /// catch-up, so the bench can tell a run where sync really ran.
+    probe_sync_since: Option<Instant>,
     /// Why the engine couldn't start, if it couldn't (shown in the sidebar footer).
     sync_error: Option<String>,
     /// Screenshots: the footer's status without an engine (`sync:` demo step).
@@ -430,6 +433,7 @@ impl BibleApp {
             sync: None,
             sync_dirty: Arc::default(),
             stale_while_hidden: false,
+            probe_sync_since: None,
             sync_error: None,
             demo_sync: None,
             settings_ui: None,
@@ -2710,10 +2714,32 @@ impl BibleApp {
                     presented.as_secs_f64() * 1000.0,
                     epoch_ms
                 );
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                if self.settings.library_consent == Some(true) && self.account.api().is_some() {
+                    self.probe_sync_since = Some(Instant::now());
+                } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
         self.library_sync(ctx);
+        if let Some(since) = self.probe_sync_since {
+            let synced = self.sync.as_ref().filter(|s| s.status() == linger_core::sync::SyncStatus::Synced);
+            if synced.is_some() || since.elapsed() > Duration::from_secs(15) {
+                // A second line: how long after the first frame the engine had caught up, and to where.
+                match synced {
+                    Some(s) => println!(
+                        "{{\"sync_ms\":{:.2},\"cursor\":{}}}",
+                        since.elapsed().as_secs_f64() * 1000.0,
+                        s.cursor()
+                    ),
+                    None => println!("{{\"sync_ms\":null,\"cursor\":null}}"),
+                }
+                self.probe_sync_since = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(10));
+            }
+        }
         self.stale_while_hidden = false;
         if let Some(sp) = &mut self.scroll_probe {
             if self.startup.frames > 3 {

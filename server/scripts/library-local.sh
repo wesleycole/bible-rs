@@ -7,6 +7,8 @@
 #   kill "$LINGER_TEST_CONVEX_PID"
 #
 # It never touches .env.local: the CLI reaches the backend through a self-hosted env file of its own.
+# On Linux, Convex's prebuilt backend needs glibc 2.39 or newer (Ubuntu 24.04 has it; Debian 12
+# doesn't).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -21,6 +23,13 @@ case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) TARGET=x86_64-unknown-linux-gnu ;;
     *) echo "no Convex backend build for $(uname -sm)" >&2; exit 1 ;;
 esac
+if [[ "$(uname -s)" == Linux ]]; then
+    have=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || echo 0)
+    if [[ "$(printf '%s\n2.39\n' "$have" | sort -V | head -1)" != 2.39 ]]; then
+        echo "Convex's local backend needs glibc 2.39 or newer; this host has ${have}." >&2
+        exit 1
+    fi
+fi
 BIN="$HOME/.cache/convex/binaries/$TAG/convex-local-backend"
 if [[ ! -x "$BIN" ]]; then
     mkdir -p "$(dirname "$BIN")"

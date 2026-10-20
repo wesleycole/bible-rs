@@ -20,8 +20,18 @@ const [url, token, envFile] = [need("LINGER_TEST_CONVEX_URL"), need("LINGER_TEST
 
 // The stream first, so every write is seen as it completes (its history is a short buffer).
 const logs = spawn("npx", ["convex", "logs", "--env-file", envFile, "--success", "--jsonl"], {
-  stdio: ["ignore", "pipe", "pipe"]
+  stdio: ["ignore", "pipe", "pipe"],
+  // Its own process group: npx starts the CLI as a grandchild, which killing npx alone would orphan
+  // with our pipes still open, so the script would never exit.
+  detached: true
 })
+const stopLogs = () => {
+  try {
+    process.kill(-logs.pid!, "SIGTERM")
+  } catch {
+    // Already gone.
+  }
+}
 await new Promise<void>((ready) => logs.stderr.on("data", (d) => String(d).includes("Watching") && ready()))
 const ms: Array<{ total: number; user: number }> = []
 const seen = new Set<string>()
@@ -53,7 +63,7 @@ for (let i = 0; i < n; i++) {
   await client.mutation(anyApi.library.highlights.set, { verse, color: colors[i % colors.length] })
 }
 await done
-logs.kill()
+stopLogs()
 
 const at = (v: number[], q: number) => v.sort((a, b) => a - b)[Math.min(v.length - 1, Math.floor(q * v.length))]
 const fmt = (v: number) => `${v.toFixed(1)} ms`

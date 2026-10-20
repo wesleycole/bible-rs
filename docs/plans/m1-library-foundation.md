@@ -31,7 +31,13 @@ These gate M1's release, because they can't be fixed once users have libraries:
    `CLERK_JWT_ISSUER=https://clerk.trylinger.com` and `CLERK_JWKS` before it deploys. The Convex CLI
    login on the implementer's Mac reaches it (`npx convex env list --prod`), so no deploy key is
    needed. The proxy's Clerk variables (`CLERK_SECRET_KEY`, `CLERK_WEBHOOK_SIGNING_SECRET`,
-   `CLERK_JWT_ISSUER`) are set in Vercel's Production environment by the owner. A new
+   `CLERK_JWT_ISSUER`) are set in Vercel's Production environment by the owner, for the production
+   instance (October 20), and `CLERK_JWT_KEY` is deleted there: `Auth.ts` prefers it over the secret
+   key, so a development PEM left in it would refuse every production token. The proxy verifies
+   production tokens with `CLERK_SECRET_KEY` and Clerk's JWKS; `CLERK_JWT_KEY` is only for the local
+   dev-token harness (`scripts/dev-token.ts --env`). The sign-in smoke test against production
+   needs a real inbox: Clerk's test mode (`+clerk_test` addresses, code 424242) is on only in
+   development instances, and stays off in production. A new
    instance gives every user a new `sub`, so it must exist before the first library record is written
    ([backend.md](backend.md#clerk)). Remap the few development-instance accounts by email with an admin
    script. Update `CLERK_URL` and `CLIENT_ID` (`crates/core/src/auth.rs`) and their defaults in
@@ -346,14 +352,21 @@ inside `Effect.promise`; then the proxy becomes a `Context.Service` like the ven
   Built (`apps/desktop/tests/library_local.rs`): against the backend `server/scripts/library-local.sh`
   starts (Convex's prebuilt local backend, this checkout's functions, seeded, accepting dev tokens
   through an inline JWKS, `CLERK_JWKS`), the note arrives within a second, and a stale offline edit
-  becomes the conflict copy on both. Without the backend it skips. CI's Linux job runs it once the
-  workflow change lands (it needs a push with GitHub's `workflow` scope).
+  becomes the conflict copy on both. Without the backend it skips. CI's Linux job runs it. On Linux
+  the prebuilt backend needs glibc 2.39 or newer (Ubuntu 24.04; not Debian 12), and the script says
+  so rather than failing on a missing symbol.
 - **Sync load:** 1,000 clients subscribed to the feed while 100 write, against a dev deployment.
 - **Start-up:** CI's startup probe stays within 5% of today's numbers with sync on. CI also records
   Convex's execution time for `highlights.set` so the Effect overhead is watched.
-  Built (the CI half waits on the same workflow change): CI's Linux job runs the startup probe twice, as today and with `SYNC=1` (signed in, the
-  library consent accepted, against the local backend), so the two medians sit side by side in one
-  log; nothing fails the job on the 5% yet, it is read. `server/scripts/time-writes.ts` makes 100
+  Built: `scripts/bench-startup.sh` with `SYNC=1` alternates launches without sync and launches
+  signed in with the library consent accepted against the local backend (which goes first
+  alternates too, so machine drift and warm caches fall on both). Before each sync launch another
+  device writes a highlight; the probe waits for the engine to catch up and prints its cursor, and
+  the bench fails if it didn't reach that write. CI's Linux job runs it after the plain probe;
+  nothing fails the job on the 5% yet, it is read. First numbers, this Mac, `RUNS=4`: first frame
+  presented 115.6 ms without sync and 109.7 ms with it (−5%), caught up 60 ms after the first frame;
+  sync doesn't slow start-up (the engine starts after the first frame). Whether the remaining gap is
+  the homes' sign-in state is unchecked; `RUNS=20` on both machines is next. `server/scripts/time-writes.ts` makes 100
   `highlights.set` writes there and reports Convex's own `executionTime` from the log stream
   (median and p95, in the job summary). Departure: it is the local backend's time, not a cloud
   deployment's; on this Mac 50 writes took a median of 19 ms and a p95 of 40 ms.
