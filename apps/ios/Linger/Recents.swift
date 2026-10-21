@@ -72,6 +72,8 @@ private struct Conversation: View {
                 out += link
             case .sermon:
                 out += AttributedString("(a sermon)")
+            case .item:
+                out += AttributedString("(from your library)")
             }
         }
         return Text(out).environment(\.openURL, OpenURLAction { url in
