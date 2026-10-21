@@ -46,6 +46,8 @@ libpulse-simple-binding = "2.29"
 # cpal, the computer's audio through a Core Audio process tap.
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
+# The AAC encoder, so a recording writes the parts it uploads as it records.
+linger-core = { workspace = true, features = ["convex", "apple-audio"] }
 cpal = "0.18"
 muda = { version = "0.21", default-features = false }
 objc2 = "0.6"
