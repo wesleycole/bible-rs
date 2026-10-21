@@ -267,6 +267,14 @@ mod tests {
         assert_eq!(super::duration_label(3729), "1:02:09");
     }
 
+    /// The Mac app's recordings write the AAC parts they upload as they record: core is built with
+    /// its encoder (`apple-audio`, in Cargo.toml).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mac_build_has_the_encoder() {
+        const { assert!(linger_core::recording::ENCODES, "core is built without its AAC encoder") };
+    }
+
     /// A second of audio at any device rate is a second at 16 kHz, and a steady signal keeps its
     /// level.
     #[cfg(target_os = "macos")]

@@ -28,6 +28,9 @@ pub const FRAMES_PER_PACKET: u32 = 1024;
 /// The MPEG-4 AudioSpecificConfig of the AAC-LC stream (object type 2, 16 kHz, mono), which the
 /// muxer's `esds` carries and the decoder needs.
 pub const AUDIO_SPECIFIC_CONFIG: [u8; 2] = [0x14, 0x08];
+/// Whether this build encodes AAC parts while recording (Apple platforms with `apple-audio`). An
+/// app whose recordings should upload as they record asserts it in a test.
+pub const ENCODES: bool = cfg!(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")));
 /// Long enough to give the transcriber context, short enough that a crash loses little.
 pub const CHUNK_SECONDS: u32 = 30;
 /// An AAC part: what a crash can lose of the upload, and what uploads at a time while recording.

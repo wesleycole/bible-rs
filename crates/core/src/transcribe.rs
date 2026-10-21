@@ -152,7 +152,7 @@ pub(crate) fn text_in(dir: &Path) -> Option<records::Transcript> {
 /// Keeps the library's transcript of the recording in `dir` beside it, as `transcript.json`. The
 /// sync engine calls it when a sermon's `text` file arrives; bytes that aren't a transcript are
 /// refused.
-#[cfg(feature = "native")]
+#[cfg(feature = "sync")]
 pub(crate) fn keep(dir: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     serde_json::from_slice::<records::Transcript>(bytes)?;
     let tmp = dir.join("transcript.json.tmp");
@@ -253,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "native")]
+    #[cfg(feature = "sync")]
     fn a_kept_transcript_and_an_earlier_one_both_read() {
         let data = std::env::temp_dir().join(format!("linger-transcripts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);

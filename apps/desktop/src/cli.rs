@@ -8,7 +8,7 @@
 //! linger remove <id>
 //! linger export --markdown|--json [-o file]
 //! linger import-notes <export.json>
-//! linger record [--source mic|system] [--seconds N]   (Enter stops)
+//! linger record [--source mic|system] [--seconds N] [--timeout S]   (Enter stops; uploads as it records when the library syncs)
 //! linger ask "what does born of water mean?" [--at "jn 3:5"] [--translation kjv] [--deep]
 //! linger signin | signout [--force] | account    (Linger's account, for Ask and cloud transcripts)
 //! linger sync [--wait] [--timeout 120]   (sends local changes, pulls the library; prints the cursor)
@@ -381,6 +381,28 @@ fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The study store with a running sync engine, when this device is signed in and the library
+/// consent sheet was accepted (as the app starts sync); `None` keeps the recording on disk, and
+/// the app queues it when it next syncs.
+fn upload_library(data_dir: &Path) -> Result<Option<(StudyStore, linger_core::sync::SyncHandle)>> {
+    use linger_core::sync::{self, ConvexBackend};
+    let mut study = StudyStore::open(&data_dir.join("study.sqlite"))?;
+    let store = linger_core::secrets::SecretStore::new(data_dir);
+    let consent = crate::app::Settings::load(&study).library_consent == Some(true);
+    let Some(tokens) = linger_core::auth::saved(&store).filter(|_| consent) else { return Ok(None) };
+    let handle =
+        sync::start(data_dir, Box::new(ConvexBackend::new(&linger_core::api::convex_url())?), tokens)?;
+    study.on_outbox(handle.notifier());
+    Ok(Some((study, handle)))
+}
+
+/// "04:31:07": the local time, for the record command's log.
+fn stamp() -> String {
+    let l = crate::time::local(linger_core::study::now());
+    let s = linger_core::study::now().rem_euclid(60);
+    format!("{:02}:{:02}:{s:02}", l.hour, l.minute)
+}
+
 /// The plan and what's left of it.
 fn account(data_dir: &Path) -> Result<()> {
     let api = signed_in(data_dir).context("not signed in; run `linger signin`")?;
@@ -461,6 +483,17 @@ fn record(rest: &[String], data_dir: &Path) -> Result<()> {
     let seconds: Option<u64> = flag(rest, "--seconds").map(|s| s.parse()).transpose().context("--seconds")?;
     let rec = crate::recorder::Recording::start(data_dir, source)?;
     eprintln!("Recording {} (press Enter to stop)", rec.id());
+    // Signed in, with the library syncing: the recording goes to the library as it records, as
+    // in the app.
+    let mut library = upload_library(data_dir)?;
+    if let Some((study, sync)) = &mut library {
+        while !sync.claimed() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        study.queue_recordings(data_dir, Some(rec.id()))?;
+    }
+    let dir = rec.dir(data_dir);
+    let (mut queued_parts, mut pending) = (None, 0);
     // Only a line on stdin stops; a closed stdin (no terminal) doesn't.
     let enter = Arc::new(AtomicBool::new(false));
     {
@@ -476,6 +509,24 @@ fn record(rest: &[String], data_dir: &Path) -> Result<()> {
         && seconds.is_none_or(|s| rec.elapsed().as_secs() < s)
     {
         std::thread::sleep(std::time::Duration::from_millis(250));
+        if let Some((study, _)) = &mut library {
+            let parts = rec.parts();
+            if queued_parts != Some(parts)
+                && let Some(m) = linger_core::recording::read(&dir)
+            {
+                queued_parts = Some(parts);
+                study.queue_recording(&dir, &m)?;
+            }
+            let now = study.pending_changes();
+            if now != pending {
+                pending = now;
+                eprintln!(
+                    "\r{}  {:>6.1}s  {parts} part(s) closed, {now} change(s) waiting",
+                    stamp(),
+                    rec.elapsed().as_secs_f32()
+                );
+            }
+        }
         let bars = (rec.level() * 4.0).sqrt().min(1.0) * 30.0;
         let meter =
             if rec.waiting() { "waiting for permission".to_owned() } else { "▮".repeat(bars as usize) };
@@ -484,6 +535,31 @@ fn record(rest: &[String], data_dir: &Path) -> Result<()> {
     }
     let m = rec.stop()?;
     eprintln!();
+    if let Some((study, sync)) = &mut library {
+        study.queue_recording(&dir, &m)?;
+        // Like signing out, the run waits until the library has it all.
+        let secs: u64 = flag(rest, "--timeout")
+            .map(|s| s.parse())
+            .transpose()
+            .context("--timeout <seconds>")?
+            .unwrap_or(600);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while study.pending_changes() > 0 && std::time::Instant::now() < deadline {
+            let now = study.pending_changes();
+            if now != pending {
+                pending = now;
+                eprintln!("{}  stopped, {now} change(s) waiting", stamp());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        match study.pending_changes() {
+            0 => eprintln!("{}  in your library ({:?})", stamp(), sync.status()),
+            n => eprintln!(
+                "{n} change(s) still waiting after {secs} s ({:?}); they go at the next sync",
+                sync.status()
+            ),
+        }
+    }
     println!(
         "{}  {:.1}s in {} chunk(s)  {}",
         m.id,

@@ -189,6 +189,10 @@ have. Decisions:
   with hours: Transcribe Now, which calls `sermons.transcribeNow` through the engine). Saving
   details writes the manifest and the item (`set_sermon_details`: into `begin` if it hasn't gone,
   else an edit of the item). Signing out says when it is waiting on a recording's audio.
+- **`linger record`** uploads as it records too, when the device is signed in and the library
+  consent was given: it queues through the same `queue_recording` as the app, as each part
+  closes and at the end, then waits (`--timeout`, ten minutes by default) until the outbox is
+  empty, or says what is still waiting for the next sync.
 
 **Built (October 21), item 3, smaller than planned:** a recording from before M1b that was
 transcribed here is imported when sync starts, once (outbox kind `sermon_import`): its transcript
