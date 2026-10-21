@@ -81,6 +81,10 @@ struct Input {
     cursor: usize,
     /// After `finish`: hand over everything, then signal the end of the stream.
     finishing: bool,
+    /// The samples last handed over. The converter may read them until it calls back again,
+    /// which can be in a later `drain`, after `pending` has moved; so they are a copy that only
+    /// the next callback replaces.
+    handed: Vec<i16>,
 }
 
 /// Returned by the input callback when the pushed samples are used up: the converter returns it
@@ -123,7 +127,7 @@ impl Encoder {
         })?;
         let mut e = Self {
             converter,
-            input: Input { pending: Vec::new(), cursor: 0, finishing: false },
+            input: Input { pending: Vec::new(), cursor: 0, finishing: false, handed: Vec::new() },
             max_packet: 0,
             priming: 0,
         };
@@ -280,14 +284,17 @@ unsafe extern "C-unwind" fn supply(
         unsafe { *packets = 0 };
         return NO_INPUT_YET;
     }
-    // SAFETY: as above; the slice stays in `pending` until `drain` returns.
+    // The converter is done with the previous buffer now that it calls again.
+    input.handed.clear();
+    input.handed.extend_from_slice(&input.pending[input.cursor..input.cursor + give]);
+    // SAFETY: as above; `handed` stays as it is until the next call of this callback.
     unsafe {
         *packets = give as u32;
         (*list).mNumberBuffers = 1;
         (*list).mBuffers[0] = AudioBuffer {
             mNumberChannels: 1,
             mDataByteSize: (give * 2) as u32,
-            mData: input.pending.as_mut_ptr().add(input.cursor).cast(),
+            mData: input.handed.as_mut_ptr().cast(),
         };
     }
     input.cursor += give;
