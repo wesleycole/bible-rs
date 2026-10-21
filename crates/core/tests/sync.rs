@@ -773,3 +773,52 @@ fn an_interrupted_recording_is_finished_from_what_is_on_disk() {
         assert_eq!(server.joined_files(&m.id, "uploadPart"), (1, m4a), "the one closed part's M4A");
     }
 }
+
+/// Recordings from before M1b: one transcribed here comes into the library `ready` with its
+/// transcript as the text file, once; one never transcribed stays on the device.
+#[test]
+fn a_recording_transcribed_before_m1b_is_imported_once_with_its_transcript() {
+    use linger_core::recording::{ChunkWriter, SAMPLE_RATE, Source};
+    let server = FakeServer::new();
+    let mut a = Device::new("sermon-import");
+    let old = |a: &Device| {
+        let mut w = ChunkWriter::create(&a.dir, Source::Microphone, None).unwrap();
+        w.push(&tone(4)[..SAMPLE_RATE as usize * 4]).unwrap();
+        let dir = w.dir().to_path_buf();
+        (dir, w.finish().unwrap())
+    };
+    let (dir, m) = old(&a);
+    linger_core::recording::save_details(
+        &a.dir,
+        &m.id,
+        linger_core::recording::Details { title: Some("Grace".into()), ..Default::default() },
+    )
+    .unwrap();
+    let earlier = br#"{"recording_id":"x","recorded_at":1,"duration_ms":4000,"language":null,"segments":[{"start_ms":0,"end_ms":4000,"speaker":"A","text":"Turn to Romans 8."}]}"#;
+    std::fs::write(dir.join("transcript.json"), earlier).unwrap();
+    let (_, untranscribed) = old(&a);
+
+    a.start_as(&server, USER_1);
+    a.store.queue_recordings(&a.dir.clone(), None).unwrap();
+    a.settle(&server);
+    let imported = server.imported_sermons();
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0]["uid"], m.id.as_str());
+    assert_eq!(imported[0]["details"]["title"], "Grace");
+    assert_eq!(imported[0]["durationMs"], 4000);
+    let item = server.item(&m.id).expect("the sermon");
+    assert_eq!(item.status, linger_core::records::ItemStatus::Ready);
+    // The library's copy came back beside the recording, in the library's shape.
+    let kept = std::fs::read_to_string(dir.join("transcript.json")).unwrap();
+    assert!(kept.contains("\"durationMs\":4000") && kept.contains("Turn to Romans 8."), "{kept}");
+    assert!(server.item(&untranscribed.id).is_none() && server.finished_sermons().is_empty());
+    assert!(linger_core::recording::read(&dir).unwrap().uploaded.is_some());
+
+    // The next start queues nothing again.
+    a.stop();
+    a.start_as(&server, USER_1);
+    a.store.queue_recordings(&a.dir.clone(), None).unwrap();
+    assert_eq!(a.store.pending_changes(), 0);
+    a.settle(&server);
+    assert_eq!(server.imported_sermons().len(), 1);
+}

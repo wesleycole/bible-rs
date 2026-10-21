@@ -134,14 +134,19 @@ pub fn load(data_dir: &Path, recording_id: &str) -> Option<Transcript> {
 }
 
 fn read(data_dir: &Path, m: &Manifest) -> Option<Transcript> {
-    let bytes = std::fs::read(path(data_dir, &m.id)).ok()?;
-    let text = match serde_json::from_slice::<records::Transcript>(&bytes) {
-        Ok(text) => text,
-        Err(_) => serde_json::from_slice::<Earlier>(&bytes).ok()?.into(),
-    };
+    let text = text_in(&recording::recordings_dir(data_dir).join(&m.id))?;
     let t =
         Transcript { recording_id: m.id.clone(), recorded_at: m.started_at, text, about: About::default() };
     Some(t.with_manifest(m))
+}
+
+/// The transcript kept beside the recording in `dir`, in the library's shape or an earlier build's.
+pub(crate) fn text_in(dir: &Path) -> Option<records::Transcript> {
+    let bytes = std::fs::read(dir.join("transcript.json")).ok()?;
+    match serde_json::from_slice::<records::Transcript>(&bytes) {
+        Ok(text) => Some(text),
+        Err(_) => Some(serde_json::from_slice::<Earlier>(&bytes).ok()?.into()),
+    }
 }
 
 /// Keeps the library's transcript of the recording in `dir` beside it, as `transcript.json`. The

@@ -240,9 +240,17 @@ impl SyncHandle {
     /// Runs a Convex function through the engine's connection, blocking until it answers (the
     /// Ask tool loop, from M2).
     pub fn call(&self, kind: CallKind, name: &str, args: Value) -> Result<Value, CallError> {
+        self.request(kind, name, args)
+            .recv()
+            .unwrap_or_else(|_| Err(CallError::Offline("sync stopped".into())))
+    }
+
+    /// [`call`](Self::call) without waiting: the answer arrives on the receiver (which
+    /// disconnects if sync stops first), so a UI thread can poll it.
+    pub fn request(&self, kind: CallKind, name: &str, args: Value) -> Receiver<Result<Value, CallError>> {
         let (reply, answer) = channel();
         self.send(Event::Call(kind, name.into(), args, reply));
-        answer.recv().unwrap_or_else(|_| Err(CallError::Offline("sync stopped".into())))
+        answer
     }
 
     /// Waits until the outbox is empty and the feed is caught up; returns the cursor, or the
@@ -600,10 +608,16 @@ impl Engine {
             WriteAnswer::Ok { seq, record } => {
                 self.written = self.written.max(seq);
                 self.data_changed |= matches!(entry.key, cache::Key::Uid(_));
+                // The record may bring a file to fetch (an imported sermon's text).
+                self.fetch_due |= record.is_some();
                 cache::sent(&mut self.conn, entry, seq, record.as_ref())?;
                 // The library has the whole recording: it isn't queued again, by this account or
                 // the next to sign in here.
-                if let (crate::study::Kind::SermonEnd, cache::Key::Uid(uid)) = (entry.kind, &entry.key) {
+                if let (
+                    crate::study::Kind::SermonEnd | crate::study::Kind::SermonImport,
+                    cache::Key::Uid(uid),
+                ) = (entry.kind, &entry.key)
+                {
                     let dir = self.files_dir.parent().map(|d| crate::recording::recordings_dir(d).join(uid));
                     if let (Some(dir), Some(owner)) = (dir.filter(|d| d.is_dir()), cache::owner(&self.conn)?)
                     {
@@ -779,6 +793,8 @@ struct FakeState {
     no_audio: bool,
     /// The arguments of each `sermons.finish`, in order.
     finished: Vec<Value>,
+    /// The arguments of each `sermons.import` that made a sermon.
+    imported: Vec<Value>,
 }
 
 /// What `convex/lib/conflict.ts`'s `decideByUid` decides.
@@ -928,6 +944,11 @@ impl FakeServer {
     /// The item `uid`, as the server holds it.
     pub fn item(&self, uid: &str) -> Option<Item> {
         self.lock().items.get(uid).cloned()
+    }
+
+    /// The arguments of each `sermons.import` that made a sermon.
+    pub fn imported_sermons(&self) -> Vec<Value> {
+        self.lock().imported.clone()
     }
 
     /// The arguments of each `sermons.finish` so far.
@@ -1289,6 +1310,63 @@ impl FakeState {
         Ok(answer(WriteAnswer::Ok { seq, record: self.item(&uid) }))
     }
 
+    /// `sermons.import`: a sermon transcribed on the device, `ready` with its attached `text` file,
+    /// which must be the `text` it sends and a transcript.
+    fn import_sermon(&mut self, args: &Value) -> Result<Value, CallError> {
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        if let Some(item) = self.items.get(&uid) {
+            return Ok(answer(WriteAnswer::Ok { seq: item.seq, record: self.item(&uid) }));
+        }
+        let file_uid = args["textFileUid"].as_str().unwrap_or_default().to_string();
+        let storage = match self.files.get(&file_uid) {
+            Some((Some(owner), role, storage)) if *owner == uid && role == "text" => storage.clone(),
+            _ => return Err(refused("That transcript isn't attached to this sermon.")),
+        };
+        let text = args["text"].as_str().unwrap_or_default();
+        if self.uploads.get(&storage).map(Vec::as_slice) != Some(text.as_bytes()) {
+            return Err(refused("The transcript doesn't match its file."));
+        }
+        serde_json::from_str::<crate::records::Transcript>(text)
+            .map_err(|_| refused("The transcript isn't a transcript."))?;
+        let seq = self.next_seq();
+        let item = Item {
+            uid: uid.clone(),
+            seq,
+            deleted_at: None,
+            kind: ItemKind::Sermon,
+            title: args["details"]["title"].as_str().unwrap_or_default().into(),
+            status: ItemStatus::Ready,
+            text: None,
+            text_file_uid: Some(file_uid.clone()),
+            excerpt: None,
+            summary: None,
+            outline: None,
+            source_uid: None,
+            sermon_uid: None,
+            offset_ms: None,
+            recorded_on: args["recordedOn"].as_str().map(Into::into),
+            details: serde_json::from_value(args["details"].clone()).ok(),
+            conflict_of: None,
+            captured_at: now_ms() as u64,
+            updated_at: Some(now_ms() as u64),
+            unreviewed: false,
+            anchors: Vec::new(),
+            files: vec![crate::records::FileRef {
+                uid: file_uid,
+                role: crate::records::FileRole::Text,
+                content_type: "application/json".into(),
+                bytes: text.len() as u64,
+                url: format!("fake://storage/{storage}"),
+                page: None,
+                duration_ms: None,
+            }],
+        };
+        self.items.insert(uid.clone(), item);
+        self.imported.push(args.clone());
+        self.wrote();
+        Ok(answer(WriteAnswer::Ok { seq, record: self.item(&uid) }))
+    }
+
     /// The bytes of `owner`'s files in `role`, joined in `partIndex` order.
     fn joined(&self, owner: &str, role: &str) -> Vec<u8> {
         let mut pieces: Vec<(u64, &Vec<u8>)> = self
@@ -1407,6 +1485,7 @@ impl FakeBackend {
             "library/chats:remove" => s.remove_chat(args),
             "library/sermons:begin" => s.begin_sermon(args),
             "library/sermons:finish" => s.finish_sermon(args),
+            "library/sermons:import" => s.import_sermon(args),
             ATTACH => s.attach(args),
             FEED => Ok(s.page(args["after"].as_u64().unwrap_or(0))),
             CLOCK => Ok(json!({ "serverTime": now_ms() })),

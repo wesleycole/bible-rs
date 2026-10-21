@@ -12,7 +12,7 @@ import { Clock, Effect, Option, Schema } from "effect"
 import { components, internal } from "../_generated/api.js"
 import type { Doc, Id } from "../_generated/dataModel.js"
 import { AllowanceExhausted, InvalidRequest, PlanRequired, UpstreamFailed, type UpstreamUnavailable } from "../../shared/Errors.js"
-import { Item, type Transcript, TranscriptFields, type WriteAnswer } from "../../shared/records.js"
+import { Item, Transcript, TranscriptFields, type WriteAnswer } from "../../shared/records.js"
 import { Allowance } from "../lib/allowance.js"
 import { replaceChunks } from "../lib/chunks.js"
 import { effectInternalAction, effectInternalMutation, effectInternalQuery, effectMutation, userServices } from "../lib/effect.js"
@@ -219,6 +219,81 @@ export const transcribeNow = effectMutation({
     return { result: "ok", seq: written.seq, record: yield* asRecord("item", written) }
   })
 })
+
+export const ImportArgs = Schema.Struct({
+  uid: Uid,
+  details: Item.fields.details.schema,
+  recordedOn: Item.fields.recordedOn.schema,
+  durationMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** The attached `text` file, the recording's transcript as `records::Transcript`. */
+  textFileUid: Uid,
+  /** The text file's bytes again, as a string: a mutation can't read stored bytes, so it reads these and checks them against the file's SHA-256. */
+  text: Schema.String
+})
+
+/**
+ * Brings a recording transcribed on the device before M1b into the library, `ready`: its details
+ * and its transcript, searchable at once, and digested afterwards. It spends nothing, since the
+ * device did the transcribing, and isn't unreviewed, since it is the person's own transcript.
+ * Importing the same uid again only answers again.
+ */
+const importTranscribed = effectMutation({
+  args: ImportArgs,
+  handler: Effect.fn("sermons.import")(function*(args): Effect.fn.Return<WriteAnswer, InvalidRequest, MutationCtx | CurrentUser | Sequence | Files> {
+    const ctx = yield* MutationCtx
+    const { userId } = yield* CurrentUser
+    const existing = yield* db(() => ctx.db.query("items").withIndex("by_user_uid", (q) => q.eq("userId", userId).eq("uid", args.uid)).unique())
+    if (existing) {
+      if (existing.kind !== "sermon") return yield* new InvalidRequest({ message: "That record isn't a sermon." })
+      return { result: "ok", seq: existing.seq, record: yield* asRecord("item", existing) }
+    }
+    const file = yield* (yield* Files).get(args.textFileUid)
+    if (!file || file.role !== "text" || file.ownerUid !== args.uid) {
+      return yield* new InvalidRequest({ message: "That transcript isn't attached to this sermon." })
+    }
+    const bytes = new TextEncoder().encode(args.text)
+    if ((yield* Effect.promise(() => sha256Hex(bytes))) !== file.sha256) {
+      return yield* new InvalidRequest({ message: "The transcript doesn't match its file." })
+    }
+    const transcript = yield* Effect.try({ try: () => JSON.parse(args.text) as unknown, catch: () => new InvalidRequest({ message: "The transcript isn't JSON." }) }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Transcript)),
+      Effect.mapError(() => new InvalidRequest({ message: "The transcript isn't a transcript." }))
+    )
+    const seq = yield* (yield* Sequence).next
+    const now = yield* Clock.currentTimeMillis
+    const durationSec = Math.ceil(args.durationMs / 1000)
+    const itemId = yield* db(() =>
+      ctx.db.insert("items", {
+        userId,
+        uid: args.uid,
+        kind: "sermon",
+        status: "ready",
+        title: args.details.title ?? "",
+        details: args.details,
+        recordedOn: args.recordedOn,
+        textFileUid: file.uid,
+        excerpt: excerptOf(transcript),
+        unreviewed: false,
+        files: [],
+        anchors: [],
+        capturedAt: now,
+        seq,
+        updatedAt: now
+      })
+    )
+    // The job row, done, so a Pro user's audio can follow through the same join later.
+    const sermonId = yield* db(() => ctx.db.insert("sermons", { userId, itemId, durationSec, audioSeconds: durationSec, trial: false, status: "done", createdAt: now, doneAt: now }))
+    const sermon = (yield* db(() => ctx.db.get(sermonId)))!
+    // `writeItem` takes the next seq again, with the item's files (the text) as the record carries them.
+    const written = yield* writeItem(sermon, {})
+    yield* replaceChunks(ctx, written, chunkTranscript(transcript, false))
+    yield* db(() => ctx.scheduler.runAfter(0, internal.library.digest.run, { itemId }))
+    return { result: "ok", seq: written.seq, record: yield* asRecord("item", written) }
+  })
+})
+
+// `import` is a keyword, so the function is exported under its name here: `library/sermons:import`.
+export { importTranscribed as import }
 
 // ---------------------------------------------------------------------------------------------
 // The workflow

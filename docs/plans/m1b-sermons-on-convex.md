@@ -181,12 +181,25 @@ have. Decisions:
   ends at its last closed chunk (`ended_at` = start + its samples), and its M4A holds the AAC
   parts that closed, presenting no more than they hold; the open chunk and part are lost, as a
   crash loses them. Its `finish` then carries this device's duration, rather than the dead-device
-  cron's answer two hours later. The recording still being recorded is left open.
+  cron's answer two hours later. The recording still being recorded is left open. Its `durationMs`
+  comes from its closed chunks and its M4A from its closed parts, so the item's duration and the
+  server's `audioSeconds` can differ by up to one part (five minutes).
 - **Status:** About This Recording reads the sermon item's status and says it in a line;
   `waiting` says why (Free: Pro transcribes in the cloud; Pro without hours: they renew; Pro
   with hours: Transcribe Now, which calls `sermons.transcribeNow` through the engine). Saving
   details writes the manifest and the item (`set_sermon_details`: into `begin` if it hasn't gone,
   else an edit of the item). Signing out says when it is waiting on a recording's audio.
+
+**Built (October 21), item 3, smaller than planned:** a recording from before M1b that was
+transcribed here is imported when sync starts, once (outbox kind `sermon_import`): its transcript
+is attached as the item's `text` file and `library/sermons.import({ uid, details, recordedOn,
+durationMs, textFileUid, text })` makes the sermon `ready`, chunked at once and digested after,
+spending nothing and not `unreviewed`. A Convex mutation can't read stored bytes, so `text` is the
+file's bytes again, checked against its SHA-256 before it is decoded as a `records::Transcript`.
+`import` also makes a `done` sermons row, so the audio can join later. Not built yet: a Pro user's
+audio, encoded from the WAV chunks and uploaded after the import; and pre-M1b recordings that were
+never transcribed, which stay on the device until that piece. There is no new sheet: the
+sidebar's sync status counts the imports with everything else.
 
 ## Tests
 

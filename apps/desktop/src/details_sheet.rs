@@ -116,6 +116,7 @@ impl DetailsSheet {
         p: &Palette,
         status: Option<ItemStatus>,
         plan: Plan,
+        starting: bool,
     ) -> Outcome {
         let screen = ctx.content_rect();
         let mut close = false;
@@ -132,7 +133,7 @@ impl DetailsSheet {
         egui::Area::new(egui::Id::new("details-sheet"))
             .order(Order::Foreground)
             .fixed_pos(at)
-            .show(ctx, |ui| outcome = self.sheet(ui, p, at, status, plan));
+            .show(ctx, |ui| outcome = self.sheet(ui, p, at, status, plan, starting));
         if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             return Outcome::Close;
         }
@@ -146,6 +147,7 @@ impl DetailsSheet {
         at: egui::Pos2,
         status: Option<ItemStatus>,
         plan: Plan,
+        starting: bool,
     ) -> Outcome {
         let height = 482.0;
         let sheet = Rect::from_min_size(at, vec2(WIDTH, height));
@@ -167,10 +169,10 @@ impl DetailsSheet {
         );
         painter.hline(sheet.x_range(), sheet.top() + 51.5, Stroke::new(1.0, p.separator));
         text(&painter, x, sheet.top() + 68.0, 18.0, &self.about, theme::ui_font(13.0), p.ink_2, false);
-        let line = status_line(status, plan);
+        let line = if starting { "Starting…" } else { status_line(status, plan) };
         text(&painter, x, sheet.top() + 90.0, 18.0, line, theme::ui_font(13.0), p.ink_3, false);
         // A Pro sermon that waited for hours, now there are some.
-        if status == Some(ItemStatus::Waiting) && plan == Plan::ProWithHours {
+        if status == Some(ItemStatus::Waiting) && plan == Plan::ProWithHours && !starting {
             let w = widgets::plain_button_width(ui, "Transcribe Now");
             let r = Rect::from_min_size(pos2(sheet.right() - PAD - w, sheet.top() + 84.0), vec2(w, 28.0));
             if widgets::plain_button(ui, p, r, "Transcribe Now", egui::Id::new("details-transcribe"))

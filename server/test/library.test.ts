@@ -563,6 +563,49 @@ describe("library.sermons (the transcription workflow)", () => {
     })
   })
 
+  it("imports a sermon transcribed on the device: ready and searchable at once, digested after, spending nothing; a retry answers again, and a mismatched or malformed transcript is refused", async () => {
+    vi.useFakeTimers()
+    const t = await makeConvex()
+    const bob = as(t, "user_bob")
+    const calls = fakeProvider({ job })
+    const transcript = { durationMs: 61_200, segments: [{ startMs: 0, endMs: 61_200, speaker: "A", text: "In the beginning God." }] }
+    const text = JSON.stringify(transcript)
+    const bytes = new TextEncoder().encode(text)
+    const attachText = async (uid: string, b: Uint8Array<ArrayBuffer>) => {
+      await bob.mutation(api.library.files.attach, { uid: hex(b), ownerUid: uid, role: "text", ...(await upload(t, b, "application/json")) })
+      return hex(b)
+    }
+    const textFileUid = await attachText("old", bytes)
+    const args = { uid: "old", details, recordedOn: "2026-06-07", durationMs: 61_200, textFileUid }
+    // Bytes that aren't the file's, or a file that isn't a transcript, go nowhere.
+    await expect(bob.mutation(api.library.sermons.import, { ...args, text: text + " " })).rejects.toThrow(/doesn't match/)
+    const junk = new TextEncoder().encode(JSON.stringify({ hello: 1 }))
+    const junkUid = await attachText("old", junk)
+    await expect(bob.mutation(api.library.sermons.import, { ...args, textFileUid: junkUid, text: JSON.stringify({ hello: 1 }) })).rejects.toThrow(/isn't a transcript/)
+
+    const answer = await bob.mutation(api.library.sermons.import, { ...args, text })
+    expect(answer).toMatchObject({
+      result: "ok",
+      record: { type: "item", uid: "old", status: "ready", recordedOn: "2026-06-07", textFileUid, excerpt: "In the beginning God.", unreviewed: false }
+    })
+    // The text file is the item's; the junk one is only an attachment the device will never use.
+    expect((await itemOf(t, "old")).files.filter((f) => f.role === "text").map((f) => f.uid)).toContain(textFileUid)
+    // Searchable before the digest runs.
+    expect((await t.run((ctx) => ctx.db.query("chunks").collect())).map((c) => c.text)).toEqual(["In the beginning God."])
+    // A retry answers the same record and makes nothing new.
+    expect(await bob.mutation(api.library.sermons.import, { ...args, text })).toMatchObject({ seq: answer.seq })
+    expect(await t.run((ctx) => ctx.db.query("sermons").collect())).toHaveLength(1)
+    await t.finishAllScheduledFunctions(vi.runAllTimers)
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /v1/messages"])
+    expect(await itemOf(t, "old")).toMatchObject({ status: "ready", outline: "- Creation", anchors: [{ origin: "model" }] })
+    // Nothing spent: no reservation, no sermon usage, the trial still there.
+    const account = await accountOf(t, "user_bob")
+    expect(account.reservations).toEqual([])
+    expect(account.usage.map((u) => u.sermonSeconds ?? 0).filter((n) => n > 0)).toEqual([])
+    expect(account.ledger.map((l) => l.kind)).toEqual(["digest"])
+    expect(await bob.mutation(api.library.sermons.begin, { uid: "new", details, recordedOn: "2026-10-18" })).toEqual({ uploadAudio: true, cloudTranscript: true })
+  })
+
   it("spends a Free user's trial hour once: a failed join gives it back, a trial transcript keeps no audio, and then the plan allows nothing", async () => {
     vi.useFakeTimers()
     const t = await makeConvex()

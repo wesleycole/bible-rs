@@ -320,6 +320,9 @@ pub struct BibleApp {
     share_sheet: Option<crate::share_sheet::ShareSheet>,
     /// About This Recording: who preached and where, for a recording just stopped or one Ask cited.
     details_sheet: Option<crate::details_sheet::DetailsSheet>,
+    /// Transcribe Now, sent for this sermon and not answered yet.
+    transcribing:
+        Option<(String, std::sync::mpsc::Receiver<Result<serde_json::Value, linger_core::sync::CallError>>)>,
     /// Importing a translation (frames 13–15).
     import_sheet: Option<crate::import_sheet::ImportSheet>,
     /// Focus mode (frame 30): full screen, the chrome hidden, larger type.
@@ -475,6 +478,7 @@ impl BibleApp {
             import_sheet: None,
             share_sheet: None,
             details_sheet: None,
+            transcribing: None,
             compare: None,
             reminded: None,
             focus: false,
@@ -3305,15 +3309,36 @@ impl eframe::App for BibleApp {
                 }
             }
         }
+        // Transcribe Now's answer; the item's new status follows through the feed.
+        if let Some((_, answer)) = &self.transcribing {
+            match answer.try_recv() {
+                Ok(Ok(_)) => {
+                    self.transcribing = None;
+                    self.toast(&ctx, "Transcribing in the cloud");
+                }
+                Ok(Err(e)) => {
+                    self.transcribing = None;
+                    self.toast(&ctx, format!("Couldn't transcribe it now: {e}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(100))
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.transcribing = None;
+                    self.toast(&ctx, "Couldn't transcribe it now: sync stopped");
+                }
+            }
+        }
         if let Some(sheet) = &mut self.details_sheet {
             let status = self.study.sermon_status(sheet.id());
+            let starting = self.transcribing.as_ref().is_some_and(|(uid, _)| uid == sheet.id());
             use crate::details_sheet::Plan;
             let plan = match &self.account.me {
                 Some(m) if m.is_pro() && m.sermons.hours_left > 0.0 => Plan::ProWithHours,
                 Some(m) if m.is_pro() => Plan::Pro,
                 _ => Plan::Free,
             };
-            match sheet.show(&ctx, p, status, plan) {
+            match sheet.show(&ctx, p, status, plan, starting) {
                 crate::details_sheet::Outcome::Open => {}
                 crate::details_sheet::Outcome::Close => self.details_sheet = None,
                 crate::details_sheet::Outcome::Save { id, details, mine } => {
@@ -3322,16 +3347,13 @@ impl eframe::App for BibleApp {
                 }
                 crate::details_sheet::Outcome::TranscribeNow(uid) => {
                     use linger_core::sync::CallKind;
-                    let answer = self.sync.as_ref().map(|s| {
-                        s.call(
-                            CallKind::Mutation,
-                            "library/sermons:transcribeNow",
-                            serde_json::json!({ "uid": uid }),
-                        )
-                    });
-                    match answer {
-                        Some(Ok(_)) => self.toast(&ctx, "Transcribing in the cloud"),
-                        Some(Err(e)) => self.toast(&ctx, format!("Couldn't transcribe it now: {e}")),
+                    let args = serde_json::json!({ "uid": uid });
+                    match &self.sync {
+                        Some(sync) => {
+                            let answer =
+                                sync.request(CallKind::Mutation, "library/sermons:transcribeNow", args);
+                            self.transcribing = Some((uid, answer));
+                        }
                         None => self.toast(&ctx, "Turn on sync to transcribe in the cloud"),
                     }
                 }

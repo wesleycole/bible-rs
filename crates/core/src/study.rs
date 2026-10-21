@@ -551,6 +551,9 @@ pub(crate) enum Kind {
     SermonPart,
     /// The end of a recording: its M4A's slices, then `sermons.finish`; keyed by its uid.
     SermonEnd,
+    /// A recording transcribed here before M1b: its transcript as the `text` file, then
+    /// `sermons.import`; keyed by its uid.
+    SermonImport,
 }
 
 impl Kind {
@@ -563,6 +566,7 @@ impl Kind {
             Kind::SermonBegin => "sermon",
             Kind::SermonPart => "sermon_part",
             Kind::SermonEnd => "sermon_end",
+            Kind::SermonImport => "sermon_import",
         }
     }
 
@@ -576,6 +580,7 @@ impl Kind {
             Kind::SermonBegin,
             Kind::SermonPart,
             Kind::SermonEnd,
+            Kind::SermonImport,
         ]
         .into_iter()
         .find(|k| k.name() == name)
@@ -587,7 +592,7 @@ impl Kind {
             Kind::Bookmark => "bookmarks",
             Kind::Note => "items",
             Kind::Chat => "chats",
-            Kind::SermonBegin | Kind::SermonPart | Kind::SermonEnd => "items",
+            Kind::SermonBegin | Kind::SermonPart | Kind::SermonEnd | Kind::SermonImport => "items",
         }
     }
 
@@ -904,17 +909,40 @@ impl StudyStore {
     /// [`queue_recording`](Self::queue_recording)), when sync starts: those recorded while it
     /// wasn't running, and any the app stopped without finishing, which end at their last closed
     /// chunk. `recording` is the one still being recorded, left open. Recordings already uploaded
-    /// (to this account or another) are skipped, as are those from before M1b (no `recorded_on`),
-    /// which come into the library by migration.
+    /// (to this account or another) are skipped. Those from before M1b (no `recorded_on`) that
+    /// were transcribed here are imported: their details and transcript, `ready` at once.
     pub fn queue_recordings(&mut self, data_dir: &Path, recording: Option<&str>) -> Result<()> {
         for m in crate::recording::list(data_dir) {
-            if m.uploaded.is_some() || m.recorded_on.is_none() {
+            if m.uploaded.is_some() {
                 continue;
             }
             let dir = crate::recording::recordings_dir(data_dir).join(&m.id);
+            if m.recorded_on.is_none() {
+                if crate::transcribe::text_in(&dir).is_some() {
+                    self.queue_import(&dir, &m.id)?;
+                }
+                continue;
+            }
             let m =
                 if recording == Some(m.id.as_str()) { m } else { crate::recording::close_interrupted(&dir)? };
             self.queue_recording(&dir, &m)?;
+        }
+        Ok(())
+    }
+
+    /// Queues a transcribed recording from before M1b for `sermons.import`, once.
+    fn queue_import(&mut self, dir: &Path, uid: &str) -> Result<()> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let new = tx.execute("INSERT OR IGNORE INTO recordings(uid, ended) VALUES(?1, 1)", [uid])? > 0;
+        if new {
+            tx.execute(
+                "INSERT INTO outbox(kind, key, payload, base_seq, created) VALUES(?1, ?2, ?3, 0, ?4)",
+                params![Kind::SermonImport.name(), uid, json!({ "uid": uid, "dir": dir }).to_string(), now()],
+            )?;
+        }
+        tx.commit()?;
+        if new {
+            self.queued();
         }
         Ok(())
     }
@@ -1985,6 +2013,30 @@ pub(crate) mod cache {
                         args["details"]["startedAt"] = made(started.as_i64().unwrap_or_default());
                     }
                     return Ok(Some(entry(Key::Uid(uid), "library/sermons:begin", args, Vec::new())));
+                }
+                (Kind::SermonImport, Sql::Text(uid)) => {
+                    let p: Value = serde_json::from_str(&payload)?;
+                    let dir = Path::new(p["dir"].as_str().unwrap_or_default());
+                    let found = crate::recording::read(dir).zip(crate::transcribe::text_in(dir));
+                    let Some((m, transcript)) = found else {
+                        conn.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+                        continue;
+                    };
+                    let text = serde_json::to_string(&transcript)?;
+                    let upload =
+                        Upload::new(&uid, "text", None, "application/json", text.clone().into_bytes());
+                    let args = json!({
+                        "uid": uid,
+                        "details": {
+                            "title": m.details.title, "speaker": m.details.speaker, "from": m.details.from,
+                            "startedAt": made(m.started_at),
+                        },
+                        "recordedOn": m.recorded_on.clone().unwrap_or_else(|| crate::time::rfc3339(m.started_at)[..10].into()),
+                        "durationMs": m.samples * 1000 / u64::from(crate::recording::SAMPLE_RATE),
+                        "textFileUid": upload.uid,
+                        "text": text,
+                    });
+                    return Ok(Some(entry(Key::Uid(uid), "library/sermons:import", args, vec![upload])));
                 }
                 (Kind::SermonPart | Kind::SermonEnd, Sql::Text(key)) => {
                     let p: Value = serde_json::from_str(&payload)?;
