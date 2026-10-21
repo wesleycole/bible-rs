@@ -8,8 +8,11 @@
 //! whatever translation the reader shows. The same tools serve the model's tool calls and the
 //! offline stand-in, [`local_reply`].
 //!
-//! Sermons the user recorded are cited the same way, by recording and moment:
-//! `{{sermon 1a2b3c4d 12:30}}`.
+//! The user's library (their sermons and notes) is cited the same way, by item and place:
+//! `{{item <uid> 12:30}}` for a moment in a sermon, `{{item <uid> p3}}` for a page, `{{item <uid>}}`
+//! for a note. Chats from before the library cite sermons as `{{sermon 1a2b3c4d 12:30}}`, which
+//! still parses. The library tools reach Convex through one door, [`UserLibrary`]: on a device
+//! the sync thread's connection, so there is no second client.
 
 use std::sync::Arc;
 
@@ -22,10 +25,10 @@ use crate::crossrefs::CrossRefs;
 use crate::model::Translation;
 use crate::names::{Category, Entity, Names};
 use crate::original::{self, Original};
-use crate::recording::Source;
+use crate::records::{ItemText, SearchHit, VerseId};
 use crate::reference::{self, Reference};
 use crate::search::{self, Scope};
-use crate::transcribe::{self, Transcript};
+use crate::transcribe;
 
 /// The translations Ask may read: bundled and public domain, so their text may go to a model.
 /// The first is the default.
@@ -38,15 +41,27 @@ pub fn ask_translation(preference: &str) -> &'static str {
 }
 
 /// For the model, with every question: "Passages you read and search come from the BSB (Berean
-/// Standard Bible). The user has recorded 3 sermons. Their own church is Grace Church." The system
-/// prompt says what to do with sermons; this says whether there are any, and which church is the
-/// user's, so a sermon from elsewhere isn't taken for it.
-pub fn tools_note(tools: &Tools) -> String {
+/// Standard Bible). The user's library has 12 items; 3 of them touch John 3. Their own church is
+/// Grace Church." The system prompt says what to do with the library; this says how much there is,
+/// how much of it bears on the chapter being read, and which church is the user's, so a sermon
+/// from elsewhere isn't taken for it. Nothing is said of the library when there is none to reach.
+pub fn tools_note(tools: &Tools, chapter: Option<ChapterIdx>) -> String {
     let t = &tools.translation;
     let mut note = format!("Passages you read and search come from the {} ({}).", t.meta.abbrev, t.meta.name);
-    match tools.sermons.len() {
-        0 => {}
-        n => note.push_str(&format!(" The user has recorded {n} sermon{}.", if n == 1 { "" } else { "s" })),
+    if let Some(library) = &tools.library
+        && let Ok((total, here)) = library.counts(chapter)
+    {
+        let items = format!("{total} item{}", if total == 1 { "" } else { "s" });
+        match (total, here, chapter) {
+            (0, ..) => note.push_str(" The user's library is empty."),
+            (_, 0, _) | (_, _, None) => note.push_str(&format!(" The user's library has {items}.")),
+            (_, 1, Some(c)) => {
+                note.push_str(&format!(" The user's library has {items}; 1 of them touches {}.", c.display()))
+            }
+            (_, n, Some(c)) => {
+                note.push_str(&format!(" The user's library has {items}; {n} of them touch {}.", c.display()))
+            }
+        }
     }
     if let Some(church) = &tools.church {
         note.push_str(&format!(" Their own church is {church}."));
@@ -119,7 +134,15 @@ impl Message {
 pub enum Segment {
     Text(String),
     Verse(Reference),
-    /// A moment in a recorded sermon: the recording id (or its first characters) and where.
+    /// A place in a library item: its uid (or its first characters), and for a sermon the moment,
+    /// for a photographed item the page; neither for a note.
+    Item {
+        uid: String,
+        at_ms: Option<u64>,
+        page: Option<u32>,
+    },
+    /// A moment in a recorded sermon, as chats from before the library cite it: the recording id
+    /// (or its first characters) and where.
     Sermon {
         id: String,
         at_ms: u64,
@@ -135,7 +158,7 @@ pub fn segments(text: &str) -> Vec<Segment> {
         let Some(len) = rest[start + 2..].find("}}") else { break };
         let inner = &rest[start + 2..start + 2 + len];
         pending.push_str(&rest[..start]);
-        match parse_citation(inner).map(Segment::Verse).or_else(|| parse_sermon_citation(inner)) {
+        match parse_citation(inner).map(Segment::Verse).or_else(|| parse_item_citation(inner)) {
             Some(seg) => {
                 if !pending.is_empty() {
                     out.push(Segment::Text(std::mem::take(&mut pending)));
@@ -160,16 +183,32 @@ fn parse_citation(inner: &str) -> Option<Reference> {
     (exact_book(&book_key(inner)) == Some(r.book)).then_some(r)
 }
 
-/// `sermon 1a2b3c4d 12:30`.
-fn parse_sermon_citation(inner: &str) -> Option<Segment> {
+/// `item <uid> 12:30`, `item <uid> p3` or `item <uid>`; and the older `sermon 1a2b3c4d 12:30`.
+fn parse_item_citation(inner: &str) -> Option<Segment> {
     let mut words = inner.split_whitespace();
-    if !words.next()?.eq_ignore_ascii_case("sermon") {
+    let kind = words.next()?;
+    let id = words.next()?.to_string();
+    if id.len() < 4 || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return None;
     }
-    let id = words.next()?.to_string();
-    let at_ms = transcribe::parse_clock(words.next()?)?;
-    (words.next().is_none() && id.len() >= 4 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
-        .then_some(Segment::Sermon { id, at_ms })
+    let place = words.next();
+    if words.next().is_some() {
+        return None;
+    }
+    if kind.eq_ignore_ascii_case("sermon") {
+        return Some(Segment::Sermon { id, at_ms: transcribe::parse_clock(place?)? });
+    }
+    if !kind.eq_ignore_ascii_case("item") {
+        return None;
+    }
+    let (at_ms, page) = match place {
+        None => (None, None),
+        Some(p) => match p.strip_prefix(['p', 'P']).and_then(|n| n.parse::<u32>().ok()) {
+            Some(n) if n >= 1 => (None, Some(n)),
+            _ => (Some(transcribe::parse_clock(p)?), None),
+        },
+    };
+    Some(Segment::Item { uid: id, at_ms, page })
 }
 
 fn exact_book(key: &str) -> Option<BookId> {
@@ -203,22 +242,31 @@ pub fn verse_range(r: &Reference) -> Option<(VerseRef, VerseRef)> {
 }
 
 /// The tools the assistant can call, run against a public-domain translation (see
-/// [`ask_translation`]) and the sermons the user has recorded.
+/// [`ask_translation`]) and the user's library.
 pub struct Tools {
     pub translation: Arc<Translation>,
-    /// Transcribed sermons, newest first.
-    pub sermons: Arc<Vec<Transcript>>,
+    /// The user's library, when there is one to reach: `None` signed out, and on the web.
+    pub library: Option<Arc<dyn UserLibrary>>,
     /// The user's own church, as they named it in Settings.
     pub church: Option<String>,
+}
+
+/// The user's library, as the Ask tools reach it: the one door to Convex from a device
+/// ([`sync::SyncHandle::user_library`](crate::sync::SyncHandle::user_library), the sync thread's
+/// own connection), or a fake in tests. Arguments are JSON as the server's functions take them;
+/// answers are the shapes the server declares.
+pub trait UserLibrary: Send + Sync {
+    /// `library/search.search`; offline, what the cached items' text finds, and `true`.
+    fn search(&self, args: Value) -> Result<(Vec<SearchHit>, bool)>;
+    /// `library/items.read`: `None` when there is no such item.
+    fn read(&self, args: Value) -> Result<Option<ItemText>>;
+    /// How many items the library holds, and how many of them are anchored in `chapter`.
+    fn counts(&self, chapter: Option<ChapterIdx>) -> Result<(usize, usize)>;
 }
 
 /// The most verses one `get_passage` call returns, so a chapter of Psalm 119 can't flood the
 /// conversation.
 const PASSAGE_LIMIT: usize = 60;
-/// Words of transcript `read_sermon` returns at most: about 15 minutes of preaching.
-const SERMON_WORDS: usize = 2500;
-/// The first characters of a recording id: enough to tell a person's sermons apart.
-const SHORT_ID: usize = 8;
 /// Verses one `original_words` call returns at most: each is a few kilobytes of words.
 const ORIGINAL_VERSES: usize = 5;
 /// Lexicon entries one `lexicon` call returns in full; more are listed by number and gloss.
@@ -258,34 +306,54 @@ impl Tools {
                 }
             },
             {
-                "name": "search_sermons",
-                "description": "Searches the transcripts of sermons the user recorded, newest first: at their \
-                    own church or from elsewhere, such as a livestream or a video. Every word must appear in a \
-                    passage of the sermon. Returns excerpts with the sermon's id, the moment they were said, \
-                    and who preached and where, when the user said.",
+                "name": "search_library",
+                "description": "Searches the user's library: what they have heard, read and written in Linger, \
+                    which is sermons they recorded (at their own church or from elsewhere, such as a livestream \
+                    or a video) and their notes. It is the user's own material: not Scripture, and not \
+                    necessarily right; an unreviewed item's text was made by machine and may have reading \
+                    mistakes. Every word must appear in a passage (the last as a word prefix; use \"quotes\" \
+                    for an exact phrase). Returns passages best first, grouped by item, each with the item's \
+                    id, kind, title, who it is from, its date, the moment or page it is at, and whether the \
+                    item is anchored to the passage given.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+                        "passage": {
+                            "type": "string",
+                            "description": "The passage in question (\"Romans 8\", \"John 3:1-21\"): items \
+                                anchored to it come first."
+                        },
+                        "kinds": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ["sermon", "note", "handwritten", "slide", "page"] },
+                            "description": "Only items of these kinds."
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "A preacher's or church's name: only what is from them."
+                        },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
                     },
                     "required": ["query"],
                     "additionalProperties": false
                 }
             },
             {
-                "name": "read_sermon",
-                "description": "Reads a recorded sermon's transcript from a moment on (\"12:30\"; the start by \
-                    default), up to about 15 minutes. With no sermon id, lists the recorded sermons with what is \
-                    known of each: title, preacher, where it's from, how it was heard, the passage it names \
-                    most.",
+                "name": "read_item",
+                "description": "Reads an item from the user's library by its id (from search_library or a \
+                    citation): a note's text; a sermon's transcript from a moment on (\"12:30\"; the start by \
+                    default), up to about 15 minutes, each paragraph stamped [mm:ss]; a photographed item's \
+                    text, or one page of it with page.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "sermon": { "type": "string", "description": "A sermon id from search_sermons or the list." },
+                        "item": { "type": "string" },
                         "from": { "type": "string" },
-                        "minutes": { "type": "integer", "minimum": 1, "maximum": 15 }
+                        "minutes": { "type": "integer", "minimum": 1, "maximum": 15 },
+                        "page": { "type": "integer", "minimum": 1 }
                     },
+                    "required": ["item"],
                     "additionalProperties": false
                 }
             },
@@ -422,27 +490,58 @@ impl Tools {
                     "truncated": more,
                 }))
             }
-            "search_sermons" => {
+            "search_library" => {
+                let library = self.library()?;
                 let query = input["query"].as_str().context("query is required")?;
-                let limit = input["limit"].as_u64().unwrap_or(8).clamp(1, 20) as usize;
-                let hits = self.search_sermons(query);
-                let shown: Vec<Value> = hits.iter().take(limit).cloned().collect();
-                Ok(json!({ "sermons": self.sermons.len(), "total": hits.len(), "hits": shown }))
-            }
-            "read_sermon" => match input["sermon"].as_str() {
-                None => Ok(json!({ "sermons": self.sermons.iter().map(sermon_summary).collect::<Vec<_>>() })),
-                Some(id) => {
-                    let t = self.sermon(id)?;
-                    let from = match input["from"].as_str() {
-                        Some(f) => {
-                            transcribe::parse_clock(f).with_context(|| format!("not a time: {f:?}"))?
-                        }
-                        None => 0,
-                    };
-                    let minutes = input["minutes"].as_u64().unwrap_or(10).clamp(1, 15);
-                    Ok(read_sermon(t, from, from + minutes * 60_000))
+                let mut args = json!({ "query": query });
+                if let Some(text) = input["passage"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    let r = parse_citation(text).with_context(|| format!("not a reference: {text:?}"))?;
+                    let (a, b) =
+                        verse_range(&r).with_context(|| format!("no such passage: {}", r.display()))?;
+                    args["passage"] = json!({ "from": VerseId::from(a), "to": VerseId::from(b) });
                 }
-            },
+                if let Some(kinds) = input.get("kinds").filter(|k| k.is_array()) {
+                    args["kinds"] = kinds.clone();
+                }
+                if let Some(source) = input["source"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    args["source"] = json!(source);
+                }
+                if let Some(limit) = input["limit"].as_u64() {
+                    args["limit"] = json!(limit.clamp(1, 50));
+                }
+                let (hits, offline) = library.search(args)?;
+                let mut v =
+                    json!({ "total": hits.len(), "hits": hits.iter().map(hit_json).collect::<Vec<_>>() });
+                if offline {
+                    v["offline"] = json!(
+                        "The device is offline: this searched only the items cached on it, by their words."
+                    );
+                }
+                Ok(v)
+            }
+            "read_item" => {
+                let library = self.library()?;
+                let item = input["item"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .context("item is required")?;
+                let mut args = json!({ "uid": item });
+                if let Some(f) = input["from"].as_str() {
+                    let from = transcribe::parse_clock(f).with_context(|| format!("not a time: {f:?}"))?;
+                    args["fromMs"] = json!(from);
+                }
+                if let Some(m) = input["minutes"].as_u64() {
+                    args["minutes"] = json!(m.clamp(1, 15));
+                }
+                if let Some(p) = input["page"].as_u64() {
+                    args["page"] = json!(p.max(1));
+                }
+                match library.read(args)? {
+                    Some(t) => Ok(item_text_json(&t)),
+                    None => bail!("no item {item:?} in the user's library: it may have been deleted"),
+                }
+            }
             "original_words" => {
                 let text = input["reference"].as_str().context("reference is required")?;
                 let r = parse_citation(text).with_context(|| format!("not a reference: {text:?}"))?;
@@ -597,67 +696,9 @@ impl Tools {
         }))
     }
 
-    /// The transcribed sermon whose id starts with `id`.
-    pub fn sermon(&self, id: &str) -> Result<&Transcript> {
-        let id = id.trim();
-        let mut found = self.sermons.iter().filter(|t| !id.is_empty() && t.recording_id.starts_with(id));
-        match (found.next(), found.next()) {
-            (Some(t), None) => Ok(t),
-            (Some(_), Some(_)) => bail!("more than one sermon's id starts with {id:?}"),
-            (None, _) if self.sermons.is_empty() => bail!("the user hasn't recorded any sermons yet"),
-            (None, _) => bail!("no sermon with id {id:?}"),
-        }
-    }
-
-    /// Passages where every word of `query` is said, newest sermon first: each an excerpt of about
-    /// 60 words around the first match, timed by where it falls in its turn of speech.
-    fn search_sermons(&self, query: &str) -> Vec<Value> {
-        let terms: Vec<String> = query
-            .split(|c: char| !c.is_alphanumeric() && c != '\'')
-            .map(str::to_lowercase)
-            .filter(|w| !w.is_empty() && !STOP.contains(&w.as_str()))
-            .collect();
-        if terms.is_empty() {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        for t in self.sermons.iter() {
-            let voices = several_speakers(t);
-            for seg in &t.text.segments {
-                let words: Vec<&str> = seg.text.split_whitespace().collect();
-                let norm: Vec<String> = words
-                    .iter()
-                    .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-                    .collect();
-                // Match within a window of 80 words rather than anywhere in a long turn.
-                let window = 80.min(norm.len());
-                let Some(at) = (0..=norm.len() - window).step_by(20).find(|&i| {
-                    terms.iter().all(|term| norm[i..i + window].iter().any(|w| w.starts_with(term.as_str())))
-                }) else {
-                    continue;
-                };
-                let first = (at..at + window).find(|&i| norm[i].starts_with(terms[0].as_str())).unwrap_or(at);
-                let (a, b) = (first.saturating_sub(25), (first + 35).min(words.len()));
-                let span = seg.end_ms.saturating_sub(seg.start_ms);
-                let at_ms = seg.start_ms + span * a as u64 / words.len().max(1) as u64;
-                let mut excerpt = words[a..b].join(" ");
-                if a > 0 {
-                    excerpt.insert_str(0, "… ");
-                }
-                if b < words.len() {
-                    excerpt.push_str(" …");
-                }
-                let mut hit = json!({ "sermon": short_id(t), "title": t.title() });
-                attribution(t, &mut hit);
-                hit["at"] = transcribe::clock(at_ms).into();
-                if voices {
-                    hit["speaker"] = json!(seg.speaker);
-                }
-                hit["excerpt"] = excerpt.into();
-                out.push(hit);
-            }
-        }
-        out
+    /// The library, when there is one to reach.
+    fn library(&self) -> Result<&dyn UserLibrary> {
+        self.library.as_deref().context("the user's library isn't reachable: they are signed out")
     }
 
     /// The verses of `r` as (number, text), and whether [`PASSAGE_LIMIT`] cut it short.
@@ -927,71 +968,39 @@ pub fn name_label(query: &str) -> String {
     query.trim().to_string()
 }
 
-fn short_id(t: &Transcript) -> &str {
-    &t.recording_id[..SHORT_ID.min(t.recording_id.len())]
-}
-
-/// What is known of a sermon, for the model to attribute what was said by.
-fn sermon_summary(t: &Transcript) -> Value {
-    let mut v = json!({ "sermon": short_id(t), "title": t.title() });
-    attribution(t, &mut v);
-    v["recorded"] = t.day().into();
-    v["heard"] = match (t.about.source, &t.about.details.app) {
-        (Some(Source::Microphone), _) => "in person, through the microphone".into(),
-        (Some(Source::SystemAudio), Some(app)) => format!("played on the computer, in {app}").into(),
-        (Some(Source::SystemAudio), None) => "played on the computer".into(),
-        (Some(Source::File), _) => "imported from a file".into(),
-        (None, _) => Value::Null,
-    };
-    if let Some(p) = &t.about.passage {
-        v["passage"] = p.as_str().into();
+/// A search hit for the model: the item's id to read and cite by, what it is and who it is from,
+/// and where in it the passage is.
+fn hit_json(h: &SearchHit) -> Value {
+    let mut v = json!({ "item": h.item_uid, "kind": h.kind, "title": h.title });
+    if let Some(source) = &h.source {
+        v["from"] = source.as_str().into();
     }
-    v["length"] = transcribe::clock(t.text.duration_ms).into();
+    v["date"] = transcribe::day((h.date / 1000) as i64).into();
+    if let Some(ms) = h.start_ms {
+        v["at"] = transcribe::clock(ms).into();
+    }
+    if let Some(page) = h.page {
+        v["page"] = page.into();
+    }
+    v["text"] = h.text.as_str().into();
+    if h.anchored {
+        v["anchored"] = true.into();
+    }
+    if h.unreviewed {
+        v["unreviewed"] = true.into();
+    }
     v
 }
 
-/// The preacher and where the sermon is from, when the user said.
-fn attribution(t: &Transcript, v: &mut Value) {
-    let d = &t.about.details;
-    if let Some(speaker) = &d.speaker {
-        v["preacher"] = speaker.as_str().into();
+fn item_text_json(t: &ItemText) -> Value {
+    let mut v = json!({ "item": t.uid, "kind": t.kind, "title": t.title, "text": t.text });
+    if let Some(ms) = t.from_ms {
+        v["from"] = transcribe::clock(ms).into();
     }
-    if let Some(from) = &d.from {
-        v["from"] = from.as_str().into();
+    if let Some(ms) = t.to_ms {
+        v["to"] = transcribe::clock(ms).into();
     }
-}
-
-/// Whether the transcriber heard more than one voice. With one, its label ("A") tells the model
-/// nothing and would only be repeated as if it were a name.
-fn several_speakers(t: &Transcript) -> bool {
-    let mut voices = t.text.segments.iter().filter_map(|s| s.speaker.as_deref());
-    let first = voices.next();
-    voices.any(|v| Some(v) != first)
-}
-
-/// The turns of speech that overlap `from..to`, up to [`SERMON_WORDS`] words.
-fn read_sermon(t: &Transcript, from: u64, to: u64) -> Value {
-    let mut words = 0;
-    let mut truncated = false;
-    let mut turns = Vec::new();
-    let voices = several_speakers(t);
-    for seg in t.text.segments.iter().filter(|s| s.end_ms > from && s.start_ms < to) {
-        let n = seg.text.split_whitespace().count();
-        if words + n > SERMON_WORDS && !turns.is_empty() {
-            truncated = true;
-            break;
-        }
-        words += n;
-        let mut turn = json!({ "at": transcribe::clock(seg.start_ms) });
-        if voices {
-            turn["speaker"] = json!(seg.speaker);
-        }
-        turn["text"] = seg.text.as_str().into();
-        turns.push(turn);
-    }
-    let mut v = sermon_summary(t);
-    v["turns"] = turns.into();
-    v["truncated"] = (truncated || t.text.segments.iter().any(|s| s.start_ms >= to)).into();
+    v["truncated"] = t.truncated.into();
     v
 }
 
@@ -1103,99 +1112,128 @@ mod tests {
     fn tools() -> Tools {
         Tools {
             translation: Arc::new(crate::bundled::load("kjv").unwrap()),
-            sermons: Arc::new(vec![sermon()]),
+            library: Some(Arc::new(FakeLibrary::default())),
             church: None,
         }
     }
 
-    fn sermon() -> Transcript {
-        let seg = |start_ms, end_ms, text: &str| transcribe::Segment {
-            start_ms,
-            end_ms,
-            speaker: Some("A".into()),
-            text: text.into(),
-        };
-        // A long turn: the match is about 3/4 of the way through it.
-        let mut long = "word ".repeat(150);
-        long.push_str("Nicodemus came at night but did not stay in the dark. ");
-        long.push_str(&"word ".repeat(42));
-        Transcript {
-            recording_id: "a40671b1-af55-4640-b039-ebbb5b09900e".into(),
-            recorded_at: 1_792_368_000,
-            text: crate::records::Transcript {
-                duration_ms: 1_800_000,
-                language: Some("en".into()),
-                segments: vec![
-                    seg(0, 60_000, "Good morning, church. Turn with me to John chapter three."),
-                    seg(60_000, 260_000, &long),
-                    seg(900_000, 960_000, "The wind blows where it wishes; new birth is God's work."),
-                ],
-            },
-            about: Default::default(),
+    /// A library of one sermon, that remembers what it was asked.
+    #[derive(Default)]
+    struct FakeLibrary {
+        asked: std::sync::Mutex<Vec<Value>>,
+        offline: bool,
+    }
+
+    const SERMON: &str = "a40671b1-af55-4640-b039-ebbb5b09900e";
+
+    impl UserLibrary for FakeLibrary {
+        fn search(&self, args: Value) -> Result<(Vec<SearchHit>, bool)> {
+            self.asked.lock().unwrap().push(args.clone());
+            let hit = SearchHit {
+                item_uid: SERMON.into(),
+                kind: crate::records::ItemKind::Sermon,
+                title: "John 3 · Oct 19, 2026".into(),
+                source: Some("John Piper, Desiring God".into()),
+                date: 1_792_368_000_000,
+                text: "Nicodemus came at night but did not stay in the dark.".into(),
+                start_ms: Some(183_000),
+                end_ms: Some(260_000),
+                page: None,
+                anchored: args["passage"].is_object(),
+                unreviewed: true,
+            };
+            let found = args["query"].as_str().is_some_and(|q| q.contains("Nicodemus"));
+            Ok((if found { vec![hit] } else { Vec::new() }, self.offline))
+        }
+
+        fn read(&self, args: Value) -> Result<Option<ItemText>> {
+            self.asked.lock().unwrap().push(args.clone());
+            if args["uid"] != SERMON {
+                return Ok(None);
+            }
+            Ok(Some(ItemText {
+                uid: SERMON.into(),
+                kind: crate::records::ItemKind::Sermon,
+                title: "John 3 · Oct 19, 2026".into(),
+                text: "[14:00] The wind blows where it wishes; new birth is God's work.".into(),
+                from_ms: Some(840_000),
+                to_ms: Some(960_000),
+                truncated: true,
+            }))
+        }
+
+        fn counts(&self, chapter: Option<ChapterIdx>) -> Result<(usize, usize)> {
+            Ok((2, chapter.map_or(0, |c| (c.display() == "John 3") as usize)))
         }
     }
 
+    fn with(library: &Arc<FakeLibrary>) -> Tools {
+        Tools { library: Some(library.clone()), ..tools() }
+    }
+
     #[test]
-    fn sermon_search_finds_the_moment_inside_a_long_turn() {
-        let t = tools();
-        let r = t.run("search_sermons", &json!({ "query": "Nicodemus dark" })).unwrap();
+    fn search_library_sends_the_passage_as_verse_ids_and_says_where_each_hit_is() {
+        let fake = Arc::new(FakeLibrary::default());
+        let t = with(&fake);
+        let r = t
+            .run(
+                "search_library",
+                &json!({ "query": "Nicodemus dark", "passage": "John 3:1-21", "limit": 99 }),
+            )
+            .unwrap();
         assert_eq!(r["total"], 1);
         let hit = &r["hits"][0];
-        assert_eq!(hit["sermon"], "a40671b1");
-        assert!(hit["excerpt"].as_str().unwrap().contains("did not stay in the dark"));
-        // The excerpt starts 25 words before word 150 of 203 (150 + 11 + 42), in a 200 s turn
-        // that starts at 60 s: 60 + 200 × 125 / 203 = 183.1 s.
+        assert_eq!(hit["item"], SERMON);
+        assert_eq!(hit["kind"], "sermon");
+        assert_eq!(hit["from"], "John Piper, Desiring God");
+        assert_eq!(hit["date"], "Oct 19, 2026");
         assert_eq!(hit["at"], "3:03");
-        // Words spread across turns don't match as one passage.
-        assert_eq!(t.run("search_sermons", &json!({ "query": "morning wind" })).unwrap()["total"], 0);
+        assert_eq!((&hit["anchored"], &hit["unreviewed"]), (&json!(true), &json!(true)));
+        assert!(r.get("offline").is_none(), "{r}");
+        // What the server was asked: the passage on the verse grid, the limit within its bounds.
+        let asked = fake.asked.lock().unwrap().pop().unwrap();
+        assert_eq!(asked["passage"], json!({ "from": 42_003_001, "to": 42_003_021 }));
+        assert_eq!(asked["limit"], 50);
+        assert_eq!(t.run("search_library", &json!({ "query": "morning wind" })).unwrap()["total"], 0);
+        assert!(t.run("search_library", &json!({ "query": "x", "passage": "John 22" })).is_err());
+        assert!(t.run("search_library", &json!({})).is_err());
+
+        let offline = Arc::new(FakeLibrary { offline: true, ..Default::default() });
+        let r = with(&offline).run("search_library", &json!({ "query": "Nicodemus" })).unwrap();
+        assert!(r["offline"].as_str().unwrap().starts_with("The device is offline"), "{r}");
+
+        let e =
+            Tools { library: None, ..tools() }.run("search_library", &json!({ "query": "x" })).unwrap_err();
+        assert!(e.to_string().contains("signed out"), "{e:#}");
     }
 
     #[test]
-    fn reading_a_sermon_from_a_moment() {
-        let t = tools();
-        let r = t.run("read_sermon", &json!({ "sermon": "a406", "from": "14:00", "minutes": 5 })).unwrap();
-        let turns = r["turns"].as_array().unwrap();
-        assert_eq!(turns.len(), 1, "only the turn inside 14:00–19:00: {r}");
-        assert_eq!(turns[0]["at"], "15:00");
-        let list = t.run("read_sermon", &json!({})).unwrap();
-        assert_eq!(list["sermons"][0]["title"], "Sermon · Oct 19, 2026");
-        assert!(t.run("read_sermon", &json!({ "sermon": "ffff" })).is_err());
+    fn read_item_sends_the_moment_in_milliseconds_and_stamps_the_window() {
+        let fake = Arc::new(FakeLibrary::default());
+        let t = with(&fake);
+        let r = t.run("read_item", &json!({ "item": SERMON, "from": "14:00", "minutes": 5 })).unwrap();
+        assert_eq!((&r["from"], &r["to"], &r["truncated"]), (&json!("14:00"), &json!("16:00"), &json!(true)));
+        assert!(r["text"].as_str().unwrap().starts_with("[14:00] The wind"));
+        let asked = fake.asked.lock().unwrap().pop().unwrap();
+        assert_eq!(asked, json!({ "uid": SERMON, "fromMs": 840_000, "minutes": 5 }));
+        let e = t.run("read_item", &json!({ "item": "ffff" })).unwrap_err();
+        assert!(e.to_string().contains("no item"), "{e:#}");
+        assert!(t.run("read_item", &json!({ "item": SERMON, "from": "soon" })).is_err());
+        assert!(t.run("read_item", &json!({})).is_err());
     }
 
     #[test]
-    fn sermons_carry_who_preached_and_where_not_the_transcribers_voice_label() {
-        let mut s = sermon();
-        s.about = transcribe::About {
-            source: Some(Source::SystemAudio),
-            details: crate::recording::Details {
-                speaker: Some("John Piper".into()),
-                from: Some("Desiring God".into()),
-                app: Some("Google Chrome".into()),
-                ..Default::default()
-            },
-            passage: Some("John 3".into()),
-        };
-        let t = Tools { sermons: Arc::new(vec![s]), ..tools() };
-        let list = t.run("read_sermon", &json!({})).unwrap();
-        let about = &list["sermons"][0];
-        assert_eq!(about["preacher"], "John Piper");
-        assert_eq!(about["from"], "Desiring God");
-        assert_eq!(about["heard"], "played on the computer, in Google Chrome");
-        assert_eq!(about["title"], "John 3 · Oct 19, 2026");
-        let hit = &t.run("search_sermons", &json!({ "query": "Nicodemus" })).unwrap()["hits"][0];
-        assert_eq!((&hit["preacher"], &hit["from"]), (&json!("John Piper"), &json!("Desiring God")));
-        // One voice throughout: "A" would only be repeated as if it were a name.
-        assert!(hit.get("speaker").is_none(), "{hit}");
-        let read = t.run("read_sermon", &json!({ "sermon": "a406" })).unwrap();
-        assert!(read["turns"][0].get("speaker").is_none(), "{read}");
-        assert_eq!(read["preacher"], "John Piper");
-    }
-
-    #[test]
-    fn sermon_citations() {
-        let s = segments("As preached {{sermon a40671b1 12:30}}, not {{sermon nope 1:00}}.");
+    fn item_citations_and_the_sermon_citations_of_older_chats() {
+        let s =
+            segments("As preached {{item a40671b1 12:30}}, noted {{item 3f1c2a9b}}, on {{item 3f1c p3}}.");
+        assert_eq!(s[1], Segment::Item { uid: "a40671b1".into(), at_ms: Some(750_000), page: None });
+        assert_eq!(s[3], Segment::Item { uid: "3f1c2a9b".into(), at_ms: None, page: None });
+        assert_eq!(s[5], Segment::Item { uid: "3f1c".into(), at_ms: None, page: Some(3) });
+        let s = segments(
+            "As preached {{sermon a40671b1 12:30}}, not {{sermon nope 1:00}} or {{item a40671b1 p0}}.",
+        );
         assert_eq!(s[1], Segment::Sermon { id: "a40671b1".into(), at_ms: 750_000 });
-        assert_eq!(s.len(), 3, "an invalid sermon citation stays text: {s:?}");
+        assert_eq!(s.len(), 3, "an invalid citation stays text: {s:?}");
     }
 
     fn john(chapter: u8, verse: u8) -> VerseRef {
@@ -1490,20 +1528,25 @@ mod tests {
         };
         assert_eq!(ctx.describe(), "The user is reading John 3 in the NLT. They have selected John 3:14–16.");
         let translation = Arc::new(crate::bundled::load("bsb").unwrap());
-        let tools = Tools { translation, sermons: Arc::new(Vec::new()), church: None };
+        let tools = Tools { translation, library: None, church: None };
         assert_eq!(
-            tools_note(&tools),
+            tools_note(&tools, Some(ctx.chapter)),
             "Passages you read and search come from the BSB (Berean Standard Bible)."
         );
-        // Whether there are sermons to search, and which church is the user's own.
+        // How much library there is, how much of it touches the chapter, and whose church is the
+        // user's own.
         let tools = Tools {
-            sermons: Arc::new(vec![sermon(), sermon()]),
+            library: Some(Arc::new(FakeLibrary::default())),
             church: Some("Grace Church".into()),
             ..tools
         };
         assert!(
-            tools_note(&tools)
-                .ends_with(" The user has recorded 2 sermons. Their own church is Grace Church.")
+            tools_note(&tools, Some(ctx.chapter)).ends_with(
+                " The user's library has 2 items; 1 of them touches John 3. Their own church is Grace Church."
+            ),
+            "{}",
+            tools_note(&tools, Some(ctx.chapter))
         );
+        assert!(tools_note(&tools, None).contains(" The user's library has 2 items. "));
     }
 }

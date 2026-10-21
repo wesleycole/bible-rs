@@ -25,11 +25,17 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
 use crate::auth::{self, TokenSource};
-use crate::records::{Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, VerseId, WriteAnswer};
+use crate::books::ChapterIdx;
+use crate::chat::UserLibrary;
+use crate::records::{
+    Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, ItemText, SearchHit, Transcript, VerseId,
+    WriteAnswer,
+};
+use crate::search::Query;
 use crate::study::cache;
 
 /// The change feed's query.
@@ -38,6 +44,9 @@ pub const FEED: &str = "library/sync:changes";
 pub const CLOCK: &str = "library/sync:now";
 /// Records an uploaded file.
 const ATTACH: &str = "library/files:attach";
+/// The library tools' functions (docs/plans/library.md, "The library tools").
+const SEARCH: &str = "library/search:search";
+const READ: &str = "library/items:read";
 /// Install the token again this long before it expires.
 const TOKEN_EARLY: Duration = Duration::from_secs(30);
 /// The longest a failing change waits before it is tried again.
@@ -146,6 +155,7 @@ pub struct SyncHandle {
     tx: Sender<Event>,
     waker: Waker,
     thread: Option<JoinHandle<()>>,
+    data_dir: PathBuf,
 }
 
 /// Starts the engine on a `"sync"` thread for `data_dir/study.sqlite`. The desktop calls this
@@ -193,7 +203,7 @@ pub fn start(data_dir: &Path, backend: Box<dyn Backend>, tokens: Arc<dyn TokenSo
         unfetchable: HashSet::new(),
     };
     let thread = std::thread::Builder::new().name("sync".into()).spawn(move || engine.run())?;
-    Ok(SyncHandle { inner, tx, waker, thread: Some(thread) })
+    Ok(SyncHandle { inner, tx, waker, thread: Some(thread), data_dir: data_dir.to_path_buf() })
 }
 
 impl SyncHandle {
@@ -253,6 +263,14 @@ impl SyncHandle {
         answer
     }
 
+    /// The user's library as the Ask tools reach it: through this engine's connection, and from
+    /// the cache (its items' text and text files) when the server can't be reached. Its calls
+    /// block the caller, not the sync thread, so it is made on the Ask thread.
+    pub fn user_library(&self) -> Result<Arc<dyn UserLibrary>> {
+        let conn = cache::open(&self.data_dir.join("study.sqlite"))?;
+        Ok(Arc::new(Library { tx: self.tx.clone(), waker: self.waker.clone(), conn: Mutex::new(conn) }))
+    }
+
     /// Waits until the outbox is empty and the feed is caught up; returns the cursor, or the
     /// status at `timeout`, or at once on an error, which waiting doesn't mend (a refusal, or a
     /// sign-in that ended).
@@ -290,6 +308,285 @@ impl Drop for SyncHandle {
             let _ = t.join();
         }
     }
+}
+
+/// Runs a Convex function on the sync thread and waits for its answer.
+fn call_through(
+    tx: &Sender<Event>,
+    waker: &Waker,
+    kind: CallKind,
+    name: &str,
+    args: Value,
+) -> Result<Value, CallError> {
+    let (reply, answer) = channel();
+    let _ = tx.send(Event::Call(kind, name.into(), args, reply));
+    waker();
+    answer.recv().unwrap_or_else(|_| Err(CallError::Offline("sync stopped".into())))
+}
+
+/// The one door from the Ask tools to Convex ([`SyncHandle::user_library`]).
+struct Library {
+    tx: Sender<Event>,
+    waker: Waker,
+    conn: Mutex<Connection>,
+}
+
+impl Library {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl UserLibrary for Library {
+    fn search(&self, args: Value) -> Result<(Vec<SearchHit>, bool)> {
+        match call_through(&self.tx, &self.waker, CallKind::Action, SEARCH, args.clone()) {
+            Ok(v) => Ok((serde_json::from_value(v)?, false)),
+            Err(CallError::Offline(_)) => Ok((search_items(&cached_texts(&self.lock())?, &args), true)),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn read(&self, mut args: Value) -> Result<Option<ItemText>> {
+        // A citation names an item by the start of its id; the cache knows the whole.
+        if let Some(given) = args["uid"].as_str()
+            && let Some(whole) = whole_uid(&self.lock(), given)?
+        {
+            args["uid"] = whole.into();
+        }
+        match call_through(&self.tx, &self.waker, CallKind::Query, READ, args.clone()) {
+            Ok(v) => Ok(serde_json::from_value(v)?),
+            Err(CallError::Offline(_)) => {
+                let conn = self.lock();
+                let uid = args["uid"].as_str().unwrap_or_default();
+                let record: Option<String> = conn
+                    .query_row("SELECT record FROM items WHERE uid = ?1 AND deleted = 0", [uid], |r| r.get(0))
+                    .optional()?;
+                let Some(item) = record.and_then(|r| serde_json::from_str::<Item>(&r).ok()) else {
+                    return Ok(None);
+                };
+                Ok(cached_text(&conn, &item)?.map(|text| read_item(&item, &text, &args)))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn counts(&self, chapter: Option<ChapterIdx>) -> Result<(usize, usize)> {
+        let conn = self.lock();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))?;
+        let here: i64 = match chapter {
+            Some(c) => conn.query_row(
+                "SELECT COUNT(DISTINCT uid) FROM item_anchors WHERE book = ?1 AND chapter = ?2",
+                params![c.book().index() as i64, c.chapter() as i64],
+                |r| r.get(0),
+            )?,
+            None => 0,
+        };
+        Ok((total as usize, here as usize))
+    }
+}
+
+/// The live item whose uid starts with `prefix`, when there is exactly one.
+fn whole_uid(conn: &Connection, prefix: &str) -> Result<Option<String>> {
+    let mut st = conn.prepare_cached(
+        "SELECT uid FROM items WHERE deleted = 0 AND substr(uid, 1, length(?1)) = ?1 LIMIT 2",
+    )?;
+    let found: Vec<String> = st.query_map([prefix], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    Ok(match found.as_slice() {
+        [one] => Some(one.clone()),
+        _ => None,
+    })
+}
+
+/// An item's text as the cache or the fake server holds it.
+enum Text {
+    /// A note's, or any item whose text is inline.
+    Plain(String),
+    /// A sermon's `text` file.
+    Transcript(Transcript),
+}
+
+/// The live items with text to search, newest first.
+fn cached_texts(conn: &Connection) -> Result<Vec<(Item, Text)>> {
+    let mut st = conn.prepare_cached("SELECT record FROM items WHERE deleted = 0 ORDER BY created DESC")?;
+    let items: Vec<Item> = st
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .filter_map(|r| serde_json::from_str(&r).ok())
+        .collect();
+    let mut out = Vec::new();
+    for item in items {
+        if let Some(text) = cached_text(conn, &item)? {
+            out.push((item, text));
+        }
+    }
+    Ok(out)
+}
+
+/// An item's text from the cache: inline, or its fetched `text` file.
+fn cached_text(conn: &Connection, item: &Item) -> Result<Option<Text>> {
+    if let Some(t) = &item.text {
+        return Ok(Some(Text::Plain(t.clone())));
+    }
+    let Some(file) = &item.text_file_uid else { return Ok(None) };
+    let path: Option<String> = conn
+        .query_row("SELECT path FROM files WHERE uid = ?1 AND path != ''", [file], |r| r.get(0))
+        .optional()?;
+    let Some(bytes) = path.and_then(|p| std::fs::read(p).ok()) else { return Ok(None) };
+    Ok(serde_json::from_slice::<Transcript>(&bytes).ok().map(Text::Transcript))
+}
+
+/// How many hits one item may take in a search, as on the server.
+const PER_ITEM: usize = 3;
+/// About how many words `read_item` answers at most, as on the server.
+const READ_WORDS: usize = 2_500;
+
+/// `library/search.search` from the items at hand, offline and on the fake server: every passage
+/// (a note's paragraph, a turn of a transcript) with the query's every word, as Bible search
+/// matches them; items anchored to the passage asked about first, then the newest; `PER_ITEM`
+/// a piece and `limit` in all. With no query, the anchored items' first passages.
+fn search_items(items: &[(Item, Text)], args: &Value) -> Vec<SearchHit> {
+    let query = Query::parse(args["query"].as_str().unwrap_or(""), false);
+    let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 50) as usize;
+    let passage = args["passage"]
+        .as_object()
+        .and_then(|p| Some((p.get("from")?.as_u64()? as u32, p.get("to")?.as_u64()? as u32)));
+    let kinds: Option<Vec<&str>> =
+        args["kinds"].as_array().map(|k| k.iter().filter_map(Value::as_str).collect());
+    let source = args["source"].as_str().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+    let mut found: Vec<(bool, u64, Vec<SearchHit>)> = Vec::new();
+    for (item, text) in items {
+        let kind = serde_json::to_value(item.kind).ok();
+        if kinds.as_ref().is_some_and(|k| !k.contains(&kind.as_ref().and_then(Value::as_str).unwrap_or(""))) {
+            continue;
+        }
+        let names = [
+            item.details.as_ref().and_then(|d| d.speaker.clone()),
+            item.details.as_ref().and_then(|d| d.from.clone()),
+        ];
+        if let Some(s) = &source
+            && !names.iter().flatten().any(|n| n.to_lowercase().contains(s.as_str()))
+        {
+            continue;
+        }
+        let anchored =
+            passage.is_some_and(|(a, b)| item.anchors.iter().any(|x| x.from.0 <= b && x.to.0 >= a));
+        if query.is_empty() && !anchored {
+            continue;
+        }
+        let names: Vec<String> = names.into_iter().flatten().collect();
+        let date = item.details.as_ref().map_or(item.captured_at, |d| d.started_at);
+        let mut hits = Vec::new();
+        for (passage_text, span) in passages(text) {
+            if hits.len() == PER_ITEM {
+                break;
+            }
+            let (text, start_ms) = if query.is_empty() {
+                (passage_text.to_string(), span.map(|(a, _)| a))
+            } else {
+                let Some(at) = query.first_match(passage_text) else { continue };
+                excerpt(passage_text, at.start, span)
+            };
+            hits.push(SearchHit {
+                item_uid: item.uid.clone(),
+                kind: item.kind,
+                title: item.title.clone(),
+                source: (!names.is_empty()).then(|| names.join(", ")),
+                date,
+                text,
+                start_ms,
+                end_ms: span.map(|(_, b)| b),
+                page: None,
+                anchored,
+                unreviewed: item.unreviewed,
+            });
+            if query.is_empty() {
+                break;
+            }
+        }
+        if !hits.is_empty() {
+            found.push((anchored, date, hits));
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    found.into_iter().flat_map(|(_, _, h)| h).take(limit).collect()
+}
+
+/// An item's passages: a note's paragraphs, or a transcript's turns with the time each spans.
+fn passages(text: &Text) -> Vec<(&str, Option<(u64, u64)>)> {
+    match text {
+        Text::Plain(t) => {
+            t.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).map(|p| (p, None)).collect()
+        }
+        Text::Transcript(t) => {
+            t.segments.iter().map(|s| (s.text.as_str(), Some((s.start_ms, s.end_ms)))).collect()
+        }
+    }
+}
+
+/// About 60 words around the match at byte `at`, and the moment the excerpt starts, by where it
+/// falls in a turn of speech.
+fn excerpt(text: &str, at: usize, span: Option<(u64, u64)>) -> (String, Option<u64>) {
+    let words: Vec<(usize, &str)> =
+        text.split_whitespace().map(|w| (w.as_ptr() as usize - text.as_ptr() as usize, w)).collect();
+    let i = words.iter().position(|(o, w)| o + w.len() > at).unwrap_or(0);
+    let (a, b) = (i.saturating_sub(25), (i + 35).min(words.len()));
+    let mut s = words[a..b].iter().map(|(_, w)| *w).collect::<Vec<_>>().join(" ");
+    if a > 0 {
+        s.insert_str(0, "… ");
+    }
+    if b < words.len() {
+        s.push_str(" …");
+    }
+    let start_ms = span.map(|(start, end)| start + (end - start) * a as u64 / words.len().max(1) as u64);
+    (s, start_ms)
+}
+
+/// `library/items.read` from the item at hand: a note whole; a sermon as the turns overlapping
+/// the window asked for, each stamped, capped at about `READ_WORDS`.
+fn read_item(item: &Item, text: &Text, args: &Value) -> ItemText {
+    let (uid, kind, title) = (item.uid.clone(), item.kind, item.title.clone());
+    match text {
+        Text::Plain(t) => {
+            ItemText { uid, kind, title, text: t.clone(), from_ms: None, to_ms: None, truncated: false }
+        }
+        Text::Transcript(t) => {
+            let from = args["fromMs"].as_u64().unwrap_or(0);
+            let to = from + args["minutes"].as_u64().unwrap_or(10).clamp(1, 60) * 60_000;
+            let window: Vec<&crate::records::Segment> =
+                t.segments.iter().filter(|s| s.end_ms > from && s.start_ms < to).collect();
+            let mut taken: Vec<&crate::records::Segment> = Vec::new();
+            let mut count = 0;
+            for s in &window {
+                let n = s.text.split_whitespace().count();
+                if !taken.is_empty() && count + n > READ_WORDS {
+                    break;
+                }
+                taken.push(s);
+                count += n;
+            }
+            let truncated = taken.len() < window.len() || t.segments.iter().any(|s| s.start_ms >= to);
+            ItemText {
+                uid,
+                kind,
+                title,
+                text: taken
+                    .iter()
+                    .map(|s| format!("{} {}", stamp(s.start_ms), s.text))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+                from_ms: Some(taken.first().map_or(from, |s| s.start_ms)),
+                to_ms: taken.last().map(|s| s.end_ms),
+                truncated,
+            }
+        }
+    }
+}
+
+/// `[12:30]`, `[1:02:09]`: a paragraph's stamp, as the server writes it.
+fn stamp(ms: u64) -> String {
+    let s = ms / 1000;
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    if h > 0 { format!("[{h}:{m:02}:{s:02}]") } else { format!("[{m:02}:{s:02}]") }
 }
 
 /// 1 s, doubling with each attempt, up to 5 minutes.
@@ -1056,6 +1353,36 @@ impl FakeState {
         Ok(answer(WriteAnswer::Ok { seq, record: self.verse_record(kind, verse.0) }))
     }
 
+    /// The live items with text: notes' inline, sermons' from their `text` files.
+    fn texts(&self) -> Vec<(Item, Text)> {
+        let mut out: Vec<(Item, Text)> = self
+            .items
+            .values()
+            .filter(|i| i.deleted_at.is_none())
+            .filter_map(|i| {
+                let text = match &i.text {
+                    Some(t) => Text::Plain(t.clone()),
+                    None => {
+                        let (_, _, storage) = self.files.get(i.text_file_uid.as_ref()?)?;
+                        Text::Transcript(serde_json::from_slice(self.uploads.get(storage)?).ok()?)
+                    }
+                };
+                Some((i.clone(), text))
+            })
+            .collect();
+        out.sort_by_key(|b| std::cmp::Reverse(b.0.captured_at));
+        out
+    }
+
+    /// `items.read`: the item's text, or null for one that isn't in the library.
+    fn read(&self, args: &Value) -> Value {
+        let uid = args["uid"].as_str().unwrap_or_default();
+        match self.texts().into_iter().find(|(i, _)| i.uid == uid) {
+            Some((item, text)) => json!(read_item(&item, &text, args)),
+            None => Value::Null,
+        }
+    }
+
     fn wrote(&mut self) {
         self.last_write_ms = now_ms();
         self.deliver_all();
@@ -1486,6 +1813,8 @@ impl FakeBackend {
             "library/sermons:begin" => s.begin_sermon(args),
             "library/sermons:finish" => s.finish_sermon(args),
             "library/sermons:import" => s.import_sermon(args),
+            SEARCH => Ok(json!(search_items(&s.texts(), args))),
+            READ => Ok(s.read(args)),
             ATTACH => s.attach(args),
             FEED => Ok(s.page(args["after"].as_u64().unwrap_or(0))),
             CLOCK => Ok(json!({ "serverTime": now_ms() })),

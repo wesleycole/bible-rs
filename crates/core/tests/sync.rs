@@ -822,3 +822,43 @@ fn a_recording_transcribed_before_m1b_is_imported_once_with_its_transcript() {
     a.settle(&server);
     assert_eq!(server.imported_sermons().len(), 1);
 }
+
+/// Ask's library tools reach the server through the sync engine, and the cache when it can't be
+/// reached: the same sermon is found and read either way, and the offline answer says so.
+#[test]
+fn the_library_tools_search_and_read_a_sermon_online_and_from_the_cache_offline() {
+    let server = FakeServer::new();
+    let mut a = Device::new("sermon-tools");
+    a.start(&server);
+    let (_, m) = record(&mut a, 3);
+    a.settle(&server);
+    let text = br#"{"durationMs":3000,"segments":[
+        {"startMs":0,"endMs":1000,"speaker":"A","text":"Turn to Romans 8."},
+        {"startMs":1000,"endMs":3000,"speaker":"A","text":"Nothing can separate us from the love of God."}]}"#;
+    server.transcribed(&m.id, text);
+    a.settle(&server);
+
+    let library = a.sync.as_ref().unwrap().user_library().unwrap();
+    let args = serde_json::json!({ "query": "love of God" });
+    let (hits, offline) = library.search(args.clone()).unwrap();
+    assert!(!offline);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!((hits[0].item_uid.as_str(), hits[0].start_ms), (m.id.as_str(), Some(1000)));
+    assert!(hits[0].text.contains("separate us"));
+    assert_eq!(library.counts(None).unwrap(), (1, 0));
+
+    server.set_offline(true);
+    let (cached, offline) = library.search(args).unwrap();
+    assert!(offline);
+    assert_eq!(cached.len(), 1);
+    assert_eq!((cached[0].item_uid.as_str(), cached[0].start_ms), (m.id.as_str(), Some(1000)));
+    // A citation names the sermon by the start of its id.
+    let read = library.read(serde_json::json!({ "uid": &m.id[..8] })).unwrap().expect("the sermon's text");
+    assert_eq!(read.uid, m.id);
+    assert_eq!(
+        read.text,
+        "[00:00] Turn to Romans 8.\n\n[00:01] Nothing can separate us from the love of God."
+    );
+    assert!(!read.truncated);
+    assert!(library.read(serde_json::json!({ "uid": "nothere" })).unwrap().is_none());
+}

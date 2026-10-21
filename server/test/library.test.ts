@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { Schema } from "effect"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { Transcript } from "../shared/records.js"
+import { parseReference } from "../convex/lib/references.js"
 import { WEBHOOK_HEADER } from "../convex/lib/transcriber.js"
 import { chunkNote, chunkTranscript } from "../convex/library/chunk.js"
 import { PAGE_RECORDS } from "../convex/library/sync.js"
@@ -706,6 +707,12 @@ describe("library.sermons (the transcription workflow)", () => {
 })
 
 describe("library.search, items.read, items.forChapter and export (M2's Convex half)", () => {
+  it("reads a one-chapter book's single number as verses", () => {
+    expect(parseReference("Jude 3")).toEqual({ from: 64_001_003, to: 64_001_003 })
+    expect(parseReference("2 John 7-9")).toEqual({ from: 62_001_007, to: 62_001_009 })
+    expect(parseReference("Romans 8")).toEqual({ from: 44_008_001, to: 44_008_039 })
+  })
+
   const JOHN_3_36 = 42_003_036
   const JOHN_4_2 = 42_004_002
   const sentence = (n: number, word: string) => Array.from({ length: n }, (_, i) => `${word}${i}`).join(" ") + "."

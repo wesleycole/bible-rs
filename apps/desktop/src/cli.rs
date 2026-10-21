@@ -266,7 +266,8 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
     let asked = flag(rest, "--translation").or_else(|| flag(rest, "-t")).unwrap_or_default();
     let tools = Tools {
         translation: lib.load(ask_translation(&asked))?,
-        sermons: Arc::new(linger_core::transcribe::all(data_dir)),
+        // The CLI has no sync engine, so no library: the desktop app's Ask has.
+        library: None,
         church: StudyStore::open(&data_dir.join("study.sqlite"))
             .ok()
             .and_then(|s| crate::app::Settings::load(&s).home_church),

@@ -53,7 +53,11 @@ scheduled. The export zip is stored-only (no compression: audio and photos don't
 small), the Markdown page gets the transcript laid out a stamped line a turn, and each export schedules
 its own deletion a day on rather than relying on a cron. `search.search` searches reviewed and
 unreviewed chunks alike and marks each hit `unreviewed`; the text index is Convex's own, with no
-prefix or typo tolerance beyond what it gives.
+prefix or typo tolerance beyond what it gives. Known limit: `export.start` reads every file of the
+library into memory and writes the zip as one buffer without ZIP64, so a library of many hour-long
+sermons could pass an action's memory; it will need streaming or a split before that. `digest.items`
+(the backfill) collects items across every user, which is fine run once from the dashboard and must
+not be scheduled as written.
 
 ## linger-core
 
@@ -73,6 +77,26 @@ prefix or typo tolerance beyond what it gives.
    and text files, ranked as Bible search is, and says it's offline.
 3. **Audio playback** for sermon items: `symphonia` (AAC, MP4 and FLAC) through `rodio`, playing a file cached
    in `<data>/files/` (downloaded on first play; about 22 MB an hour) with seeking by time.
+
+**Built (October 21), where it is smaller than the above:** the tools reach the library through
+`chat::UserLibrary`, a trait `SyncHandle::user_library()` implements over the sync thread (an
+`Action` for `search.search`, a `Query` for `items.read`) and its own cache connection; the fake
+server implements the same two functions over the same pure code, so one test runs a sermon's search
+and read online and offline. `read_item` and `search_library` take an item's id prefix as a citation
+gives it and the cache widens it to the whole id when exactly one live item matches. Offline search is
+Bible search's word matching (`search::Query`, every word present, `-word` excluded) over each cached
+passage (a note's paragraph, a transcript's turn), items anchored to the passage asked about first and
+then newest, three hits an item and the server's caps; a sermon's excerpt is about sixty words with its
+moment interpolated inside the turn. There is no offline search over photographed items' OCR until the
+desktop can capture them. Offline `read_item` answers from the cache too. `tools_note` counts items
+and the chapter's anchored items from the cache; signed out, the two tools answer with an error that
+says so instead of being hidden, so the contract stays one byte-identical prompt. The desktop panel
+labels an `{{item …}}` citation of a sermon recorded on this machine from its transcript and gives it
+the recording chip; any other item reads "an item in your library" until the library page lands
+(desktop item 1). Audio playback (item 3) is not built: nothing plays audio until the sermon page of
+desktop item 1, and `rodio` needs ALSA headers that CI and the orb's setup do not install, so it
+goes in with that page behind a `playback` feature. Contract tests: the proxy's `ask/5` and `ask/4`
+list, the tool names, and the drift test over `ask-v5.json`.
 
 ## The desktop app
 

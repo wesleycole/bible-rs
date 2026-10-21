@@ -337,7 +337,15 @@ pub enum CitationSegment {
     Verse {
         reference: Reference,
     },
-    /// A moment in a recorded sermon: its id (or the id's first characters) and where.
+    /// A place in a library item: its uid (or its first characters), and for a sermon the moment,
+    /// for a photographed item the page.
+    Item {
+        uid: String,
+        at_ms: Option<u64>,
+        page: Option<u32>,
+    },
+    /// A moment in a recorded sermon, as chats from before the library cite it: its id (or the
+    /// id's first characters) and where.
     Sermon {
         id: String,
         at_ms: u64,
@@ -352,6 +360,9 @@ pub fn citation_segments(text: String) -> Vec<CitationSegment> {
         .map(|s| match s {
             linger_core::chat::Segment::Text(text) => CitationSegment::Text { text },
             linger_core::chat::Segment::Verse(r) => CitationSegment::Verse { reference: r.into() },
+            linger_core::chat::Segment::Item { uid, at_ms, page } => {
+                CitationSegment::Item { uid, at_ms, page }
+            }
             linger_core::chat::Segment::Sermon { id, at_ms } => CitationSegment::Sermon { id, at_ms },
         })
         .collect()

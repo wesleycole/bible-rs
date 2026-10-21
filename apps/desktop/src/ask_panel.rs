@@ -65,8 +65,8 @@ pub struct AskPanel {
     /// What the panel shows; the API's view of the same conversation is `conversation`.
     messages: Vec<Message>,
     conversation: Arc<Mutex<Conversation>>,
-    /// The transcribed sermons, as of the last question: the tools search them, and citations
-    /// of them are labelled from them.
+    /// The transcribed sermons, as of the last question: citations of them (and of library items
+    /// that are recordings made here) are labelled from them.
     sermons: Arc<Vec<Transcript>>,
     /// Development: the Gateway with a key from the environment, used when signed out.
     direct: Option<assistant::Config>,
@@ -112,6 +112,8 @@ pub struct AskEnv<'a> {
     pub consented: bool,
     /// The user's own church, for telling its sermons from others.
     pub church: Option<&'a str>,
+    /// The sync engine, when signed in: the one door from Ask's library tools to the library.
+    pub sync: Option<&'a linger_core::sync::SyncHandle>,
 }
 
 enum Update {
@@ -644,7 +646,7 @@ impl AskPanel {
         self.pending = Some(rx);
         let translation = env.library.load(env.ask_translation);
         self.sermons = Arc::new(transcribe::all(env.data_dir));
-        let sermons = self.sermons.clone();
+        let library = env.sync.and_then(|s| s.user_library().ok());
         let church = env.church.map(str::to_string);
         let conversation = self.conversation.clone();
         std::thread::Builder::new()
@@ -652,7 +654,7 @@ impl AskPanel {
             .spawn(move || {
                 let update = match translation {
                     Ok(t) => {
-                        let tools = chat::Tools { translation: t, sermons, church };
+                        let tools = chat::Tools { translation: t, library, church };
                         let events: Sender<Update> = tx.clone();
                         let mut conversation = conversation.lock().unwrap_or_else(|e| e.into_inner());
                         match conversation.ask(&config, &tools, context.as_ref(), &question, |e| {
@@ -831,8 +833,25 @@ fn answer(
                         refs.push(*r);
                     }
                 }
-                // Named in the sentence, with a chip below that shows what's known of the recording
-                // (opening the transcript at that moment comes with the sermon library).
+                // Named in the sentence; a sermon recorded here gets a chip below that shows
+                // what's known of the recording (opening the item itself comes with the library
+                // page).
+                Segment::Item { uid, at_ms, page } => {
+                    let sermon = sermons.iter().find(|t| t.recording_id.starts_with(uid.as_str()));
+                    let title =
+                        sermon.map_or_else(|| "an item in your library".to_string(), Transcript::title);
+                    let place = match (at_ms, page) {
+                        (Some(ms), _) => format!(", {}", transcribe::clock(*ms)),
+                        (None, Some(n)) => format!(", page {n}"),
+                        (None, None) => String::new(),
+                    };
+                    job.append(&format!("{title}{place}"), 0.0, format(p.accent));
+                    if let Some(t) = sermon
+                        && !heard.iter().any(|(id, _)| *id == t.recording_id)
+                    {
+                        heard.push((t.recording_id.clone(), title));
+                    }
+                }
                 Segment::Sermon { id, at_ms } => {
                     let sermon = sermons.iter().find(|t| t.recording_id.starts_with(id.as_str()));
                     let title = sermon.map_or_else(|| "a sermon".to_string(), Transcript::title);

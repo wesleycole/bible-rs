@@ -83,7 +83,7 @@ describe("Ask request validation", () => {
 
 describe("the Ask contract", () => {
   it("parses into the expected shape and matches the digest the Rust generator wrote", () => {
-    expect(CONTRACTS.map((c) => c.version)).toEqual(["ask/4", "ask/3"])
+    expect(CONTRACTS.map((c) => c.version)).toEqual(["ask/5", "ask/4"])
     const c = CONTRACTS[0]
     expect(c.max_rounds).toBeGreaterThan(0)
     expect(c.system.length).toBeGreaterThan(200)
@@ -94,9 +94,9 @@ describe("the Ask contract", () => {
         "lexicon",
         "original_words",
         "people_and_places",
-        "read_sermon",
+        "read_item",
         "search_bible",
-        "search_sermons",
+        "search_library",
         "word_occurrences"
       ]
     )
@@ -106,10 +106,10 @@ describe("the Ask contract", () => {
     }
   })
 
-  it("still serves ask/3, and tells ask/2 apps to update", async () => {
-    const old = await Effect.runPromise(validateAsk(JSON.stringify(question({ contract: "ask/3" }))))
-    expect(old.contract.version).toBe("ask/3")
-    expect((await check(question({ contract: "ask/2" })))._tag).toBe("ContractUnsupported")
+  it("still serves ask/4, and tells ask/3 apps to update", async () => {
+    const old = await Effect.runPromise(validateAsk(JSON.stringify(question({ contract: "ask/4" }))))
+    expect(old.contract.version).toBe("ask/4")
+    expect((await check(question({ contract: "ask/3" })))._tag).toBe("ContractUnsupported")
   })
 
   it("would notice an edit to the contract", () => {

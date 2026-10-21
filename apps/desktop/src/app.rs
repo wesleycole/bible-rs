@@ -3160,6 +3160,7 @@ impl eframe::App for BibleApp {
                     me: self.account.me.as_ref(),
                     consented: self.settings.ask_consent,
                     church: self.settings.home_church.as_deref(),
+                    sync: self.sync.as_ref(),
                 };
                 let close = ask.show(&mut child, p, &env, &mut actions);
                 // After each answer, into Recents.

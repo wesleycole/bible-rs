@@ -217,19 +217,7 @@ impl Query {
         let words = words_with_ranges(text);
         let mut out: Vec<Range<usize>> = Vec::new();
         for term in &self.terms {
-            let n = term.words.len();
-            if n == 0 || n > words.len() {
-                continue;
-            }
-            for i in 0..=words.len() - n {
-                let ok = term.words.iter().enumerate().all(|(k, w)| {
-                    let (ref norm, _) = words[i + k];
-                    if k + 1 == n && !term.whole_last { norm.starts_with(w.as_str()) } else { norm == w }
-                });
-                if ok {
-                    out.push(words[i].1.start..words[i + n - 1].1.end);
-                }
-            }
+            out.extend(term_matches(term, &words));
         }
         out.sort_by_key(|r| r.start);
         let mut merged: Vec<Range<usize>> = Vec::with_capacity(out.len());
@@ -241,6 +229,43 @@ impl Query {
         }
         merged
     }
+
+    /// Whether `text` (a note's paragraph, a turn of a transcript) answers the query as a verse
+    /// would: every term in it and no excluded one. Gives the byte range of the earliest term's
+    /// first match, to excerpt around.
+    pub fn first_match(&self, text: &str) -> Option<Range<usize>> {
+        if self.terms.is_empty() {
+            return None;
+        }
+        let words = words_with_ranges(text);
+        if self.excluded.iter().any(|t| term_matches(t, &words).next().is_some()) {
+            return None;
+        }
+        let mut first: Option<Range<usize>> = None;
+        for term in &self.terms {
+            let r = term_matches(term, &words).next()?;
+            if first.as_ref().is_none_or(|f| r.start < f.start) {
+                first = Some(r);
+            }
+        }
+        first
+    }
+}
+
+/// Byte ranges of `words` where `term` matches, in order.
+fn term_matches<'a>(
+    term: &'a Term,
+    words: &'a [(String, Range<usize>)],
+) -> impl Iterator<Item = Range<usize>> + 'a {
+    let n = term.words.len();
+    let last = if n == 0 || n > words.len() { 0 } else { words.len() - n + 1 };
+    (0..last).filter_map(move |i| {
+        let ok = term.words.iter().enumerate().all(|(k, w)| {
+            let (ref norm, _) = words[i + k];
+            if k + 1 == n && !term.whole_last { norm.starts_with(w.as_str()) } else { norm == w }
+        });
+        ok.then(|| words[i].1.start..words[i + n - 1].1.end)
+    })
 }
 
 fn make_term(raw: &str, phrase: bool, whole_last: bool) -> Option<Term> {

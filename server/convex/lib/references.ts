@@ -43,22 +43,25 @@ export const parseReference = (text: string): VerseRange | null => {
   const book = bookOf(m[1]!)
   if (book < 0) return null
   const chapters = canon.books[book]!.verses
-  const chapter = Number(m[2])
+  // "Jude 3" or "Jude 3-5": a one-chapter book's single number means verses.
+  const [chapterText, verseText, toChapterText, toVerseText] =
+    chapters.length === 1 && m[3] === undefined && m[4] === undefined ? ["1", m[2], undefined, m[5]] : [m[2], m[3], m[4], m[5]]
+  const chapter = Number(chapterText)
   const verses = chapters[chapter - 1]
   if (verses === undefined) return null
-  if (m[3] === undefined) {
+  if (verseText === undefined) {
     // "Romans 8", or "Romans 8-9" as chapters.
-    const last = m[5] === undefined ? chapter : Number(m[5])
+    const last = toVerseText === undefined ? chapter : Number(toVerseText)
     const lastVerses = chapters[last - 1]
-    if (m[4] !== undefined || lastVerses === undefined || last < chapter) return null
+    if (toChapterText !== undefined || lastVerses === undefined || last < chapter) return null
     return { from: id(book, chapter, 1), to: id(book, last, lastVerses) }
   }
-  const verse = Number(m[3])
+  const verse = Number(verseText)
   if (verse < 1 || verse > verses) return null
-  if (m[5] === undefined) return { from: id(book, chapter, verse), to: id(book, chapter, verse) }
-  const toChapter = m[4] === undefined ? chapter : Number(m[4])
+  if (toVerseText === undefined) return { from: id(book, chapter, verse), to: id(book, chapter, verse) }
+  const toChapter = toChapterText === undefined ? chapter : Number(toChapterText)
   const toVerses = chapters[toChapter - 1]
-  const toVerse = Number(m[5])
+  const toVerse = Number(toVerseText)
   if (toVerses === undefined || toVerse < 1 || toVerse > toVerses) return null
   const range = { from: id(book, chapter, verse), to: id(book, toChapter, toVerse) }
   return range.from <= range.to ? range : null

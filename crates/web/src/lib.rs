@@ -113,8 +113,8 @@ pub fn parse_reference(input: &str) -> Option<String> {
     Some(v.to_string())
 }
 
-/// An answer's text split at its `{{John 3:16}}` citations: `[{text} | {reference} | {sermon,
-/// at_ms}]`.
+/// An answer's text split at its `{{John 3:16}}` citations: `[{text} | {reference} | {item,
+/// at_ms?, page?} | {sermon, at_ms}]`.
 #[wasm_bindgen]
 pub fn segments(text: &str) -> String {
     let segments: Vec<Value> = chat::segments(text)
@@ -122,6 +122,7 @@ pub fn segments(text: &str) -> String {
         .map(|s| match s {
             chat::Segment::Text(t) => json!({ "text": t }),
             chat::Segment::Verse(r) => json!({ "reference": r.display() }),
+            chat::Segment::Item { uid, at_ms, page } => json!({ "item": uid, "at_ms": at_ms, "page": page }),
             chat::Segment::Sermon { id, at_ms } => json!({ "sermon": id, "at_ms": at_ms }),
         })
         .collect();
@@ -132,7 +133,7 @@ pub fn segments(text: &str) -> String {
 /// against a loaded translation, with the input the model would send; returns the tool's result.
 #[wasm_bindgen]
 pub fn run_tool(id: &str, name: &str, input: &str) -> Result<String, JsError> {
-    let tools = Tools { translation: js(translation(id))?, sermons: Arc::new(Vec::new()), church: None };
+    let tools = Tools { translation: js(translation(id))?, library: None, church: None };
     let input: Value = js(serde_json::from_str(input).context("the tool input isn't JSON"))?;
     Ok(js(tools.run(name, &input))?.to_string())
 }

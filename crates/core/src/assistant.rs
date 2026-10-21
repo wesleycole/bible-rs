@@ -137,9 +137,9 @@ impl Conversation {
         mut on_event: impl FnMut(Event),
     ) -> Result<Message> {
         let mut content = Vec::new();
-        // What the user is reading, which translation the tools read and whether they have
-        // sermons: per question, so the system prompt stays the same for everyone.
-        let note = chat::tools_note(tools);
+        // What the user is reading, which translation the tools read and how much library they
+        // have: per question, so the system prompt stays the same for everyone.
+        let note = chat::tools_note(tools, context.map(|c| c.chapter));
         let about = match context {
             Some(c) => format!("{} {note}", c.describe()),
             None => note,
@@ -250,8 +250,8 @@ fn tool_label(name: &str, input: &Value) -> String {
     match name {
         "get_passage" => format!("Reading {}", input["reference"].as_str().unwrap_or("a passage")),
         "search_bible" => format!("Searching for “{}”", input["query"].as_str().unwrap_or("")),
-        "search_sermons" => format!("Searching sermons for “{}”", input["query"].as_str().unwrap_or("")),
-        "read_sermon" => "Reading a sermon".into(),
+        "search_library" => format!("Searching your library for “{}”", input["query"].as_str().unwrap_or("")),
+        "read_item" => "Reading from your library".into(),
         "original_words" => {
             let r = input["reference"].as_str().unwrap_or("");
             let language = match crate::reference::parse(r).map(|r| r.book.testament()) {
