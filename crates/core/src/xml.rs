@@ -132,7 +132,10 @@ pub fn unescape(s: &str) -> Cow<'_, str> {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         let tail = &rest[i..];
-        let Some(semi) = tail[..tail.len().min(12)].find(';') else {
+        // An entity is short; `;` further on belongs to text (and 12 bytes may split a character).
+        let Some(semi) =
+            tail.char_indices().take_while(|(i, _)| *i < 12).find(|(_, c)| *c == ';').map(|(i, _)| i)
+        else {
             out.push('&');
             rest = &tail[1..];
             continue;
@@ -193,5 +196,7 @@ mod tests {
         assert_eq!(attr(r#" a=1 b="x &lt; y""#, "b").as_deref(), Some("x < y"));
         assert_eq!(attr(r#" xml:lang="en""#, "lang").as_deref(), Some("en"));
         assert_eq!(unescape("a &unknown; b &#x41;"), "a &unknown; b A");
+        // A bare `&` followed by a multibyte character within the entity's length.
+        assert_eq!(unescape("&amp;#232;—if; so"), "&#232;—if; so");
     }
 }

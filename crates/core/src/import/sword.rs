@@ -1,8 +1,13 @@
-//! SWORD Bible modules (CrossWire format): `mods.d/<name>.conf` plus a data directory.
+//! SWORD modules (CrossWire format): `mods.d/<name>.conf` plus a data directory.
 //!
-//! Supported drivers: `zText`/`zText4` (zlib-compressed blocks) and `RawText`/`RawText4`, in KJV,
-//! KJVA, NRSV or NRSVA versification, with OSIS, ThML, GBF or plain-text markup. Locked modules
-//! (`CipherKey=`) are read with the user's unlock key using SWORD's Sapphire II cipher.
+//! Bible text (`read_module`): `zText`/`zText4` (zlib-compressed blocks) and `RawText`/`RawText4`,
+//! in KJV, KJVA, NRSV or NRSVA versification, with OSIS, ThML, GBF or plain-text markup. Locked
+//! modules (`CipherKey=`) are read with the user's unlock key using SWORD's Sapphire II cipher.
+//!
+//! Outside sources, for `cargo xtask build-sources` (docs/plans/m7-outside-sources.md):
+//! commentaries (`zCom`/`zCom4`, `RawCom`/`RawCom4`; `read_commentary`), dictionaries (`zLD`;
+//! `read_lexicon`) and general books (`RawGenBook`; `read_genbook`), whose markup `plain_text`
+//! turns into paragraphs and the verses they cite.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -10,7 +15,7 @@ use std::io::Read;
 use anyhow::{Context, Result, bail, ensure};
 
 use super::osis::OsisHandler;
-use crate::books::{BookId, ChapterIdx, FIRST_NT_BOOK};
+use crate::books::{BookId, ChapterIdx, FIRST_NT_BOOK, VerseRef};
 use crate::model::{MarkKind, Style, TranslationBuilder};
 use crate::xml::{Tok, attr, tokens};
 
@@ -172,8 +177,10 @@ pub fn read_module(
     let data_path = conf.get("DataPath").context("conf has no DataPath")?.trim_end_matches('/').to_string();
 
     let mut cipher_check: Option<usize> = None;
+    let block = block_prefix(conf);
     for (testament, books) in [("ot", 0..FIRST_NT_BOOK.0), ("nt", FIRST_NT_BOOK.0..66)] {
-        let reader = match TestamentReader::open(files, &data_path, testament, driver, key.as_deref()) {
+        let reader = match TestamentReader::open(files, &data_path, testament, driver, key.as_deref(), block)
+        {
             Ok(r) => r,
             // A module may cover only one testament.
             Err(_) => continue,
@@ -227,6 +234,389 @@ pub fn read_module(
     Ok(())
 }
 
+/// What a commentary says on the verses `from`–`to`: one entry per run of verse slots the module
+/// links to the same text, in canon order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentaryEntry {
+    pub from: VerseRef,
+    pub to: VerseRef,
+    pub heading: Option<String>,
+    pub text: String,
+}
+
+/// A dictionary's or topical index's entry: its key as the module sorts it, its name as written,
+/// its text, and the verses it cites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LexiconEntry {
+    pub key: String,
+    pub name: String,
+    pub text: String,
+    pub cites: Vec<(VerseRef, VerseRef)>,
+}
+
+/// A general book's node, in tree order: its path of names from the root and its markup (the
+/// `SourceType` of the conf), which `plain_text` reads once the caller has cut it into sections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenBookNode {
+    pub path: Vec<String>,
+    pub raw: String,
+}
+
+/// A fragment of markup as plain text: its first title (if it opens with one), its paragraphs
+/// separated by blank lines, and the verses its references cite, in order of citation. Notes
+/// (footnotes, which hold a confession's proof-text quotations) keep their citations and lose
+/// their text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlainText {
+    pub heading: Option<String>,
+    pub text: String,
+    pub cites: Vec<(VerseRef, VerseRef)>,
+}
+
+/// Every entry of a commentary module (`zCom`, `zCom4`, `RawCom`, `RawCom4`), in canon order.
+/// Consecutive slots whose index records are identical are one entry (SWORD's linked entries);
+/// a book's or chapter's heading slot is an entry on the whole book or chapter.
+pub fn read_commentary(conf: &SwordConf, files: &dyn ModuleFiles) -> Result<Vec<CommentaryEntry>> {
+    let driver = match conf.get("ModDrv").unwrap_or("").to_ascii_lowercase().as_str() {
+        "zcom" => Driver::ZText { size4: false },
+        "zcom4" => Driver::ZText { size4: true },
+        "rawcom" => Driver::RawText { size4: false },
+        "rawcom4" => Driver::RawText { size4: true },
+        other => bail!("unsupported SWORD driver {other:?} (a commentary is zCom, zCom4, RawCom or RawCom4)"),
+    };
+    let v11n = conf.get("Versification").unwrap_or("KJV");
+    let verses_in =
+        versification(v11n).with_context(|| format!("SWORD versification {v11n:?} is not supported"))?;
+    let data_path = conf.get("DataPath").context("conf has no DataPath")?.trim_end_matches('/').to_string();
+    let markup = markup_of(conf);
+    let utf8 = conf.get("Encoding").is_some_and(|e| e.eq_ignore_ascii_case("UTF-8"));
+    let block = block_prefix(conf);
+
+    let mut out = Vec::new();
+    for (testament, books) in [("ot", 0..FIRST_NT_BOOK.0), ("nt", FIRST_NT_BOOK.0..66)] {
+        let Ok(reader) = TestamentReader::open(files, &data_path, testament, driver, None, block) else {
+            continue;
+        };
+        // The slots in index order, each with the range it stands for (none for the module's and
+        // the testament's own headings).
+        let mut slots: Vec<Option<(VerseRef, VerseRef)>> = vec![None, None];
+        for book in books.map(BookId) {
+            let last = ChapterIdx::new(book, book.chapters()).unwrap();
+            slots.push(Some((
+                VerseRef::new(book, 1, 1),
+                VerseRef::new(book, book.chapters(), verses_in(last)),
+            )));
+            for ch in 1..=book.chapters() {
+                let n = verses_in(ChapterIdx::new(book, ch).unwrap());
+                slots.push(Some((VerseRef::new(book, ch, 1), VerseRef::new(book, ch, n))));
+                for v in 1..=n {
+                    slots.push(Some((VerseRef::new(book, ch, v), VerseRef::new(book, ch, v))));
+                }
+            }
+        }
+        let mut idx = 0;
+        while idx < slots.len() {
+            let record = reader.record(idx);
+            let mut end = idx + 1;
+            while end < slots.len() && reader.record(end) == record {
+                end += 1;
+            }
+            let covered: Vec<(VerseRef, VerseRef)> = slots[idx..end].iter().flatten().copied().collect();
+            if let (Some(record), Some(first)) = (record, covered.first())
+                && !record.is_empty()
+            {
+                let raw = reader.entry(idx)?;
+                let text = decode(&raw, utf8);
+                let plain = plain_text_of(markup, &text);
+                if !plain.text.is_empty() || plain.heading.is_some() {
+                    let from = covered.iter().map(|r| r.0).min().unwrap_or(first.0);
+                    let to = covered.iter().map(|r| r.1).max().unwrap_or(first.1);
+                    out.push(CommentaryEntry { from, to, heading: plain.heading, text: plain.text });
+                }
+            }
+            idx = end;
+        }
+    }
+    Ok(out)
+}
+
+/// Every entry of a `zLD` dictionary module, in the module's key order.
+pub fn read_lexicon(conf: &SwordConf, files: &dyn ModuleFiles) -> Result<Vec<LexiconEntry>> {
+    let drv = conf.get("ModDrv").unwrap_or("");
+    ensure!(drv.eq_ignore_ascii_case("zLD"), "unsupported SWORD driver {drv:?} (a dictionary is zLD)");
+    let path = conf.get("DataPath").context("conf has no DataPath")?.trim_end_matches('/');
+    let markup = markup_of(conf);
+    let utf8 = conf.get("Encoding").is_some_and(|e| e.eq_ignore_ascii_case("UTF-8"));
+    let idx = files.read(&format!("{path}.idx"))?;
+    let dat = files.read(&format!("{path}.dat"))?;
+    let zdx = files.read(&format!("{path}.zdx"))?;
+    let zdt = files.read(&format!("{path}.zdt"))?;
+    let u32_at = |b: &[u8], at: usize| -> Result<usize> {
+        Ok(u32::from_le_bytes(b.get(at..at + 4).context("short record")?.try_into().unwrap()) as usize)
+    };
+    let mut blocks: HashMap<usize, Vec<u8>> = HashMap::new();
+    let mut out = Vec::new();
+    for rec in idx.chunks_exact(8) {
+        let (off, size) = (u32_at(rec, 0)?, u32_at(rec, 4)?);
+        let dat_rec = dat.get(off..off + size).context("dictionary key out of range")?;
+        let nl = dat_rec.iter().position(|&b| b == b'\n').context("dictionary key without a newline")?;
+        let key = decode(dat_rec[..nl].strip_suffix(b"\r").unwrap_or(&dat_rec[..nl]), utf8);
+        let (block, entry) = (u32_at(dat_rec, nl + 1)?, u32_at(dat_rec, nl + 5)?);
+        if let std::collections::hash_map::Entry::Vacant(e) = blocks.entry(block) {
+            let (boff, bsize) = (u32_at(&zdx, block * 8)?, u32_at(&zdx, block * 8 + 4)?);
+            let comp = zdt.get(boff..boff + bsize).context("dictionary block out of range")?;
+            let mut plain = Vec::new();
+            flate2::read::ZlibDecoder::new(comp)
+                .read_to_end(&mut plain)
+                .context("decompressing a dictionary block")?;
+            e.insert(plain);
+        }
+        let data = &blocks[&block];
+        let count = u32_at(data, 0)?;
+        ensure!(entry < count, "dictionary entry {entry} past the block's {count}");
+        let (eoff, esize) = (u32_at(data, 4 + entry * 8)?, u32_at(data, 8 + entry * 8)?);
+        let raw = data.get(eoff..eoff + esize).context("dictionary entry out of range")?;
+        let raw = raw.strip_suffix(b"\0").unwrap_or(raw);
+        let text = decode(raw, utf8);
+        let name = tokens(&text)
+            .find_map(|t| match t {
+                Tok::Start { name, attrs } if name.eq_ignore_ascii_case("entryFree") => {
+                    attr(attrs, "n").map(|n| n.into_owned())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| key.clone());
+        let plain = plain_text_of(markup, &text);
+        out.push(LexiconEntry { key, name, text: plain.text, cites: plain.cites });
+    }
+    Ok(out)
+}
+
+/// Every node of a `RawGenBook` module with text, depth first in the module's order.
+pub fn read_genbook(conf: &SwordConf, files: &dyn ModuleFiles) -> Result<Vec<GenBookNode>> {
+    let drv = conf.get("ModDrv").unwrap_or("");
+    ensure!(
+        drv.eq_ignore_ascii_case("RawGenBook"),
+        "unsupported SWORD driver {drv:?} (a general book is RawGenBook)"
+    );
+    let path = conf.get("DataPath").context("conf has no DataPath")?.trim_end_matches('/');
+    let utf8 = conf.get("Encoding").is_some_and(|e| e.eq_ignore_ascii_case("UTF-8"));
+    let idx = files.read(&format!("{path}.idx"))?;
+    let dat = files.read(&format!("{path}.dat"))?;
+    let bdt = files.read(&format!("{path}.bdt"))?;
+    let u32_at = |b: &[u8], at: usize| -> Result<usize> {
+        Ok(u32::from_le_bytes(b.get(at..at + 4).context("short record")?.try_into().unwrap()) as usize)
+    };
+    const NONE: usize = u32::MAX as usize;
+    // A node's links are offsets into `.idx`, each holding the node's offset into `.dat`.
+    let mut out = Vec::new();
+    let mut stack: Vec<(usize, Vec<String>)> = vec![(0, Vec::new())];
+    let mut seen = 0usize;
+    while let Some((at, path)) = stack.pop() {
+        seen += 1;
+        ensure!(seen <= idx.len() / 4 + 1, "the book's tree loops");
+        let off = u32_at(&idx, at)?;
+        let (next, child) = (u32_at(&dat, off + 4)?, u32_at(&dat, off + 8)?);
+        let name_end =
+            off + 12 + dat[off + 12..].iter().position(|&b| b == 0).context("node name without a NUL")?;
+        let name = decode(&dat[off + 12..name_end], utf8);
+        let user_size = u16::from_le_bytes(
+            dat.get(name_end + 1..name_end + 3).context("short node")?.try_into().unwrap(),
+        ) as usize;
+        let mut node_path = path.clone();
+        if at != 0 {
+            node_path.push(name);
+        }
+        if user_size == 8 {
+            let (toff, tsize) = (u32_at(&dat, name_end + 3)?, u32_at(&dat, name_end + 7)?);
+            let raw = bdt.get(toff..toff + tsize).context("node text out of range")?;
+            let raw = raw.strip_suffix(b"\0").unwrap_or(raw);
+            if !raw.iter().all(u8::is_ascii_whitespace) {
+                out.push(GenBookNode { path: node_path.clone(), raw: decode(raw, utf8) });
+            }
+        }
+        // Siblings after children: the stack pops the child first.
+        if next != NONE && at != 0 {
+            stack.push((next, path));
+        }
+        if child != NONE {
+            stack.push((child, node_path));
+        }
+    }
+    Ok(out)
+}
+
+/// `src`, a fragment in the conf's `SourceType` markup, as plain text with its citations.
+pub fn plain_text(conf: &SwordConf, src: &str) -> PlainText {
+    plain_text_of(markup_of(conf), src)
+}
+
+fn markup_of(conf: &SwordConf) -> Markup {
+    match conf.get("SourceType").unwrap_or("Plaintext").to_ascii_lowercase().as_str() {
+        "osis" | "tei" => Markup::Osis,
+        "thml" => Markup::Thml,
+        "gbf" => Markup::Gbf,
+        _ => Markup::Plain,
+    }
+}
+
+/// The letter before `zs`/`zv`/`zz` in a compressed module's file names: `b` when a block holds
+/// a book (the default), `c` a chapter, `v` a verse.
+fn block_prefix(conf: &SwordConf) -> char {
+    match conf.get("BlockType").unwrap_or("BOOK").to_ascii_uppercase().as_str() {
+        "CHAPTER" => 'c',
+        "VERSE" => 'v',
+        _ => 'b',
+    }
+}
+
+fn decode(raw: &[u8], utf8: bool) -> String {
+    if utf8 { String::from_utf8_lossy(raw).into_owned() } else { raw.iter().map(|&b| b as char).collect() }
+}
+
+fn plain_text_of(markup: Markup, src: &str) -> PlainText {
+    let mut out = PlainText::default();
+    if markup == Markup::Gbf || markup == Markup::Plain {
+        out.text = tidy_blocks(&src.replace("<CM>", "\n\n").replace("<CL>", "\n"));
+        return out;
+    }
+    let mut blocks: Vec<(bool, String)> = Vec::new();
+    let mut cur = String::new();
+    let mut title_depth = 0usize;
+    let mut skip = 0usize;
+    let flush = |cur: &mut String, blocks: &mut Vec<(bool, String)>, title: bool| {
+        let text = tidy_block(cur);
+        cur.clear();
+        if !text.is_empty() {
+            blocks.push((title, text));
+        }
+    };
+    for tok in tokens(src) {
+        match tok {
+            Tok::Text(t) => {
+                if skip == 0 {
+                    cur.push_str(&t);
+                }
+            }
+            Tok::Start { name, attrs } | Tok::Empty { name, attrs } => {
+                let n = name.to_ascii_lowercase();
+                let empty = matches!(tok, Tok::Empty { .. });
+                match n.as_str() {
+                    "reference" | "ref" | "scripref" => {
+                        if let Some(r) = attr(attrs, "osisRef") {
+                            for range in r.split_whitespace().filter_map(osis_range) {
+                                if out.cites.last() != Some(&range) {
+                                    out.cites.push(range);
+                                }
+                            }
+                        }
+                    }
+                    "note" if !empty => skip += 1,
+                    "title" | "head" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" if skip == 0 && !empty => {
+                        flush(&mut cur, &mut blocks, title_depth > 0);
+                        title_depth += 1;
+                    }
+                    "p" | "div" | "lg" | "list" | "item" | "table" | "tr" | "entryfree" | "entry" | "def"
+                        if skip == 0 && title_depth == 0 =>
+                    {
+                        flush(&mut cur, &mut blocks, false)
+                    }
+                    "l" | "lb" | "br" if skip == 0 => cur.push('\n'),
+                    // OSIS marks a paragraph break inside verse-per-line text with a milestone.
+                    "milestone"
+                        if skip == 0 && attr(attrs, "type").is_some_and(|t| t == "x-p" || t == "line") =>
+                    {
+                        cur.push_str("\n\n")
+                    }
+                    _ => {}
+                }
+            }
+            Tok::End { name } => {
+                let n = name.to_ascii_lowercase();
+                match n.as_str() {
+                    "note" => skip = skip.saturating_sub(1),
+                    "title" | "head" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+                        if skip == 0 && title_depth > 0 =>
+                    {
+                        title_depth -= 1;
+                        if title_depth == 0 {
+                            flush(&mut cur, &mut blocks, true);
+                        }
+                    }
+                    "p" | "div" | "lg" | "list" | "item" | "table" | "tr" | "entryfree" | "entry" | "def"
+                        if skip == 0 && title_depth == 0 =>
+                    {
+                        flush(&mut cur, &mut blocks, false)
+                    }
+                    "l" if skip == 0 => cur.push('\n'),
+                    _ => {}
+                }
+            }
+        }
+    }
+    flush(&mut cur, &mut blocks, title_depth > 0);
+    let mut blocks = blocks.into_iter();
+    let mut first = blocks.next();
+    if let Some((true, title)) = &first {
+        out.heading = Some(title.clone());
+        first = blocks.next();
+    }
+    out.text = first.into_iter().chain(blocks).map(|(_, b)| b).collect::<Vec<_>>().join("\n\n");
+    out
+}
+
+/// One block's text: each line's whitespace collapsed, empty lines dropped.
+fn tidy_block(s: &str) -> String {
+    s.lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Plain text: blank lines separate paragraphs, other whitespace collapses.
+fn tidy_blocks(s: &str) -> String {
+    s.split("\n\n").map(tidy_block).filter(|b| !b.is_empty()).collect::<Vec<_>>().join("\n\n")
+}
+
+/// One osisRef (`Bible:Exod.6.20`, `Exod.6.16-Exod.6.20`, `Matt.22`, `Gen`) as a range on the KJV
+/// grid: a chapter or book is all its verses, a verse past a chapter's end is its last, a verse 0
+/// (a Psalm's title) is verse 1. `None` for a book Linger doesn't have.
+pub fn osis_range(r: &str) -> Option<(VerseRef, VerseRef)> {
+    let r = r.rsplit_once(':').map_or(r, |(_, r)| r);
+    let (a, b) = r.split_once('-').unwrap_or((r, r));
+    // "Ps.3.0" names the title, which Linger folds into verse 1; "Ps.3" the chapter.
+    let parse = |s: &str| {
+        let (book, c, v) = super::osis::parse_osis_ref(s)?;
+        Some((book, c, if v == 0 && s.ends_with(".0") { 1 } else { v }))
+    };
+    let (book, c1, v1) = parse(a)?;
+    let (book2, c2, v2) = if b == a {
+        (book, c1, v1)
+    } else if b.contains('.') && BookId::from_osis(b.split('.').next()?).is_some() {
+        parse(b)?
+    } else {
+        // A short end: "Gen.1.1-5" or "Gen.1.1-2.3".
+        let mut nums = b.split('.').filter_map(|p| p.parse::<u32>().ok());
+        match (nums.next(), nums.next()) {
+            (Some(x), Some(y)) => (book, x, y),
+            (Some(x), None) if c1 > 0 && v1 > 0 => (book, c1, x),
+            (Some(x), None) => (book, x, 0),
+            _ => (book, c1, v1),
+        }
+    };
+    let clamp = |book: BookId, c: u32, v: u32, end: bool| -> Option<VerseRef> {
+        let c = if c == 0 { if end { book.chapters() as u32 } else { 1 } } else { c };
+        let idx = ChapterIdx::new(book, u8::try_from(c).ok()?)?;
+        let last = idx.kjv_verses();
+        let v = if v == 0 { if end { last as u32 } else { 1 } } else { v.min(last as u32) };
+        Some(VerseRef::new(book, c as u8, v as u8))
+    };
+    let from = clamp(book, c1, v1, false)?;
+    let to = clamp(book2, c2, v2, true)?;
+    Some(if to < from { (from, from) } else { (from, to) })
+}
+
 /// Verses per chapter for a SWORD versification whose 66 canonical books are in KJV order.
 /// (KJVA and NRSVA add the Apocrypha after Malachi, which doesn't move any canonical entry.)
 /// Tables from SWORD's `canon.h` / `canon_nrsv.h`.
@@ -259,18 +649,55 @@ struct TestamentReader {
 }
 
 impl TestamentReader {
-    fn open(files: &dyn ModuleFiles, dir: &str, t: &str, driver: Driver, key: Option<&str>) -> Result<Self> {
+    fn open(
+        files: &dyn ModuleFiles,
+        dir: &str,
+        t: &str,
+        driver: Driver,
+        key: Option<&str>,
+        block: char,
+    ) -> Result<Self> {
         let (index, data, blocks) = match driver {
             Driver::ZText { .. } => (
-                files.read(&format!("{dir}/{t}.bzv"))?,
-                files.read(&format!("{dir}/{t}.bzz"))?,
-                files.read(&format!("{dir}/{t}.bzs"))?,
+                files.read(&format!("{dir}/{t}.{block}zv"))?,
+                files.read(&format!("{dir}/{t}.{block}zz"))?,
+                files.read(&format!("{dir}/{t}.{block}zs"))?,
             ),
             Driver::RawText { .. } => {
                 (files.read(&format!("{dir}/{t}.vss"))?, files.read(&format!("{dir}/{t}"))?, Vec::new())
             }
         };
         Ok(Self { driver, index, data, blocks, key: key.map(str::to_string), cache: Default::default() })
+    }
+
+    /// The slot's index record, which names its bytes in the data: two slots with the same
+    /// record share one text (a commentary entry on a range). `None` past the index's end.
+    fn record(&self, idx: usize) -> Option<&[u8]> {
+        let w = match self.driver {
+            Driver::RawText { size4 } => {
+                if size4 {
+                    8
+                } else {
+                    6
+                }
+            }
+            Driver::ZText { size4 } => {
+                if size4 {
+                    12
+                } else {
+                    10
+                }
+            }
+        };
+        let rec = self.index.get(idx * w..idx * w + w)?;
+        // A record whose length is 0 names nothing.
+        let len_zero = match self.driver {
+            Driver::RawText { size4: false } => rec[4..6] == [0, 0],
+            Driver::RawText { size4: true } => rec[4..8] == [0; 4],
+            Driver::ZText { size4: false } => rec[8..10] == [0, 0],
+            Driver::ZText { size4: true } => rec[8..12] == [0; 4],
+        };
+        Some(if len_zero { &[] } else { rec })
     }
 
     fn entry(&self, idx: usize) -> Result<Vec<u8>> {
@@ -732,6 +1159,212 @@ pub(crate) mod tests {
         assert_eq!(c.get("About"), Some("Line one\nline two"));
         assert!(c.is_locked());
         assert_eq!(c.description(), "King James");
+    }
+
+    fn zlib(plain: &[u8]) -> Vec<u8> {
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(plain).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn conf(extra: &str) -> SwordConf {
+        SwordConf::parse(&format!(
+            "[Test]\nDataPath=./modules/test/\nSourceType=OSIS\nEncoding=UTF-8\n{extra}"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn commentary_entries_follow_the_linked_slots() {
+        // A zCom module with only a New Testament: slot 0 the module's heading, 1 the testament's,
+        // 2 Matthew's, 3 Matthew 1's, then one slot per verse. One block holds every text.
+        let texts: [&[u8]; 3] =
+            [b"<title>Matthew 1</title><p>On the chapter.</p>", b"On verses 1-2.", b"On verse 4."];
+        let mut plain = Vec::new();
+        let mut at = Vec::new();
+        for t in texts {
+            at.push((plain.len() as u32, t.len() as u16));
+            plain.extend_from_slice(t);
+        }
+        let comp = zlib(&plain);
+        let mut bzs = Vec::new();
+        bzs.extend_from_slice(&0u32.to_le_bytes());
+        bzs.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+        bzs.extend_from_slice(&(plain.len() as u32).to_le_bytes());
+        let none = (0u32, 0u16);
+        // Slots 4 and 5 (Matt 1:1, 1:2) share a record; slot 6 (1:3) has none; slot 7 is 1:4.
+        let mut bzv = Vec::new();
+        for rec in [none, none, none, at[0], at[1], at[1], none, at[2]] {
+            bzv.extend_from_slice(&0u32.to_le_bytes());
+            bzv.extend_from_slice(&rec.0.to_le_bytes());
+            bzv.extend_from_slice(&rec.1.to_le_bytes());
+        }
+        let files = MemFiles(HashMap::from([
+            ("modules/test/nt.bzs".to_string(), bzs),
+            ("modules/test/nt.bzv".to_string(), bzv),
+            ("modules/test/nt.bzz".to_string(), comp),
+        ]));
+        let matt = BookId(39);
+        let entries = read_commentary(&conf("ModDrv=zCom\n"), &files).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                CommentaryEntry {
+                    from: VerseRef::new(matt, 1, 1),
+                    to: VerseRef::new(matt, 1, 25),
+                    heading: Some("Matthew 1".into()),
+                    text: "On the chapter.".into(),
+                },
+                CommentaryEntry {
+                    from: VerseRef::new(matt, 1, 1),
+                    to: VerseRef::new(matt, 1, 2),
+                    heading: None,
+                    text: "On verses 1-2.".into(),
+                },
+                CommentaryEntry {
+                    from: VerseRef::new(matt, 1, 4),
+                    to: VerseRef::new(matt, 1, 4),
+                    heading: None,
+                    text: "On verse 4.".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn lexicon_entries_keep_their_names_and_citations() {
+        let entries: [(&str, &[u8]); 2] = [
+            (
+                "AARON",
+                b"<entryFree n=\"Aaron\"><def>Eldest son of Amram <ref osisRef=\"Exod.6.20\">Ex. 6:20</ref>, see <ref osisRef=\"Exod.6.20\">6:20</ref> and <ref osisRef=\"Num.20.22-Num.20.29\">Num. 20:22-29</ref>.<note>A note<ref osisRef=\"Gen.1.1\">x</ref></note></def></entryFree>",
+            ),
+            ("ZUZIM", b"A people east of the Jordan."),
+        ];
+        let mut block = Vec::new();
+        block.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        let mut data = Vec::new();
+        let header = 4 + entries.len() * 8;
+        for (_, text) in entries {
+            block.extend_from_slice(&((header + data.len()) as u32).to_le_bytes());
+            block.extend_from_slice(&((text.len() + 1) as u32).to_le_bytes());
+            data.extend_from_slice(text);
+            data.push(0);
+        }
+        block.extend_from_slice(&data);
+        let comp = zlib(&block);
+        let mut zdx = Vec::new();
+        zdx.extend_from_slice(&0u32.to_le_bytes());
+        zdx.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+        let (mut idx, mut dat) = (Vec::new(), Vec::new());
+        for (n, (key, _)) in entries.iter().enumerate() {
+            let mut rec = format!("{key}\n").into_bytes();
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&(n as u32).to_le_bytes());
+            idx.extend_from_slice(&(dat.len() as u32).to_le_bytes());
+            idx.extend_from_slice(&(rec.len() as u32).to_le_bytes());
+            dat.extend_from_slice(&rec);
+        }
+        let files = MemFiles(HashMap::from([
+            ("modules/test.idx".to_string(), idx),
+            ("modules/test.dat".to_string(), dat),
+            ("modules/test.zdx".to_string(), zdx),
+            ("modules/test.zdt".to_string(), comp),
+        ]));
+        let c =
+            SwordConf::parse("[Test]\nDataPath=./modules/test\nModDrv=zLD\nSourceType=TEI\nEncoding=UTF-8\n")
+                .unwrap();
+        let read = read_lexicon(&c, &files).unwrap();
+        let (exod, num) = (BookId(1), BookId(3));
+        assert_eq!(
+            read,
+            vec![
+                LexiconEntry {
+                    key: "AARON".into(),
+                    name: "Aaron".into(),
+                    text: "Eldest son of Amram Ex. 6:20, see 6:20 and Num. 20:22-29.".into(),
+                    cites: vec![
+                        (VerseRef::new(exod, 6, 20), VerseRef::new(exod, 6, 20)),
+                        (VerseRef::new(num, 20, 22), VerseRef::new(num, 20, 29)),
+                        (VerseRef::new(BookId::GENESIS, 1, 1), VerseRef::new(BookId::GENESIS, 1, 1)),
+                    ],
+                },
+                LexiconEntry {
+                    key: "ZUZIM".into(),
+                    name: "ZUZIM".into(),
+                    text: "A people east of the Jordan.".into(),
+                    cites: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn genbook_nodes_come_depth_first() {
+        // root -> "Chapter 1" (with child "Section 1") -> "Chapter 2"; the root has no text.
+        const NONE: u32 = u32::MAX;
+        let bdt = b"first\0second\0third\0".to_vec();
+        let (mut idx, mut dat) = (Vec::new(), Vec::new());
+        // (parent, next, child, name, text (offset, size)), each pushed in `.idx` order.
+        let nodes = [
+            (NONE, NONE, 4u32, "", None::<(u32, u32)>),
+            (0, 8, 12, "Chapter 1", Some((0, 6))),
+            (0, NONE, NONE, "Chapter 2", Some((6, 7))),
+            (4, NONE, NONE, "Section 1", Some((13, 6))),
+        ];
+        let mut offsets = Vec::new();
+        for (parent, next, child, name, text) in nodes {
+            offsets.push(dat.len() as u32);
+            for n in [parent, next, child] {
+                dat.extend_from_slice(&n.to_le_bytes());
+            }
+            dat.extend_from_slice(name.as_bytes());
+            dat.push(0);
+            match text {
+                Some((off, size)) => {
+                    dat.extend_from_slice(&8u16.to_le_bytes());
+                    dat.extend_from_slice(&off.to_le_bytes());
+                    dat.extend_from_slice(&size.to_le_bytes());
+                }
+                None => dat.extend_from_slice(&0u16.to_le_bytes()),
+            }
+        }
+        // A link is a byte offset into `.idx`: the root's record at 0, then 4, 8 and 12.
+        for off in offsets {
+            idx.extend_from_slice(&off.to_le_bytes());
+        }
+        let files = MemFiles(HashMap::from([
+            ("modules/test.idx".to_string(), idx),
+            ("modules/test.dat".to_string(), dat),
+            ("modules/test.bdt".to_string(), bdt),
+        ]));
+        let c =
+            SwordConf::parse("[Test]\nDataPath=./modules/test\nModDrv=RawGenBook\nEncoding=UTF-8\n").unwrap();
+        let path = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            read_genbook(&c, &files).unwrap(),
+            vec![
+                GenBookNode { path: path(&["Chapter 1"]), raw: "first".into() },
+                GenBookNode { path: path(&["Chapter 1", "Section 1"]), raw: "third".into() },
+                GenBookNode { path: path(&["Chapter 2"]), raw: "second".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn osis_ranges_land_on_the_kjv_grid() {
+        let r = |b: BookId, c1: u8, v1: u8, c2: u8, v2: u8| {
+            Some((VerseRef::new(b, c1, v1), VerseRef::new(b, c2, v2)))
+        };
+        let (gn, exod, matt, john) = (BookId::GENESIS, BookId(1), BookId(39), BookId(42));
+        assert_eq!(osis_range("Bible:Exod.6.20"), r(exod, 6, 20, 6, 20));
+        assert_eq!(osis_range("Exod.6.16-Exod.6.20"), r(exod, 6, 16, 6, 20));
+        assert_eq!(osis_range("Gen.1.1-5"), r(gn, 1, 1, 1, 5));
+        assert_eq!(osis_range("Gen.1.1-2.3"), r(gn, 1, 1, 2, 3));
+        assert_eq!(osis_range("Matt.22"), r(matt, 22, 1, 22, 46));
+        assert_eq!(osis_range("Gen"), r(gn, 1, 1, 50, 26));
+        assert_eq!(osis_range("Ps.3.0"), r(BookId::PSALMS, 3, 1, 3, 1));
+        assert_eq!(osis_range("John.3.99"), r(john, 3, 36, 3, 36));
+        assert_eq!(osis_range("Tob.1.1"), None);
     }
 
     #[test]

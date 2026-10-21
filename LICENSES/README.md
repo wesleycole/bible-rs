@@ -135,6 +135,48 @@ Left out, and why:
   identifications), and all of OpenBible.info's geometry and images. Those identifications are
   kept without coordinates.
 
+## Outside sources — public domain
+
+`data/sources/<work>.jsonl.zst` holds the commentaries, reference works and confessions Ask draws on
+(docs/plans/m7-outside-sources.md). They are not compiled into the apps: `server/scripts/load-sources.ts`
+loads them into shared, read-only Convex tables. Each is built by `cargo xtask build-sources` from a
+CrossWire SWORD module (`https://www.crosswire.org/ftpmirror/pub/sword/packages/rawzip/<Module>.zip`)
+whose SHA-256 is pinned in `xtask/src/sources.rs`; every module's conf says
+`DistributionLicense=Public Domain`. The module is the pinned edition; its own source is given so the
+text can be checked against it.
+
+| Id | Work | Module | Module's source | Why public domain |
+|---|---|---|---|---|
+| `mhc` | Matthew Henry, *Commentary on the Whole Bible* (1708–1710) | `MHC` 2.2 | CCEL | Henry died in 1714. |
+| `jfb` | Jamieson, Fausset and Brown, *Commentary Critical and Explanatory on the Whole Bible* (1871) | `JFB` 3.0 | CCEL (`ccel.org/ccel/j/jamieson/jfb`) | Jamieson died in 1880, Brown in 1897, Fausset in 1910. |
+| `barnes` | Albert Barnes, *Notes on the New Testament* (1832–1851) | `Barnes` 1.1 | CrossWire's own ThML edition | Barnes died in 1870. The module holds the New Testament only; his Old Testament notes are not in it. |
+| `kd` | Keil and Delitzsch, *Biblical Commentary on the Old Testament* (English edition, T&T Clark, 1864–1891) | `KD` 2.0 | Wikisource | Keil died in 1888, Delitzsch in 1890. The English edition was published before 1929, so it is public domain in the United States, and Wikisource and CrossWire both distribute it as public domain; the translators' dates are not all recorded, which is the one open point. Old Testament only, as the work is. |
+| `calvin` | John Calvin, *Commentaries* (Calvin Translation Society English editions, 1844–1856) | `CalvinCommentaries` 1.1 | CCEL | Calvin died in 1564; the Society's translators (Beveridge, King, Owen, Pringle and others) died in the 19th century. The module covers Genesis–Deuteronomy, Psalms, Isaiah–Malachi, Matthew–1 John and Jude (48 books): Calvin's Joshua is not in it, and he wrote on no other book. |
+| `easton` | M. G. Easton, *Illustrated Bible Dictionary* (3rd edition, 1897) | `Easton` 2.0.1 | CCEL | Easton died in 1900. |
+| `nave` | Orville J. Nave, *Nave's Topical Bible* (1897) | `Nave` 3.0 | CCEL (`ccel.org/ccel/n/nave/bible.xml`) | Nave died in 1917. |
+| `westminster` | Westminster Confession of Faith (1646), Shorter and Larger Catechisms (1647), with their proof texts | `Westminster` 1.0.1 | reformed.org | 17th-century texts of the Westminster Assembly. |
+| `lbcf` | Baptist Confession of Faith (1689), with its proof texts | `BaptistConfession1689` 1.0.2 | reformed.org, apuritansmind.com | A 17th-century text. |
+
+Changes: the modules' markup (OSIS, ThML, TEI) becomes plain text with paragraph breaks; a
+commentary's footnotes are dropped and a confession's proof-text quotations keep only their
+references; a module's title on an entry becomes its heading; references are mapped onto the KJV
+verse grid (a Psalm title joins verse 1). The words are not changed. Easton's module tags a
+continuation reference ("Rev. 1:8, 11") with the wrong book in places; the text shows the right
+one, and the citations are left as the module has them.
+
+### Considered and not yet included
+
+* **The Apostles', Nicene and Athanasian Creeds, the Heidelberg Catechism, the Belgic Confession
+  and the Canons of Dort.** CrossWire has no public-domain module for them (its `Westminster21`
+  is a copyrighted modern edition). Schaff's *Creeds of Christendom* vol. 3 (1877) on CCEL
+  (`https://ccel.org/ccel/schaff/creeds3.xml`, 6,107,301 bytes, SHA-256
+  `756adf1ddd466d237221c76b99d25d55cab7e83d08914f28a289c3b90dccddf3`) holds the Heidelberg
+  (`div2 iv.vi`), Belgic (`iv.viii`) and Dort (`iv.xvi`) texts, but Heidelberg and Belgic are
+  two-column German/French-and-English tables with page breaks inside answers, and Dort's Latin
+  precedes its English, so cutting them cleanly is its own job; the Creeds would be in vol. 2,
+  which was not checked. archive.org refused the download. Left for a later load.
+* **Matthew Henry's Concise Commentary (`MHCC`)** — an abridgement of `mhc`, which is in.
+
 ## Fonts — SIL Open Font License 1.1
 
 | Font | Use | Source | Licence |

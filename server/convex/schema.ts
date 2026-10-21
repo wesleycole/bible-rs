@@ -257,6 +257,52 @@ export default defineSchema({
     .index("by_item", ["itemId"])
     .index("by_user", ["userId"]),
 
+  /**
+   * The outside sources Ask draws on (docs/plans/m7-outside-sources.md): shared, read-only, written
+   * only by `scripts/load-sources.ts`. A work's `version` names the load its readers see; a load in
+   * progress carries a new version until `sources.commit` flips it.
+   */
+  sourceWorks: defineTable({
+    key: v.string(),
+    title: v.string(),
+    author: v.string(),
+    year: v.number(),
+    tradition: v.string(),
+    kind: v.union(v.literal("commentary"), v.literal("dictionary"), v.literal("topical"), v.literal("confession")),
+    licence: v.string(),
+    version: v.string()
+  }).index("by_key", ["key"]),
+
+  sourceEntries: defineTable({
+    work: v.string(),
+    version: v.string(),
+    /** The work's own label for the entry (a passage, a term, a section), stable across loads. */
+    key: v.string(),
+    from: v.optional(v.number()),
+    to: v.optional(v.number()),
+    term: v.optional(v.string()),
+    heading: v.optional(v.string()),
+    text: v.string(),
+    /** The verses the entry cites, in order of citation. */
+    cites: v.optional(v.array(v.object({ from: v.number(), to: v.number() })))
+  })
+    .index("by_work_version", ["work", "version"])
+    .index("by_term", ["term"])
+    .searchIndex("search_text", { searchField: "text", filterFields: ["work"] }),
+
+  /** One row per chapter an entry's range (or a confession section's proof text) touches. */
+  sourceAnchors: defineTable({
+    work: v.string(),
+    version: v.string(),
+    book: v.number(),
+    chapter: v.number(),
+    from: v.number(),
+    to: v.number(),
+    entryId: v.id("sourceEntries")
+  })
+    .index("by_chapter", ["book", "chapter"])
+    .index("by_work_version", ["work", "version"]),
+
   /** Server-only: every stored file, counted in `userLibrary.storageBytes`. */
   files: defineTable({
     userId: v.id("users"),

@@ -53,6 +53,7 @@ import type * as library_whoami from "../library/whoami.js";
 import type * as maintenance from "../maintenance.js";
 import type * as rateLimits from "../rateLimits.js";
 import type * as sermons from "../sermons.js";
+import type * as sources from "../sources.js";
 import type * as usage from "../usage.js";
 import type * as users from "../users.js";
 import type * as webhooks from "../webhooks.js";
@@ -109,6 +110,7 @@ declare const fullApi: ApiFromModules<{
   maintenance: typeof maintenance;
   rateLimits: typeof rateLimits;
   sermons: typeof sermons;
+  sources: typeof sources;
   usage: typeof usage;
   users: typeof users;
   webhooks: typeof webhooks;

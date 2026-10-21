@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256};
 mod crossrefs;
 mod names;
 mod original;
+mod sources;
 
 struct Source {
     id: &'static str,
@@ -121,6 +122,7 @@ fn main() -> Result<()> {
         Some("build-original") => original::build(&root),
         Some("build-crossrefs") => crossrefs::build(&root),
         Some("build-names") => names::build(&root),
+        Some("build-sources") => sources::build(&root, &args[1..]),
         Some("contract") => {
             // The Ask contract the proxy injects, generated from linger-core's prompt and tools.
             let path = root.join("server/src/contract").join(linger_core::contract::file_name());
@@ -260,7 +262,7 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: cargo run -p xtask -- build-data [ids…] | build-original | build-crossrefs | build-names | fetch [ids…] | contract | schema"
+                "usage: cargo run -p xtask -- build-data [ids…] | build-original | build-crossrefs | build-names | build-sources [keys…] | fetch [ids…] | contract | schema"
             );
             std::process::exit(2)
         }

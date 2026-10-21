@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 linger-core.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 uniffi = { workspace = true, features = ["cli"] }
