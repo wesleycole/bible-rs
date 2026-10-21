@@ -5,6 +5,10 @@
 //! closed, so a crash or a killed app loses at most the chunk in progress, and transcription can
 //! start on the first chunks while the sermon is still going.
 //!
+//! On Apple platforms the same samples are also encoded to AAC as they arrive, into ADTS parts of
+//! about [`PART_SECONDS`] each (`part-0000.aac`, …), which the manifest lists as they close. The
+//! parts are what uploads while the sermon is still going, and their packets, joined, are the M4A's.
+//!
 //! Capture is platform code (PulseAudio on Linux, ScreenCaptureKit and AVFoundation on Apple); it
 //! hands samples to a [`ChunkWriter`] already converted to [`SAMPLE_RATE`] mono.
 
@@ -26,6 +30,8 @@ pub const FRAMES_PER_PACKET: u32 = 1024;
 pub const AUDIO_SPECIFIC_CONFIG: [u8; 2] = [0x14, 0x08];
 /// Long enough to give the transcriber context, short enough that a crash loses little.
 pub const CHUNK_SECONDS: u32 = 30;
+/// An AAC part: what a crash can lose of the upload, and what uploads at a time while recording.
+pub const PART_SECONDS: u32 = 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +84,23 @@ impl Details {
     }
 }
 
+/// The AAC parts closed so far, in order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Parts {
+    /// The encoder's delay: decoded frames before the first recorded sample.
+    pub priming_frames: u32,
+    pub files: Vec<Part>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Part {
+    pub index: u32,
+    /// File name inside the recording's folder.
+    pub file: String,
+    /// ADTS frames in the file, one AAC packet each.
+    pub packets: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
@@ -90,6 +113,12 @@ pub struct Manifest {
     pub chunks: Vec<Chunk>,
     #[serde(default)]
     pub details: Details,
+    /// Samples in the closed chunks: exact, unlike the chunks' milliseconds.
+    #[serde(default)]
+    pub samples: u64,
+    /// The AAC parts, on Apple platforms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aac: Option<Parts>,
 }
 
 impl Manifest {
@@ -148,10 +177,13 @@ pub struct ChunkWriter {
     /// Samples in the open chunk, and in all closed chunks before it.
     in_chunk: u64,
     before: u64,
+    parts: PartWriter,
 }
 
 #[cfg(feature = "native")]
 impl ChunkWriter {
+    // Off Apple platforms `PartWriter` is a unit struct.
+    #[allow(clippy::default_constructed_unit_structs)]
     pub fn create(data_dir: &Path, source: Source) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
         let dir = recordings_dir(data_dir).join(&id);
@@ -164,8 +196,12 @@ impl ChunkWriter {
             sample_rate: SAMPLE_RATE,
             chunks: Vec::new(),
             details: Details::default(),
+            samples: 0,
+            aac: None,
         };
-        let w = Self { dir, manifest, current: None, in_chunk: 0, before: 0 };
+        let mut w =
+            Self { dir, manifest, current: None, in_chunk: 0, before: 0, parts: PartWriter::default() };
+        w.parts.start(&mut w.manifest)?;
         w.write_manifest()?;
         Ok(w)
     }
@@ -190,6 +226,9 @@ impl ChunkWriter {
 
     /// Appends mono samples at [`SAMPLE_RATE`], closing a chunk every [`CHUNK_SECONDS`].
     pub fn push(&mut self, mut samples: &[i16]) -> Result<()> {
+        if self.parts.push(&self.dir, &mut self.manifest, samples)? {
+            self.write_manifest()?;
+        }
         let per_chunk = u64::from(SAMPLE_RATE * CHUNK_SECONDS);
         while !samples.is_empty() {
             if self.current.is_none() {
@@ -229,6 +268,7 @@ impl ChunkWriter {
     /// Closes the last chunk and marks the recording finished.
     pub fn finish(mut self) -> Result<Manifest> {
         self.close_chunk()?;
+        std::mem::take(&mut self.parts).finish(&self.dir, &mut self.manifest)?;
         self.manifest.ended_at = Some(crate::time::now());
         self.write_manifest()?;
         Ok(self.manifest)
@@ -246,6 +286,7 @@ impl ChunkWriter {
         });
         self.before += self.in_chunk;
         self.in_chunk = 0;
+        self.manifest.samples = self.before;
         self.write_manifest()
     }
 
@@ -257,6 +298,103 @@ impl ChunkWriter {
 #[cfg(feature = "native")]
 fn chunk_name(index: u32) -> String {
     format!("chunk-{index:04}.wav")
+}
+
+/// Encodes beside the WAV chunks and writes the AAC parts.
+#[cfg(all(feature = "native", feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+#[derive(Default)]
+struct PartWriter {
+    encoder: Option<aac::Encoder>,
+    open: Option<std::io::BufWriter<std::fs::File>>,
+    /// Packets in the open part.
+    packets: u32,
+}
+
+#[cfg(all(feature = "native", feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+impl PartWriter {
+    /// Packets in a part: the first boundary at or after [`PART_SECONDS`].
+    const PACKETS: u32 = (PART_SECONDS * SAMPLE_RATE).div_ceil(FRAMES_PER_PACKET);
+
+    fn start(&mut self, m: &mut Manifest) -> Result<()> {
+        let encoder = aac::Encoder::new()?;
+        m.aac = Some(Parts { priming_frames: encoder.priming_frames(), files: Vec::new() });
+        self.encoder = Some(encoder);
+        Ok(())
+    }
+
+    /// Encodes `samples`; true when a part closed, so the manifest changed.
+    fn push(&mut self, dir: &Path, m: &mut Manifest, samples: &[i16]) -> Result<bool> {
+        let packets = self.encoder.as_mut().expect("started").push(samples)?;
+        self.write(dir, m, packets)
+    }
+
+    fn finish(mut self, dir: &Path, m: &mut Manifest) -> Result<()> {
+        let packets = self.encoder.take().expect("started").finish()?;
+        self.write(dir, m, packets)?;
+        self.close(m)
+    }
+
+    fn write(&mut self, dir: &Path, m: &mut Manifest, packets: Vec<Vec<u8>>) -> Result<bool> {
+        use std::io::Write;
+        let mut closed = false;
+        for packet in packets {
+            if self.open.is_none() {
+                let path = dir.join(part_name(m.aac.as_ref().map_or(0, |p| p.files.len() as u32)));
+                let file =
+                    std::fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+                self.open = Some(std::io::BufWriter::new(file));
+            }
+            let w = self.open.as_mut().expect("opened above");
+            w.write_all(&aac::adts_header(packet.len()))?;
+            w.write_all(&packet)?;
+            self.packets += 1;
+            if self.packets == Self::PACKETS {
+                self.close(m)?;
+                closed = true;
+            }
+        }
+        Ok(closed)
+    }
+
+    fn close(&mut self, m: &mut Manifest) -> Result<()> {
+        let Some(w) = self.open.take() else { return Ok(()) };
+        w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        let parts = m.aac.as_mut().expect("started");
+        let index = parts.files.len() as u32;
+        parts.files.push(Part { index, file: part_name(index), packets: std::mem::take(&mut self.packets) });
+        Ok(())
+    }
+}
+
+/// Elsewhere (Linux), nothing is encoded while recording.
+#[cfg(all(
+    feature = "native",
+    not(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))
+))]
+#[derive(Default)]
+struct PartWriter;
+
+#[cfg(all(
+    feature = "native",
+    not(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))
+))]
+impl PartWriter {
+    fn start(&mut self, _: &mut Manifest) -> Result<()> {
+        Ok(())
+    }
+
+    fn push(&mut self, _: &Path, _: &mut Manifest, _: &[i16]) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn finish(self, _: &Path, _: &mut Manifest) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "native", feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+fn part_name(index: u32) -> String {
+    format!("part-{index:04}.aac")
 }
 
 /// Root mean square of a block of samples, 0.0–1.0, for level meters.
@@ -315,6 +453,79 @@ mod tests {
         assert_eq!(m.ended_at, None);
         assert_eq!(m.chunks.len(), 1);
         assert_eq!(m.duration_ms(), 30_000);
+    }
+
+    /// Speech-like enough for the encoder: a tone whose pitch moves.
+    #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+    fn sweep(seconds: u32) -> Vec<i16> {
+        (0..SAMPLE_RATE * seconds)
+            .map(|i| {
+                let t = f64::from(i) / f64::from(SAMPLE_RATE);
+                ((t * (300.0 + 50.0 * (t * 0.7).sin()) * std::f64::consts::TAU).sin() * 6000.0) as i16
+            })
+            .collect()
+    }
+
+    #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+    fn part_packets(dir: &Path, parts: &Parts) -> Vec<Vec<u8>> {
+        parts
+            .files
+            .iter()
+            .flat_map(|p| {
+                let bytes = std::fs::read(dir.join(&p.file)).unwrap();
+                let packets: Vec<Vec<u8>> =
+                    aac::adts_packets(&bytes).unwrap().iter().map(|p| p.to_vec()).collect();
+                assert_eq!(packets.len() as u32, p.packets, "{}", p.file);
+                packets
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+    fn the_parts_join_to_one_encoders_packets() {
+        let data = temp("parts");
+        let pcm = sweep(11 * 60 + 7);
+        let mut w = ChunkWriter::create(&data, Source::Microphone).unwrap();
+        for block in pcm.chunks(1600) {
+            w.push(block).unwrap();
+        }
+        let dir = w.dir().to_path_buf();
+        let m = w.finish().unwrap();
+        assert_eq!(m.samples, pcm.len() as u64);
+
+        let mut one = aac::Encoder::new().unwrap();
+        let mut expected = one.push(&pcm).unwrap();
+        let priming = one.priming_frames();
+        expected.extend(one.finish().unwrap());
+
+        let parts = m.aac.as_ref().unwrap();
+        assert_eq!(parts.priming_frames, priming);
+        let sizes: Vec<u32> = parts.files.iter().map(|p| p.packets).collect();
+        let per_part = (PART_SECONDS * SAMPLE_RATE).div_ceil(FRAMES_PER_PACKET);
+        assert_eq!(sizes[..2], [per_part, per_part]);
+        assert_eq!(sizes.len(), 3);
+        assert_eq!(part_packets(&dir, parts), expected);
+    }
+
+    #[test]
+    #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+    fn a_killed_recording_loses_only_its_open_part() {
+        let data = temp("killed");
+        let mut w = ChunkWriter::create(&data, Source::Microphone).unwrap();
+        w.push(&sweep(7 * 60)).unwrap();
+        let dir = w.dir().to_path_buf();
+        // The app dies here: no finish().
+        drop(w);
+        let m = load(&data, &list(&data)[0].id).unwrap();
+        let parts = m.aac.as_ref().unwrap();
+        assert_eq!(parts.files.len(), 1, "the second part was open");
+        let packets = part_packets(&dir, parts);
+        // The closed part holds the first five minutes, whole.
+        assert_eq!(
+            packets.len() as u32 * FRAMES_PER_PACKET,
+            (PART_SECONDS * SAMPLE_RATE).next_multiple_of(FRAMES_PER_PACKET)
+        );
     }
 
     #[test]

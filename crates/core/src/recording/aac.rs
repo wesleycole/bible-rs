@@ -45,6 +45,23 @@ pub fn adts_header(len: usize) -> [u8; 7] {
     ]
 }
 
+/// The packets of an ADTS stream (a part file), in order, without their headers.
+pub fn adts_packets(stream: &[u8]) -> Result<Vec<&[u8]>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < stream.len() {
+        let h = stream.get(at..at + 7).filter(|h| h[0] == 0xFF && h[1] & 0xF6 == 0xF0);
+        let Some(h) = h else { bail!("no ADTS header at byte {at}") };
+        let len = (usize::from(h[3] & 3) << 11) | (usize::from(h[4]) << 3) | usize::from(h[5] >> 5);
+        let Some(packet) = stream.get(at + 7..at + len).filter(|_| len > 7) else {
+            bail!("a truncated ADTS frame at byte {at}")
+        };
+        out.push(packet);
+        at += len;
+    }
+    Ok(out)
+}
+
 /// One continuous AudioToolbox encoder.
 pub struct Encoder {
     converter: AudioConverterRef,

@@ -75,7 +75,7 @@ targets:
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
   # Runs inside the app: storekitd accepts a StoreKit test session only from the app's own identity,
   # and xcodebuild doesn't load the scheme's StoreKit configuration for UI tests. Skips without
-  # pnpm dev and LINGER_TEST_TOKEN (see PurchaseTests.swift), so CI builds it but doesn't run it.
+  # pnpm dev and LINGER_TEST_TOKEN (see PurchaseTests.swift); CI neither builds nor runs it.
   LingerTests:
     type: bundle.unit-test
     platform: iOS
