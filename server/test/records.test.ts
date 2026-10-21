@@ -55,6 +55,9 @@ const pairs: Array<[string, Validator<any, any, any>, Schema.Codec<any, any, nev
   ["Item", v.object(Records.ItemFields), Records.Item],
   ["Chat", v.object(Records.ChatFields), Records.Chat],
   ["Transcript", v.object(Records.TranscriptFields), Records.Transcript],
+  ["SearchHit", v.object(Records.SearchHitFields), Records.SearchHit],
+  ["ItemText", v.object(Records.ItemTextFields), Records.ItemText],
+  ["ChapterItem", v.object(Records.ChapterItemFields), Records.ChapterItem],
   ["FeedRecord", Records.FeedRecordValidator, Records.FeedRecord],
   ["Changes", Records.ChangesValidator, Records.Changes],
   ["WriteAnswer", Records.WriteAnswerValidator, Records.WriteAnswer]

@@ -40,9 +40,11 @@ const PLANS = [
 ] as const
 
 const MODELS = [
-  { key: "free", gatewayModel: "anthropic/claude-haiku-5.5", effort: "low", maxTokens: 4000 },
-  { key: "standard", gatewayModel: "anthropic/claude-sonnet-5.5", effort: "medium", maxTokens: 8000 },
-  { key: "deep", gatewayModel: "anthropic/claude-opus-5.5", effort: "high", maxTokens: 12000 }
+  { key: "free", gatewayModel: "anthropic/claude-haiku-5.5", thinking: "adaptive", effort: "low", maxTokens: 4000 },
+  { key: "standard", gatewayModel: "anthropic/claude-sonnet-5.5", thinking: "adaptive", effort: "medium", maxTokens: 8000 },
+  { key: "deep", gatewayModel: "anthropic/claude-opus-5.5", thinking: "adaptive", effort: "high", maxTokens: 12000 },
+  /** The sermon digest (library/digest.ts): references, an outline and a summary as JSON, no thinking. */
+  { key: "digest", gatewayModel: "anthropic/claude-haiku-5.5", thinking: "disabled", effort: "low", maxTokens: 4000 }
 ] as const
 
 /**
@@ -72,7 +74,7 @@ export const seed = effectInternalMutation({
       }
     }
     for (const m of MODELS) {
-      const model = { ...m, thinking: "adaptive" as const, enabled: true, prices: DEFAULT_PRICES[m.gatewayModel] }
+      const model = { ...m, enabled: true, prices: DEFAULT_PRICES[m.gatewayModel] }
       const row = yield* Effect.promise(() => ctx.db.query("models").withIndex("by_key", (q) => q.eq("key", m.key)).unique())
       if (!row) {
         yield* Effect.promise(() => ctx.db.insert("models", model))

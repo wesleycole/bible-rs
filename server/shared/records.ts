@@ -267,6 +267,115 @@ export const Transcript = Schema.Struct({
 
 export type Transcript = typeof Transcript["Type"]
 
+/** One passage `library/search.search` found: a chunk of an item's text with the item it is from. Hits come grouped by item, best item first, so one sermon doesn't fill every slot. An answer, not a record of the feed. */
+export const SearchHitFields = {
+  /** Whether the item is anchored to the passage asked about. */
+  anchored: v.boolean(),
+  /** When the item was recorded or made, in server milliseconds. */
+  date: v.number(),
+  endMs: v.optional(v.number()),
+  itemUid: v.string(),
+  /** What an item is. */
+  kind: v.union(v.literal("sermon"), v.literal("handwritten"), v.literal("slide"), v.literal("page"), v.literal("note")),
+  /** Which page of a photographed item it is on. */
+  page: v.optional(v.number()),
+  /** Who it is from: a sermon's speaker and church. */
+  source: v.optional(v.string()),
+  /** Where in a recording the passage is, in milliseconds. */
+  startMs: v.optional(v.number()),
+  text: v.string(),
+  title: v.string(),
+  /** Whether a model wrote it and the person hasn't reviewed it. */
+  unreviewed: v.boolean(),
+}
+
+export const SearchHit = Schema.Struct({
+  /** Whether the item is anchored to the passage asked about. */
+  anchored: Schema.Boolean,
+  /** When the item was recorded or made, in server milliseconds. */
+  date: Schema.Int,
+  endMs: Schema.optionalKey(Schema.Int),
+  itemUid: Schema.String,
+  /** What an item is. */
+  kind: Schema.Literals(["sermon", "handwritten", "slide", "page", "note"]),
+  /** Which page of a photographed item it is on. */
+  page: Schema.optionalKey(Schema.Int),
+  /** Who it is from: a sermon's speaker and church. */
+  source: Schema.optionalKey(Schema.String),
+  /** Where in a recording the passage is, in milliseconds. */
+  startMs: Schema.optionalKey(Schema.Int),
+  text: Schema.String,
+  title: Schema.String,
+  /** Whether a model wrote it and the person hasn't reviewed it. */
+  unreviewed: Schema.Boolean,
+})
+
+export type SearchHit = typeof SearchHit["Type"]
+
+/** What `library/items.read` answers: an item's text, or a window of a sermon's by time, with `[mm:ss]` stamps, capped at about 2,500 words. An answer, not a record of the feed. */
+export const ItemTextFields = {
+  /** The window's start, in milliseconds, for a sermon. */
+  fromMs: v.optional(v.number()),
+  /** What an item is. */
+  kind: v.union(v.literal("sermon"), v.literal("handwritten"), v.literal("slide"), v.literal("page"), v.literal("note")),
+  text: v.string(),
+  title: v.string(),
+  /** Where the text returned ends, in milliseconds: ask from here for what follows. */
+  toMs: v.optional(v.number()),
+  /** Whether the item has more text than was returned. */
+  truncated: v.boolean(),
+  uid: v.string(),
+}
+
+export const ItemText = Schema.Struct({
+  /** The window's start, in milliseconds, for a sermon. */
+  fromMs: Schema.optionalKey(Schema.Int),
+  /** What an item is. */
+  kind: Schema.Literals(["sermon", "handwritten", "slide", "page", "note"]),
+  text: Schema.String,
+  title: Schema.String,
+  /** Where the text returned ends, in milliseconds: ask from here for what follows. */
+  toMs: Schema.optionalKey(Schema.Int),
+  /** Whether the item has more text than was returned. */
+  truncated: Schema.Boolean,
+  uid: Schema.String,
+})
+
+export type ItemText = typeof ItemText["Type"]
+
+/** One anchor of an item on a chapter, as `library/items.forChapter` lists them: the verses in that chapter it covers (a range from the previous chapter comes through at its start) and the item. An answer, not a record of the feed. */
+export const ChapterItemFields = {
+  atMs: v.optional(v.number()),
+  /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+  from: v.number(),
+  /** What an item is. */
+  kind: v.union(v.literal("sermon"), v.literal("handwritten"), v.literal("slide"), v.literal("page"), v.literal("note")),
+  /** Who said an anchor's verses are what the item is about. */
+  origin: v.union(v.literal("user"), v.literal("typed"), v.literal("model")),
+  page: v.optional(v.number()),
+  title: v.string(),
+  /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+  to: v.number(),
+  uid: v.string(),
+}
+
+export const ChapterItem = Schema.Struct({
+  atMs: Schema.optionalKey(Schema.Int),
+  /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+  from: Schema.Int,
+  /** What an item is. */
+  kind: Schema.Literals(["sermon", "handwritten", "slide", "page", "note"]),
+  /** Who said an anchor's verses are what the item is about. */
+  origin: Schema.Union([Schema.Literal("user"), Schema.Literal("typed"), Schema.Literal("model")]),
+  page: Schema.optionalKey(Schema.Int),
+  title: Schema.String,
+  /** A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 + verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon order, so a range is two numbers, and they read as references in a database. This is the one encoding on the wire and in the cache. */
+  to: Schema.Int,
+  uid: Schema.String,
+})
+
+export type ChapterItem = typeof ChapterItem["Type"]
+
 /** One record in the change feed, of any synced type, tagged with that type. */
 export const FeedRecordValidator = v.union(v.object({
     color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),

@@ -3,6 +3,7 @@ import { Schema } from "effect"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { Transcript } from "../shared/records.js"
 import { WEBHOOK_HEADER } from "../convex/lib/transcriber.js"
+import { chunkNote, chunkTranscript } from "../convex/library/chunk.js"
 import { PAGE_RECORDS } from "../convex/library/sync.js"
 import { api, internal } from "../convex/_generated/api.js"
 import { accountOf, SECRET } from "./harness.js"
@@ -359,12 +360,13 @@ describe("purge, tombstones and storage", () => {
         highlights: (await ctx.db.query("highlights").collect()).map((h) => h.verse),
         items: (await ctx.db.query("items").collect()).length,
         anchors: (await ctx.db.query("anchors").collect()).length,
+        chunks: (await ctx.db.query("chunks").collect()).length,
         chats: (await ctx.db.query("chats").collect()).length,
         files: (await ctx.db.query("files").collect()).length,
         storage: (await ctx.db.system.query("_storage").collect()).length,
         libraries: (await ctx.db.query("userLibrary").collect()).length
       }))
-      expect(left).toEqual({ users: ["user_bob"], bookmarks: 0, highlights: [JOHN_3_16], items: 0, anchors: 0, chats: 0, files: 0, storage: 0, libraries: 1 })
+      expect(left).toEqual({ users: ["user_bob"], bookmarks: 0, highlights: [JOHN_3_16], items: 0, anchors: 0, chunks: 0, chats: 0, files: 0, storage: 0, libraries: 1 })
     } finally {
       vi.useRealTimers()
     }
@@ -442,15 +444,19 @@ describe("library.sermons (the transcription workflow)", () => {
     vi.useRealTimers()
   })
 
-  /** The provider at `fetch`: one job, in whatever state `state` holds when it is asked. */
+  /** What the Gateway's model says of every transcript: one reference on the grid, one that isn't. */
+  const digest = { references: [{ ref: "Genesis 1:1", at: "00:00" }, { ref: "Nowhere 9:9" }], outline: "- Creation", summary: "God made everything." }
+  /** The providers at `fetch`: AssemblyAI with one job, in whatever state `state` holds when it is asked, and the Gateway with `digest`. */
   const fakeProvider = (state: { job: object }) => {
     vi.stubEnv("ASSEMBLYAI_API_KEY", "key")
+    vi.stubEnv("AI_GATEWAY_API_KEY", "key")
     vi.stubEnv("CONVEX_SITE_URL", SITE)
     const calls: Array<{ method: string; path: string; body?: any }> = []
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const path = new URL(url).pathname
       calls.push({ method: init.method ?? "GET", path, body: init.body ? JSON.parse(String(init.body)) : undefined })
       const json = (o: object) => new Response(JSON.stringify(o), { status: 200, headers: { "content-type": "application/json" } })
+      if (path === "/v1/messages") return json({ content: [{ type: "tool_use", name: "digest", input: digest }], usage: { input_tokens: 1_000, output_tokens: 100 } })
       return init.method === "POST" ? json({ id: "job1" }) : init.method === "DELETE" ? json({}) : json({ id: "job1", ...state.job })
     })
     return calls
@@ -525,13 +531,36 @@ describe("library.sermons (the transcription workflow)", () => {
       segments: [{ startMs: 0, endMs: 61_200, speaker: "A", text: "In the beginning God." }]
     })
     expect((await t.run((ctx) => ctx.db.query("files").collect())).map((f) => f.role).sort()).toEqual(["audio", "text"])
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /v2/transcript", "GET /v2/transcript/job1", "DELETE /v2/transcript/job1"])
+    // Then the digest, once, through the Gateway with zero data retention and the transcript stamped a line a turn.
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /v2/transcript", "GET /v2/transcript/job1", "DELETE /v2/transcript/job1", "POST /v1/messages"])
+    expect(calls[3]!.body).toMatchObject({
+      model: "anthropic/claude-haiku-5.5",
+      thinking: { type: "disabled" },
+      tool_choice: { type: "tool", name: "digest" },
+      messages: [{ role: "user", content: "Title: Grace\n\n[00:00] In the beginning God." }],
+      providerOptions: { gateway: { zeroDataRetention: true } }
+    })
+    // The reference on the grid is a `model` anchor at its time; the one that isn't is dropped, not guessed.
+    expect(ready).toMatchObject({ anchors: [{ from: 1_001, to: 1_001, origin: "model", atMs: 0 }], outline: "- Creation", summary: "God made everything." })
+    expect((await t.run((ctx) => ctx.db.query("anchors").collect())).map((a) => [a.book, a.chapter, a.origin])).toEqual([[0, 1, "model"]])
+    // The transcript is one searchable paragraph with its times.
+    expect((await t.run((ctx) => ctx.db.query("chunks").collect())).map((c) => [c.ordinal, c.text, c.startMs, c.endMs, c.unreviewed])).toEqual([[0, "In the beginning God.", 0, 61_200, false]])
     const account = await accountOf(t, "user_ann")
     expect(account.reservations).toEqual([])
     expect(account.usage.map((u) => u.sermonSeconds)).toEqual([62])
-    expect(account.ledger.map((l) => [l.kind, l.status, l.audioSeconds])).toEqual([["sermon", "ok", 62]])
-    // The feed carries the item as the webhook left it.
-    expect((await page(t, "user_ann", 0)).records.at(-1)).toMatchObject({ type: "item", uid: "s1", status: "ready", textFileUid: ready.textFileUid })
+    expect(account.ledger.map((l) => [l.kind, l.status, l.audioSeconds, l.inputTokens])).toEqual([["sermon", "ok", 62, undefined], ["digest", "ok", undefined, 1_000]])
+    // The feed carries the item as the digest left it.
+    expect((await page(t, "user_ann", 0)).records.at(-1)).toMatchObject({ type: "item", uid: "s1", status: "ready", textFileUid: ready.textFileUid, outline: "- Creation" })
+    // What Ask's `read_item` reads: the window of paragraphs, stamped.
+    expect(await ann.query(api.library.items.read, { uid: "s1", fromMs: 0, minutes: 2 })).toEqual({
+      uid: "s1",
+      kind: "sermon",
+      title: "Grace",
+      text: "[00:00] In the beginning God.",
+      fromMs: 0,
+      toMs: 61_200,
+      truncated: false
+    })
   })
 
   it("spends a Free user's trial hour once: a failed join gives it back, a trial transcript keeps no audio, and then the plan allows nothing", async () => {
@@ -561,7 +590,7 @@ describe("library.sermons (the transcription workflow)", () => {
     const ready = await itemOf(t, "s2")
     expect(ready.status).toBe("ready")
     expect(ready.files.map((f) => f.role)).toEqual(["text"])
-    expect((await accountOf(t, "user_bob")).ledger.map((l) => l.status)).toEqual(["trial"])
+    expect((await accountOf(t, "user_bob")).ledger.map((l) => [l.kind, l.status])).toEqual([["sermon", "trial"], ["digest", "ok"]])
 
     expect(await bob.mutation(api.library.sermons.begin, { uid: "s3", details, recordedOn: "2026-10-20" })).toEqual({ uploadAudio: false, cloudTranscript: false })
     expect(await bob.mutation(api.library.sermons.finish, { uid: "s3", durationMs: 60_000 })).toMatchObject({ result: "ok", record: { status: "waiting" } })
@@ -630,5 +659,113 @@ describe("library.sermons (the transcription workflow)", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers)
     expect((await itemOf(t, "dead")).status).toBe("processing")
     expect((await errorOf(ann.mutation(api.library.sermons.transcribeNow, { uid: "dead" }))).type).toBe("invalid_request")
+  })
+})
+
+describe("library.search, items.read, items.forChapter and export (M2's Convex half)", () => {
+  const JOHN_3_36 = 42_003_036
+  const JOHN_4_2 = 42_004_002
+  const sentence = (n: number, word: string) => Array.from({ length: n }, (_, i) => `${word}${i}`).join(" ") + "."
+
+  it("chunks a transcript into paragraphs: a turn change or a pause closes one once it has MIN words, TARGET words closes it anywhere, never inside a sentence", () => {
+    const transcript = {
+      language: "en",
+      durationMs: 400_000,
+      segments: [
+        // Under MIN words: the speaker change after it doesn't close the paragraph.
+        { startMs: 0, endMs: 10_000, speaker: "A", text: sentence(20, "a") },
+        { startMs: 10_000, endMs: 40_000, speaker: "B", text: sentence(40, "b") },
+        // Now past MIN: a pause of PAUSE closes it.
+        { startMs: 41_500, endMs: 50_000, speaker: "B", text: sentence(10, "c") },
+        // One long turn is split by sentence once it is past TARGET, its times shared by position.
+        { startMs: 100_000, endMs: 200_000, speaker: "A", text: `${sentence(200, "d")} ${sentence(200, "e")}` }
+      ]
+    }
+    const chunks = chunkTranscript(transcript, true)
+    expect(chunks.map((c) => [c.ordinal, c.startMs, c.endMs, c.text.split(/\s+/).length, c.unreviewed])).toEqual([
+      [0, 0, 40_000, 60, true],
+      // The ten words of "c" are under MIN, so the speaker change after them closes nothing.
+      [1, 41_500, 150_000, 210, true],
+      [2, 150_000, 200_000, 200, true]
+    ])
+    expect(chunks[0]!.text.startsWith("a0 a1")).toBe(true)
+    expect(chunks[1]!.text.startsWith("c0 c1")).toBe(true)
+    expect(chunks[2]!.text.startsWith("e0 e1")).toBe(true)
+    expect(chunkNote("  A thought.  ")).toEqual([{ ordinal: 0, text: "A thought.", focus: false, unreviewed: false }])
+    expect(chunkNote(" ")).toEqual([])
+  })
+
+  it("searches one person's library only, puts the chunk anchored to the passage first, and filters by kind", async () => {
+    const t = await makeConvex()
+    const [ann, bob] = [as(t, "user_ann"), as(t, "user_bob")]
+    await ann.mutation(api.library.notes.upsert, { uid: "n1", text: "Grace abounds in the morning.", anchors: [], capturedAt: 2_000 })
+    await ann.mutation(api.library.notes.upsert, { uid: "n2", text: "Grace for the whole world.", anchors: [{ from: JOHN_3_16, to: JOHN_3_16, origin: "user" }], capturedAt: 1_000 })
+    await bob.mutation(api.library.notes.upsert, { uid: "n1", text: "Grace, grace, grace.", anchors: [{ from: JOHN_3_16, to: JOHN_3_16, origin: "user" }] })
+    const hits = await ann.action(api.library.search.search, { query: "grace", passage: { from: JOHN_3_16, to: JOHN_3_16 } })
+    expect(hits.map((h) => [h.itemUid, h.anchored, h.text])).toEqual([
+      ["n2", true, "Grace for the whole world."],
+      ["n1", false, "Grace abounds in the morning."]
+    ])
+    expect(hits[0]).toEqual({ itemUid: "n2", kind: "note", title: "Grace for the whole world.", date: 1_000, text: "Grace for the whole world.", anchored: true, unreviewed: false })
+    // The passage alone, without words, still finds what is anchored to it.
+    expect((await ann.action(api.library.search.search, { query: "", passage: { from: JOHN_3_16, to: JOHN_3_16 } })).map((h) => h.itemUid)).toEqual(["n2"])
+    // Nothing of Bob's; a kind he has nothing of answers nothing.
+    expect((await bob.action(api.library.search.search, { query: "grace" })).map((h) => h.itemUid)).toEqual(["n1"])
+    expect(await bob.action(api.library.search.search, { query: "grace", kinds: ["sermon"] })).toEqual([])
+    // Someone with no library yet.
+    expect(await as(t, "user_new").action(api.library.search.search, { query: "grace" })).toEqual([])
+    // Editing the note rebuilds its chunk; removing it leaves none.
+    await ann.mutation(api.library.notes.upsert, { uid: "n1", text: "Mercy abounds.", anchors: [], baseSeq: 1 })
+    expect((await ann.action(api.library.search.search, { query: "grace" })).map((h) => h.itemUid)).toEqual(["n2"])
+    await ann.mutation(api.library.notes.remove, { uid: "n2", baseSeq: 2 })
+    expect(await ann.action(api.library.search.search, { query: "grace" })).toEqual([])
+    expect((await t.run((ctx) => ctx.db.query("chunks").collect())).map((c) => c.text).sort()).toEqual(["Grace, grace, grace.", "Mercy abounds."])
+  })
+
+  it("reads a note whole, and lists a chapter's items with a range that begins in the chapter before", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    await ann.mutation(api.library.notes.upsert, { uid: "n1", text: "Jesus baptizes more than John.", anchors: [{ from: JOHN_3_36, to: JOHN_4_2, origin: "user" }] })
+    await ann.mutation(api.library.notes.upsert, { uid: "n2", text: "Living water.", anchors: [{ from: 42_004_010, to: 42_004_014, origin: "user" }] })
+    await ann.mutation(api.library.notes.upsert, { uid: "gone", text: "Deleted.", anchors: [{ from: 42_004_001, to: 42_004_001, origin: "user" }] })
+    await ann.mutation(api.library.notes.remove, { uid: "gone", baseSeq: 3 })
+    expect(await ann.query(api.library.items.read, { uid: "n1" })).toEqual({ uid: "n1", kind: "note", title: "Jesus baptizes more than John.", text: "Jesus baptizes more than John.", truncated: false })
+    expect(await ann.query(api.library.items.read, { uid: "nope" })).toBeNull()
+    expect(await ann.query(api.library.items.forChapter, { book: 42, chapter: 4 })).toEqual([
+      { uid: "n1", kind: "note", title: "Jesus baptizes more than John.", from: JOHN_3_36, to: JOHN_4_2, origin: "user" },
+      { uid: "n2", kind: "note", title: "Living water.", from: 42_004_010, to: 42_004_014, origin: "user" }
+    ])
+    expect((await ann.query(api.library.items.forChapter, { book: 42, chapter: 3 })).map((i) => i.uid)).toEqual(["n1"])
+    expect(await as(t, "user_bob").query(api.library.items.forChapter, { book: 42, chapter: 4 })).toEqual([])
+  })
+
+  it("exports the library as a zip anyone can open, kept as the person's file for a day", async () => {
+    vi.useFakeTimers()
+    try {
+      const t = await makeConvex()
+      const ann = as(t, "user_ann")
+      await ann.mutation(api.library.notes.upsert, { uid: "n1", text: "Grace for the whole world.", anchors: [{ from: JOHN_3_16, to: JOHN_3_16, origin: "user" }], capturedAt: Date.UTC(2026, 9, 18) })
+      const started = await ann.action(api.library.export.start, {})
+      expect(started).toEqual({ url: expect.stringContaining("/api/storage/"), expiresAt: Date.now() + 24 * 3600_000 })
+      const file = (await t.run((ctx) => ctx.db.query("files").unique()))!
+      expect(file.role).toBe("export")
+      expect(file.ownerUid).toBeUndefined()
+      const bytes = new Uint8Array(await t.run(async (ctx) => (await ctx.storage.get(file.storageId))!.arrayBuffer()))
+      const text = Buffer.from(bytes).toString("latin1")
+      // A zip: local headers, then the central directory and its end record.
+      expect(Array.from(bytes.subarray(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04])
+      expect(text).toContain("PK\x01\x02")
+      expect(text.slice(-22, -18)).toBe("PK\x05\x06")
+      expect(text).toContain("README.md")
+      expect(text).toContain("2026-10-18-grace-for-the-whole-world-n1/grace-for-the-whole-world.md")
+      expect(text).toContain("- References:\n  - John 3:16\n")
+      // A day on, the file is gone.
+      await t.finishAllScheduledFunctions(vi.runAllTimers)
+      expect(await t.run((ctx) => ctx.db.query("files").collect())).toEqual([])
+      expect(await t.run((ctx) => ctx.db.system.query("_storage").collect())).toEqual([])
+      expect(await as(t, "user_new").action(api.library.export.start, {})).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

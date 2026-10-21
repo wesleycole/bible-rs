@@ -134,7 +134,7 @@ export default defineSchema({
   ledger: defineTable({
     userId: v.id("users"),
     questionId: v.optional(v.string()),
-    kind: v.union(v.literal("ask"), v.literal("sermon")),
+    kind: v.union(v.literal("ask"), v.literal("sermon"), v.literal("digest")),
     model: v.optional(v.string()),
     provider: v.optional(v.string()),
     inputTokens: v.optional(v.number()),
@@ -236,6 +236,26 @@ export default defineSchema({
   })
     .index("by_user_chapter", ["userId", "book", "chapter"])
     .index("by_item", ["itemId"]),
+
+  /**
+   * Server-only: the unit of search and citation, rebuilt from an item's text whenever it changes
+   * (library/chunk.ts). A note is one chunk; a sermon is paragraphs of its transcript with times.
+   */
+  chunks: defineTable({
+    userId: v.id("users"),
+    itemId: v.id("items"),
+    ordinal: v.number(),
+    text: v.string(),
+    startMs: v.optional(v.number()),
+    endMs: v.optional(v.number()),
+    page: v.optional(v.number()),
+    /** A passage the person marked (photos, M4): ranked above the rest of its page. */
+    focus: v.boolean(),
+    unreviewed: v.boolean()
+  })
+    .searchIndex("text", { searchField: "text", filterFields: ["userId"] })
+    .index("by_item", ["itemId"])
+    .index("by_user", ["userId"]),
 
   /** Server-only: every stored file, counted in `userLibrary.storageBytes`. */
   files: defineTable({

@@ -14,12 +14,14 @@ import type { Doc, Id } from "../_generated/dataModel.js"
 import { AllowanceExhausted, InvalidRequest, PlanRequired, UpstreamFailed, type UpstreamUnavailable } from "../../shared/Errors.js"
 import { Item, type Transcript, TranscriptFields, type WriteAnswer } from "../../shared/records.js"
 import { Allowance } from "../lib/allowance.js"
+import { replaceChunks } from "../lib/chunks.js"
 import { effectInternalAction, effectInternalMutation, effectInternalQuery, effectMutation, userServices } from "../lib/effect.js"
 import { Files, sha256Hex } from "../lib/files.js"
 import { Sequence } from "../lib/sequence.js"
 import { ActionCtx, CurrentUser, MutationCtx, QueryCtx } from "../lib/services.js"
 import { HOUR, MINUTE } from "../lib/time.js"
 import { Transcriber } from "../lib/transcriber.js"
+import { chunkTranscript } from "./chunk.js"
 import { asRecord, Uid } from "./notes.js"
 
 /** A webhook is late once a job has run this long; the hourly cron then asks the provider itself. */
@@ -235,7 +237,19 @@ export const transcription = workflow.define({
     await step.runMutation(internal.library.sermons.started, { sermonId, ...job })
     await step.awaitEvent({ name: "transcript" })
     await step.runAction(internal.library.sermons.keep, { sermonId, assemblyId: job.assemblyId }, { retry: true })
+    // The sermon is settled and searchable by text; the digest adds its references, outline and
+    // summary. Its failure fails the workflow, which leaves the settled sermon as it is.
+    const { itemId } = await step.runQuery(internal.library.sermons.itemOf, { sermonId })
+    await step.runAction(internal.library.digest.run, { itemId }, { retry: true })
   }
+})
+
+export const itemOf = effectInternalQuery({
+  args: { sermonId: v.id("sermons") },
+  handler: Effect.fn("sermons.itemOf")(function*({ sermonId }) {
+    const ctx = yield* QueryCtx
+    return { itemId: (yield* db(() => ctx.db.get(sermonId)))!.itemId! }
+  })
 })
 
 /** What `join` tells the workflow: the sermon's `audio` file, or null when nothing was uploaded. */
@@ -358,7 +372,8 @@ export const settle = effectInternalMutation({
         const text = yield* files.attach({ uid: sha256, ownerUid: item.uid, role: "text", storageId, sha256 })
         // A Free trial's audio stays on the device that recorded it.
         if (sermon.trial && sermon.audio) yield* files.remove(sermon.audio)
-        yield* writeItem({ ...sermon, audioSeconds }, { status: "ready", textFileUid: text.uid, excerpt: excerptOf(transcript) })
+        const written = yield* writeItem({ ...sermon, audioSeconds }, { status: "ready", textFileUid: text.uid, excerpt: excerptOf(transcript) })
+        yield* replaceChunks(ctx, written, chunkTranscript(transcript, written.unreviewed))
       })
     )
     return true

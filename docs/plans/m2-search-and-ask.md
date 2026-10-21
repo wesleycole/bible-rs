@@ -39,6 +39,22 @@ vectors (only if the eval below asks for them).
    plus the original files) in an action, stores it as an `export` file, and returns its link; deleted
    after a day. The purge chain covers exports and the new `chunks` table.
 
+**Built (October 21), where it is smaller than the above:** `items.read` reads an item's text from
+its `chunks` rather than the text file, so it stays a query (a query can't read storage) and a sermon's
+window is its paragraphs by time, each stamped. `forChapter` answers each anchor's whole range, mapped
+back from the chapter's index row, so a range that starts in the chapter before says so. The digest
+calls the Gateway's `/v1/messages` with `AI_GATEWAY_API_KEY` (`AI_GATEWAY_URL` overrides the host) and
+forces one tool whose input schema is the digest's shape; the `digest` row in `models` is seeded by
+`admin:seed`, so dev needs a seed before the step runs. The digest's cost is a `ledger` row of kind
+`digest` and nothing more: it doesn't count against the person's Ask allowance in `usage`. The
+digest runs for trial transcripts too. The backfill is one internal action over every live note and
+sermon, sequential, a failed digest logged and skipped; it is run once from the dashboard, not
+scheduled. The export zip is stored-only (no compression: audio and photos don't compress and text is
+small), the Markdown page gets the transcript laid out a stamped line a turn, and each export schedules
+its own deletion a day on rather than relying on a cron. `search.search` searches reviewed and
+unreviewed chunks alike and marks each hit `unreviewed`; the text index is Convex's own, with no
+prefix or typo tolerance beyond what it gives.
+
 ## linger-core
 
 1. **Contract `ask/5`** in `contract.rs` and `chat.rs`:

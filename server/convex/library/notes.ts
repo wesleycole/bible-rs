@@ -8,10 +8,12 @@ import type { Doc } from "../_generated/dataModel.js"
 import { InvalidRequest } from "../../shared/Errors.js"
 import { FeedRecord, Item, type WriteAnswer } from "../../shared/records.js"
 import { Anchors } from "../lib/anchors.js"
+import { replaceChunks } from "../lib/chunks.js"
 import { decideByUid } from "../lib/conflict.js"
 import { effectMutation } from "../lib/effect.js"
 import { Sequence } from "../lib/sequence.js"
 import { CurrentUser, MutationCtx } from "../lib/services.js"
+import { chunkNote } from "./chunk.js"
 
 /** A client-made id: a UUID, or anything as short and plain. */
 export const Uid = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,64}$/))
@@ -85,7 +87,9 @@ const write = Effect.fnUntraced(function*(
       })
     )
   yield* (yield* Anchors).rebuild(id, args.anchors)
-  return (yield* Effect.promise(() => ctx.db.get(id)))!
+  const written = (yield* Effect.promise(() => ctx.db.get(id)))!
+  yield* replaceChunks(ctx, written, chunkNote(args.text))
+  return written
 })
 
 export const upsert = effectMutation({
@@ -137,6 +141,7 @@ export const remove = effectMutation({
     // A tombstone keeps no text: other devices only need to drop the note.
     yield* Effect.promise(() => ctx.db.patch(stored!._id, { seq, deletedAt, updatedAt: deletedAt, text: "", title: "", anchors: [] }))
     yield* (yield* Anchors).rebuild(stored!._id, [])
+    yield* replaceChunks(ctx, stored!, [])
     const removed = (yield* Effect.promise(() => ctx.db.get(stored!._id)))!
     return { result: "ok", seq, record: yield* asRecord("item", removed) }
   })

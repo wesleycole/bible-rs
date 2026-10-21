@@ -20,12 +20,13 @@ import { Allowance } from "./allowance.js"
 import { Purge } from "./purge.js"
 import { toConvexError } from "./errors.js"
 import { Anchors } from "./anchors.js"
+import { Digest } from "./digest.js"
 import { Files } from "./files.js"
 import { Sequence } from "./sequence.js"
 import { serverAction, serverMutation, serverQuery } from "./server.js"
 import { ActionCtx, CurrentUser, MutationCtx, QueryCtx, ServerCaller } from "./services.js"
 import { Transcriber } from "./transcriber.js"
-import { userMutation, userQuery } from "./user.js"
+import { userAction, userMutation, userQuery } from "./user.js"
 
 /** Runs a handler's effect: a typed failure becomes a ConvexError, a defect stays thrown. */
 export const run = async <A>(effect: Effect.Effect<A, ApiError>): Promise<A> => {
@@ -109,6 +110,30 @@ export const effectMutation = <S extends Args, A>(spec: {
   })
 }
 
+/**
+ * An action the apps call with their Clerk token (search, export), written as an Effect. As for a
+ * query, a signed-in user with no `users` row yet gets `empty(args)`.
+ */
+export const effectAction = <S extends Args, A>(spec: {
+  readonly args: S
+  readonly empty: (args: S["Type"]) => Effect.Effect<A>
+  readonly handler: (args: S["Type"]) => Effect.Effect<A, ApiError, ActionCtx | CurrentUser>
+}) => {
+  const decode = decoder(spec.args)
+  return userAction({
+    handler: (ctx: MaybeUser<RawActionCtx>, raw: Record<string, unknown>) =>
+      run(
+        decode(raw).pipe(
+          Effect.flatMap((args) =>
+            ctx.user === null
+              ? spec.empty(args)
+              : spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Layer.succeed(ActionCtx, ActionCtx.of(ctx)), Layer.succeed(CurrentUser, currentUser(ctx.user)))))
+          )
+        )
+      )
+  })
+}
+
 /** What a proxy mutation's handler can ask for: it acts for the user the proxy names. */
 export type ServerMutationServices = MutationCtx | QueryCtx | ServerCaller | Allowance | Purge
 
@@ -176,10 +201,10 @@ export const effectInternalQuery = <V extends PropertyValidators, A>(spec: {
 /** An action nothing outside the deployment can call: crons and workflow steps that reach a vendor. */
 export const effectInternalAction = <V extends PropertyValidators, A>(spec: {
   readonly args: V
-  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, ActionCtx | Transcriber>
+  readonly handler: (args: ObjectType<V>) => Effect.Effect<A, ApiError, ActionCtx | Transcriber | Digest>
 }) =>
   internalAction({
     args: spec.args,
     handler: (ctx: RawActionCtx, args: ObjectType<V>): Promise<A> =>
-      run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Layer.succeed(ActionCtx, ActionCtx.of(ctx)), Transcriber.layer))))
+      run(spec.handler(args).pipe(Effect.provide(Layer.mergeAll(Layer.succeed(ActionCtx, ActionCtx.of(ctx)), Transcriber.layer, Digest.layer))))
   })

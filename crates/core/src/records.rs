@@ -321,6 +321,72 @@ pub struct Segment {
     pub text: String,
 }
 
+/// One passage `library/search.search` found: a chunk of an item's text with the item it is from.
+/// Hits come grouped by item, best item first, so one sermon doesn't fill every slot. An answer,
+/// not a record of the feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub item_uid: String,
+    pub kind: ItemKind,
+    pub title: String,
+    /// Who it is from: a sermon's speaker and church.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// When the item was recorded or made, in server milliseconds.
+    pub date: u64,
+    pub text: String,
+    /// Where in a recording the passage is, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<u64>,
+    /// Which page of a photographed item it is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    /// Whether the item is anchored to the passage asked about.
+    pub anchored: bool,
+    /// Whether a model wrote it and the person hasn't reviewed it.
+    pub unreviewed: bool,
+}
+
+/// What `library/items.read` answers: an item's text, or a window of a sermon's by time, with
+/// `[mm:ss]` stamps, capped at about 2,500 words. An answer, not a record of the feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemText {
+    pub uid: String,
+    pub kind: ItemKind,
+    pub title: String,
+    pub text: String,
+    /// The window's start, in milliseconds, for a sermon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_ms: Option<u64>,
+    /// Where the text returned ends, in milliseconds: ask from here for what follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_ms: Option<u64>,
+    /// Whether the item has more text than was returned.
+    pub truncated: bool,
+}
+
+/// One anchor of an item on a chapter, as `library/items.forChapter` lists them: the verses in
+/// that chapter it covers (a range from the previous chapter comes through at its start) and the
+/// item. An answer, not a record of the feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterItem {
+    pub uid: String,
+    pub kind: ItemKind,
+    pub title: String,
+    pub from: VerseId,
+    pub to: VerseId,
+    pub origin: AnchorOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+}
+
 /// A saved Ask conversation; the conversation itself is a `chat` file, downloaded from `url`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -428,6 +494,15 @@ pub fn schemas() -> Vec<RecordSchema> {
         RecordSchema {
             name: "Transcript",
             schema: sorted(generator.root_schema_for::<Transcript>().to_value()),
+        },
+        RecordSchema {
+            name: "SearchHit",
+            schema: sorted(generator.root_schema_for::<SearchHit>().to_value()),
+        },
+        RecordSchema { name: "ItemText", schema: sorted(generator.root_schema_for::<ItemText>().to_value()) },
+        RecordSchema {
+            name: "ChapterItem",
+            schema: sorted(generator.root_schema_for::<ChapterItem>().to_value()),
         },
         RecordSchema {
             name: "FeedRecord",
@@ -706,8 +781,9 @@ mod tests {
             }
             assert_eq!(record.schema["type"], "object", "{}", record.name);
             let required = record.schema["required"].as_array().unwrap();
-            // A transcript is a file's contents, not a record of the feed: no uid, no seq.
-            if record.name == "Transcript" {
+            // A transcript is a file's contents and the rest are answers, not records of the
+            // feed: no uid, no seq.
+            if ["Transcript", "SearchHit", "ItemText", "ChapterItem"].contains(&record.name) {
                 continue;
             }
             assert!(required.iter().any(|r| r == "uid") && required.iter().any(|r| r == "seq"));

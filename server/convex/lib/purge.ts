@@ -25,6 +25,7 @@ type Ctx = MutationCtx["Service"]
 const owned: ReadonlyArray<readonly [TableNames, (ctx: Ctx, userId: Id<"users">, n: number) => Promise<Array<Doc<any>>>]> = [
   ["files", (ctx, u, n) => ctx.db.query("files").withIndex("by_user_uid", (q) => q.eq("userId", u)).take(n)],
   ["anchors", (ctx, u, n) => ctx.db.query("anchors").withIndex("by_user_chapter", (q) => q.eq("userId", u)).take(n)],
+  ["chunks", (ctx, u, n) => ctx.db.query("chunks").withIndex("by_user", (q) => q.eq("userId", u)).take(n)],
   ["items", (ctx, u, n) => ctx.db.query("items").withIndex("by_user_seq", (q) => q.eq("userId", u)).take(n)],
   ["chats", (ctx, u, n) => ctx.db.query("chats").withIndex("by_user_seq", (q) => q.eq("userId", u)).take(n)],
   ["highlights", (ctx, u, n) => ctx.db.query("highlights").withIndex("by_user_seq", (q) => q.eq("userId", u)).take(n)],
@@ -82,8 +83,10 @@ export class Purge extends Context.Service<Purge, {
           ctx.db.query("files").withIndex("by_owner", (q) => q.eq("userId", item.userId).eq("ownerUid", item.uid)).collect()
         )
         yield* Effect.forEach(files, remove, { discard: true })
-        const anchors = yield* db(() => ctx.db.query("anchors").withIndex("by_item", (q) => q.eq("itemId", item._id)).collect())
-        yield* Effect.forEach(anchors, (a) => db(() => ctx.db.delete(a._id)), { discard: true })
+        for (const table of ["anchors", "chunks"] as const) {
+          const rows = yield* db(() => ctx.db.query(table).withIndex("by_item", (q) => q.eq("itemId", item._id)).collect())
+          yield* Effect.forEach(rows, (r) => db(() => ctx.db.delete(r._id)), { discard: true })
+        }
       })
 
       const tombstones = Effect.gen(function*() {
