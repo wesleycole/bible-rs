@@ -5,6 +5,7 @@
 pub mod bookmarks;
 pub mod highlights;
 pub mod history;
+pub mod library;
 pub mod notes;
 pub mod plans;
 
@@ -27,6 +28,7 @@ pub enum Page {
     Notes,
     History,
     Plans,
+    Library,
 }
 
 impl Page {
@@ -39,6 +41,7 @@ impl Page {
             Page::Notes => "Search notes",
             Page::History => "Search history",
             Page::Plans => "Search plans",
+            Page::Library => "Search your library",
         }
     }
 
@@ -50,6 +53,7 @@ impl Page {
             "notes" => Page::Notes,
             "history" => Page::History,
             "plans" => Page::Plans,
+            "library" => Page::Library,
             _ => return None,
         })
     }
@@ -76,6 +80,7 @@ pub struct Pages {
     pub notes: notes::State,
     pub history: history::State,
     pub plans: plans::State,
+    pub library: library::State,
     /// Whether the page is scrolled (the toolbar then takes its material).
     pub scrolled: bool,
 }
@@ -84,6 +89,10 @@ impl Pages {
     pub fn open(&mut self, page: Page) {
         if self.page != page {
             self.query.clear();
+        }
+        // The library's row shows the list, whatever item was open.
+        if page == Page::Library {
+            self.library.back();
         }
         self.page = page;
     }
@@ -116,6 +125,7 @@ impl Pages {
                     Page::Highlights => self.highlights.show(ui, content, env, actions),
                     Page::History => self.history.show(ui, content, env, actions),
                     Page::Plans => self.plans.show(ui, content, env, actions),
+                    Page::Library => self.library.show(ui, content, env, actions),
                     Page::Notes => self.notes.show_empty(ui, content, env, actions),
                     Page::Reader => content.top(),
                 };

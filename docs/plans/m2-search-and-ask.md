@@ -112,6 +112,20 @@ list, the tool names, and the drift test over `ask-v5.json`.
    an answer, which makes it a note anchored to the passages the answer cites.
 5. **Export** in Settings → Account: "Export your library" downloads the zip.
 
+**Built (October 21), where it is smaller than the above:** chips and the library page resolve items
+from the cache (`StudyStore::item`, `items`, `body`, `spans_in_chapter`), so the panel's scan of
+recordings on disk is gone; an item the cache doesn't hold reads "an item not on this Mac" in the
+sentence, with no chip. There is still no audio playback: a sermon's view shows the summary, outline,
+anchors and transcript with times, scrolled to the cited moment and tinted, and nothing plays. The
+reader's library mark and its "N in your library" line (beside the chapter heading, in the margin
+column, so the chapter's layout isn't redone when the library changes) open the library page searched
+for the verse or chapter rather than a popover listing the items. "Save to library" keeps the answer
+as a note anchored to the verses it cites (`StudyStore::save_note_item`) and says "Saved to your
+library" under it for the session. Export asks `library/export:start` through the sync thread and
+opens the zip's link in the browser; the server's export reads every file into memory and writes one
+zip without ZIP64, a known limit for libraries of many hour-long sermons. `tools_note` says nothing
+about the library before the first sync has pulled anything.
+
 ## Evaluation: `cargo xtask eval-ask`
 
 - **The library fixture** (`xtask/eval/library/`): about 20 sermon transcripts, 30 notes and (from M4)

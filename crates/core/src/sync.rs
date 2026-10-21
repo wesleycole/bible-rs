@@ -32,8 +32,7 @@ use crate::auth::{self, TokenSource};
 use crate::books::ChapterIdx;
 use crate::chat::UserLibrary;
 use crate::records::{
-    Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, ItemText, SearchHit, Transcript, VerseId,
-    WriteAnswer,
+    Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, ItemText, SearchHit, VerseId, WriteAnswer,
 };
 use crate::search::Query;
 use crate::study::cache;
@@ -372,6 +371,10 @@ impl UserLibrary for Library {
 
     fn counts(&self, chapter: Option<ChapterIdx>) -> Result<(usize, usize)> {
         let conn = self.lock();
+        // Before the first page of the feed, the cache says nothing of how much there is.
+        if cache::cursor(&conn)? == 0 {
+            anyhow::bail!("the library hasn't synced here yet");
+        }
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))?;
         let here: i64 = match chapter {
             Some(c) => conn.query_row(
@@ -398,12 +401,7 @@ fn whole_uid(conn: &Connection, prefix: &str) -> Result<Option<String>> {
 }
 
 /// An item's text as the cache or the fake server holds it.
-enum Text {
-    /// A note's, or any item whose text is inline.
-    Plain(String),
-    /// A sermon's `text` file.
-    Transcript(Transcript),
-}
+use crate::study::Body as Text;
 
 /// The live items with text to search, newest first.
 fn cached_texts(conn: &Connection) -> Result<Vec<(Item, Text)>> {
@@ -422,18 +420,7 @@ fn cached_texts(conn: &Connection) -> Result<Vec<(Item, Text)>> {
     Ok(out)
 }
 
-/// An item's text from the cache: inline, or its fetched `text` file.
-fn cached_text(conn: &Connection, item: &Item) -> Result<Option<Text>> {
-    if let Some(t) = &item.text {
-        return Ok(Some(Text::Plain(t.clone())));
-    }
-    let Some(file) = &item.text_file_uid else { return Ok(None) };
-    let path: Option<String> = conn
-        .query_row("SELECT path FROM files WHERE uid = ?1 AND path != ''", [file], |r| r.get(0))
-        .optional()?;
-    let Some(bytes) = path.and_then(|p| std::fs::read(p).ok()) else { return Ok(None) };
-    Ok(serde_json::from_slice::<Transcript>(&bytes).ok().map(Text::Transcript))
-}
+use crate::study::body as cached_text;
 
 /// How many hits one item may take in a search, as on the server.
 const PER_ITEM: usize = 3;

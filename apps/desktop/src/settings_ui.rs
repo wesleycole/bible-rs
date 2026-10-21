@@ -724,6 +724,28 @@ impl SettingsUi {
 
         rows_card(ui, p, &[56.0], |ui, _, r| {
             let (right, cy) = (r.right() - 16.0, r.center().y);
+            row_label(
+                ui,
+                p,
+                r,
+                "Export your library",
+                Some("A zip of your sermons, notes and pages, with transcripts; the link lasts a day."),
+            );
+            let (_, resp) = Button::new(Kind::Secondary, "Export…").small().icon(icons::upload).show_right(
+                ui,
+                p,
+                right,
+                cy,
+                ui.id().with("export"),
+            );
+            if resp.clicked() {
+                actions.push(Action::ExportLibrary);
+            }
+        });
+        ui.add_space(24.0);
+
+        rows_card(ui, p, &[56.0], |ui, _, r| {
+            let (right, cy) = (r.right() - 16.0, r.center().y);
             if self.confirm_delete {
                 row_label(
                     ui,

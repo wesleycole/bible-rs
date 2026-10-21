@@ -323,6 +323,8 @@ pub struct BibleApp {
     /// Transcribe Now, sent for this sermon and not answered yet.
     transcribing:
         Option<(String, std::sync::mpsc::Receiver<Result<serde_json::Value, linger_core::sync::CallError>>)>,
+    /// Export your library, asked of the server and not answered yet.
+    exporting: Option<std::sync::mpsc::Receiver<Result<serde_json::Value, linger_core::sync::CallError>>>,
     /// Importing a translation (frames 13–15).
     import_sheet: Option<crate::import_sheet::ImportSheet>,
     /// Focus mode (frame 30): full screen, the chrome hidden, larger type.
@@ -479,6 +481,7 @@ impl BibleApp {
             share_sheet: None,
             details_sheet: None,
             transcribing: None,
+            exporting: None,
             compare: None,
             reminded: None,
             focus: false,
@@ -558,9 +561,6 @@ impl BibleApp {
             _ => {}
         }
         self.settings.save(&self.study);
-        if let Some(ask) = &mut self.ask {
-            ask.reload_sermons(&self.data_dir);
-        }
     }
 
     fn poll_tasks(&mut self) {
@@ -982,6 +982,53 @@ impl BibleApp {
                 Err(e) => self.toast(ctx, format!("{e:#}")),
             },
             Action::OpenPage(page) => self.pages.open(page),
+            // A library item from a citation chip or a margin mark: a note on one verse opens in
+            // Notes, where it is edited; anything else on the library page.
+            Action::OpenItem { uid, at_ms } => match self.study.item(&uid) {
+                Ok(Some(item)) if item.deleted_at.is_none() => {
+                    let own_verse = (item.kind == linger_core::records::ItemKind::Note)
+                        .then(|| {
+                            let mut user = item
+                                .anchors
+                                .iter()
+                                .filter(|a| a.origin == linger_core::records::AnchorOrigin::User);
+                            match (user.next(), user.next()) {
+                                (Some(a), None) if a.from == a.to => a.from.verse_ref(),
+                                _ => None,
+                            }
+                        })
+                        .flatten();
+                    match own_verse {
+                        Some(v) if self.study.note(v).is_some_and(|n| n.uid == item.uid) => {
+                            self.pages.notes.select(v);
+                            self.pages.open(crate::pages::Page::Notes);
+                        }
+                        _ => {
+                            self.pages.open(crate::pages::Page::Library);
+                            self.pages.library.open(&item.uid, at_ms);
+                        }
+                    }
+                }
+                Ok(_) => self.toast(ctx, "That item is no longer in your library"),
+                Err(e) => self.toast(ctx, format!("{e:#}")),
+            },
+            // The library page listing what's anchored in a chapter (or on a verse).
+            Action::OpenLibrary(r) => {
+                self.pages.open(crate::pages::Page::Library);
+                self.pages.query = r;
+            }
+            Action::SaveToLibrary { text, ranges } => match self.study.save_note_item(&text, &ranges) {
+                Ok(_) => self.toast(ctx, "Saved to your library"),
+                Err(e) => self.toast(ctx, format!("Couldn't save it: {e:#}")),
+            },
+            Action::ExportLibrary => match &self.sync {
+                Some(sync) => {
+                    use linger_core::sync::CallKind;
+                    self.exporting =
+                        Some(sync.request(CallKind::Action, "library/export:start", serde_json::json!({})));
+                }
+                None => self.toast(ctx, "Sign in to export your library"),
+            },
             Action::SaveNote(v, body) => {
                 if let Err(e) = self.study.set_note(v, &body) {
                     self.toast(ctx, format!("Couldn't save note: {e:#}"));
@@ -1164,7 +1211,7 @@ impl BibleApp {
     /// `search:<query>`, `scope:<ot|nt>`, `step:<n>` (search results), `offline:<reference>`, `note:<reference>`, `compare:<reference>`, `study:<bookmarks|highlights|notes>`,
     /// `settings:<reading|translations|data|account>`, `plans-tab:<active|browse|completed>`, `ask`,
     /// `account:<state>`, `consent:<yes|no>`, `ask-notice:<kind>`, `sign-in[:<waiting|error>]`,
-    /// `recording[:<id>]` (About This Recording),
+    /// `recording[:<id>]` (About This Recording), `chat:<id>`, `item:<uid>[@<ms>]`,
     /// `size:<width>x<height>` (the window's inner size).
     fn demo_step(&mut self, ctx: &egui::Context, step: &str, actions: &mut Vec<Action>) {
         let (cmd, arg) = step.split_once(':').unwrap_or((step, ""));
@@ -1181,11 +1228,18 @@ impl BibleApp {
             }
             "select" => self.reader.set_selection(verse()),
             "ask" => actions.push(Action::ToggleAsk),
+            // `chat:<id>`: a saved conversation in the Ask panel.
+            "chat" => actions.push(Action::OpenChat(arg.parse().unwrap_or(1))),
             // About This Recording for the newest recording, or the one whose id starts with arg.
             "recording" => {
                 let newest = linger_core::recording::list(&self.data_dir).into_iter().next().map(|m| m.id);
                 let id = if arg.is_empty() { newest } else { Some(arg.to_string()) };
                 actions.extend(id.map(Action::EditRecording));
+            }
+            // `item:<uid>[@<ms>]`: a library item on its own, at a moment of a sermon.
+            "item" => {
+                let (uid, ms) = arg.split_once('@').unwrap_or((arg, ""));
+                actions.push(Action::OpenItem { uid: uid.to_string(), at_ms: ms.parse().ok() });
             }
             "palette" => self.palette = Some(CommandPalette::with_query(arg)),
             "search" => actions.push(Action::OpenSearch(Some(arg.to_string()))),
@@ -3155,7 +3209,7 @@ impl eframe::App for BibleApp {
                     ask_translation: linger_core::chat::ask_translation(&self.settings.ask_translation),
                     chapter: self.reader.location.0,
                     selection: self.reader.selection,
-                    data_dir: &self.data_dir,
+                    study: &self.study,
                     api: self.account.api(),
                     me: self.account.me.as_ref(),
                     consented: self.settings.ask_consent,
@@ -3327,6 +3381,32 @@ impl eframe::App for BibleApp {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.transcribing = None;
                     self.toast(&ctx, "Couldn't transcribe it now: sync stopped");
+                }
+            }
+        }
+        // Export's answer: the zip's link, opened in the browser.
+        if let Some(answer) = &self.exporting {
+            match answer.try_recv() {
+                Ok(Ok(v)) => {
+                    self.exporting = None;
+                    match v.get("url").and_then(|u| u.as_str()) {
+                        Some(url) => {
+                            open_url(url);
+                            self.toast(&ctx, "Your library is downloading");
+                        }
+                        None => self.toast(&ctx, "Couldn't export your library"),
+                    }
+                }
+                Ok(Err(e)) => {
+                    self.exporting = None;
+                    self.toast(&ctx, format!("Couldn't export your library: {e}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(100))
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.exporting = None;
+                    self.toast(&ctx, "Couldn't export your library: sync stopped");
                 }
             }
         }

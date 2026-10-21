@@ -23,13 +23,13 @@ use linger_core::api::{Api, ApiError, Me};
 use linger_core::assistant::{self, Conversation, Event, Mode};
 use linger_core::chat::{self, Message, Role, Segment};
 use linger_core::reference::{self, Reference};
-use linger_core::transcribe::{self, Transcript};
-use linger_core::{ChapterIdx, VerseRef};
+use linger_core::{ChapterIdx, VerseRef, transcribe};
 
 use crate::actions::{Action, SettingsTab};
 use crate::icons;
+use crate::pages;
 use crate::theme::{self, Palette, text};
-use crate::widgets;
+use crate::widgets::{self, Button, Kind};
 
 /// A 372 pt card 8 pt from the window's edge: a little wider than the compare inspector, for
 /// prose.
@@ -65,9 +65,8 @@ pub struct AskPanel {
     /// What the panel shows; the API's view of the same conversation is `conversation`.
     messages: Vec<Message>,
     conversation: Arc<Mutex<Conversation>>,
-    /// The transcribed sermons, as of the last question: citations of them (and of library items
-    /// that are recordings made here) are labelled from them.
-    sermons: Arc<Vec<Transcript>>,
+    /// Answers kept in the library this session (by their text), so Save shows once.
+    saved: Vec<String>,
     /// Development: the Gateway with a key from the environment, used when signed out.
     direct: Option<assistant::Config>,
     /// Ask the next question in Deep study (Pro).
@@ -103,7 +102,8 @@ pub struct AskEnv<'a> {
     pub ask_translation: &'a str,
     pub chapter: ChapterIdx,
     pub selection: Option<(VerseRef, VerseRef)>,
-    pub data_dir: &'a std::path::Path,
+    /// The library's cache: citations of its items are labelled from it.
+    pub study: &'a linger_core::study::StudyStore,
     /// Linger's server as the signed-in account; `None` when signed out.
     pub api: Option<&'a Api>,
     /// The plan and allowance, once loaded.
@@ -185,11 +185,6 @@ impl AskPanel {
             stick_to_bottom: true,
             ..Self::new()
         }
-    }
-
-    /// Reads the sermons again, after their details change.
-    pub fn reload_sermons(&mut self, data_dir: &std::path::Path) {
-        self.sermons = Arc::new(transcribe::all(data_dir));
     }
 
     /// The saved conversation shown, if it has been saved.
@@ -423,14 +418,32 @@ impl AskPanel {
         if self.messages.is_empty() && self.pending.is_none() && self.notice.is_none() {
             let r = ui.max_rect();
             let signed_out = env.api.is_none() && self.direct.is_none();
-            let msg = if signed_out {
+            let mut msg = if signed_out {
                 "Ask about what you're reading. Answers cite the verses they draw on. Ask needs a \
                  free Linger account, which includes 30 questions a month."
+                    .to_string()
             } else {
-                "Ask about what you're reading. Answers cite the verses they draw on, and \
-                 later the sermons you've recorded."
+                "Ask about what you're reading. Answers cite the verses they draw on, and the \
+                 sermons and notes in your library."
+                    .to_string()
             };
-            let g = layout(ui, msg, FontId::new(13.0, theme::family(theme::UI)), p.ink_2, width, 20.0);
+            // What the library holds on the chapter being read: Ask can draw on it.
+            let mut on_chapter: Vec<String> = env
+                .study
+                .spans_in_chapter(env.chapter)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.uid)
+                .collect();
+            on_chapter.dedup();
+            let here = context_label(env);
+            let here = here.trim_start_matches("Reading ").split(" · ").next().unwrap_or_default();
+            match on_chapter.len() {
+                0 => {}
+                1 => msg.push_str(&format!("\n\n1 item on {here}.")),
+                n => msg.push_str(&format!("\n\n{n} items on {here}.")),
+            }
+            let g = layout(ui, &msg, FontId::new(13.0, theme::family(theme::UI)), p.ink_2, width, 20.0);
             let h = g.size().y + if signed_out { 16.0 + 28.0 } else { 0.0 };
             let top = r.center().y - h / 2.0;
             let gh = g.size().y;
@@ -451,12 +464,19 @@ impl AskPanel {
             return;
         }
         let stick = std::mem::take(&mut self.stick_to_bottom);
+        let mut saved_now: Vec<String> = Vec::new();
         ScrollArea::vertical().auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
             ui.add_space(4.0);
             for m in &self.messages {
                 match m.role {
                     Role::User => user_bubble(ui, p, &m.text, width),
-                    Role::Assistant => answer(ui, p, env, &self.sermons, &m.text, width, actions),
+                    Role::Assistant => {
+                        let save = Some(self.saved.contains(&m.text));
+                        if answer(ui, p, env, &m.text, width, save, actions) {
+                            actions.push(Action::SaveToLibrary { text: m.text.clone(), ranges: m.cited() });
+                            saved_now.push(m.text.clone());
+                        }
+                    }
                 }
                 ui.add_space(14.0);
             }
@@ -467,7 +487,7 @@ impl AskPanel {
                     _ => &self.streaming,
                 };
                 if !shown.trim().is_empty() {
-                    answer(ui, p, env, &self.sermons, shown, width, actions);
+                    answer(ui, p, env, shown, width, None, actions);
                     ui.add_space(8.0);
                 }
                 if self.status.is_some() || shown.trim().is_empty() {
@@ -645,7 +665,6 @@ impl AskPanel {
         let (tx, rx) = channel();
         self.pending = Some(rx);
         let translation = env.library.load(env.ask_translation);
-        self.sermons = Arc::new(transcribe::all(env.data_dir));
         let library = env.sync.and_then(|s| s.user_library().ok());
         let church = env.church.map(str::to_string);
         let conversation = self.conversation.clone();
@@ -798,16 +817,18 @@ fn user_bubble(ui: &mut Ui, p: &Palette, text: &str, width: f32) {
     ui.painter().galley(r.min + vec2(16.0, 10.0), g, p.ink);
 }
 
-/// An answer: paragraphs of reading-face prose; the verses each paragraph cites as chips under it.
+/// An answer: paragraphs of reading-face prose; the verses and library items each paragraph
+/// cites as chips under it. `save` is whether the answer is kept in the library (`None` while
+/// it's still being written); returns whether "Save to library" was clicked.
 fn answer(
     ui: &mut Ui,
     p: &Palette,
     env: &AskEnv<'_>,
-    sermons: &[Transcript],
     text: &str,
     width: f32,
+    save: Option<bool>,
     actions: &mut Vec<Action>,
-) {
+) -> bool {
     let font = text::SNIPPET.font();
     for (i, para) in text.split("\n\n").filter(|s| !s.trim().is_empty()).enumerate() {
         if i > 0 {
@@ -816,7 +837,7 @@ fn answer(
         // Citations stay in the sentence as accent-coloured references, and become chips below.
         let mut job = LayoutJob::default();
         let mut refs: Vec<Reference> = Vec::new();
-        let mut heard: Vec<(String, String)> = Vec::new();
+        let mut items: Vec<Chip> = Vec::new();
         let format = |color| TextFormat {
             font_id: font.clone(),
             color,
@@ -833,34 +854,14 @@ fn answer(
                         refs.push(*r);
                     }
                 }
-                // Named in the sentence; a sermon recorded here gets a chip below that shows
-                // what's known of the recording (opening the item itself comes with the library
-                // page).
+                // Named in the sentence by its title from the library's cache, with a chip below
+                // that opens it there. A legacy `{{sermon}}` citation names the sermon the same
+                // way.
                 Segment::Item { uid, at_ms, page } => {
-                    let sermon = sermons.iter().find(|t| t.recording_id.starts_with(uid.as_str()));
-                    let title =
-                        sermon.map_or_else(|| "an item in your library".to_string(), Transcript::title);
-                    let place = match (at_ms, page) {
-                        (Some(ms), _) => format!(", {}", transcribe::clock(*ms)),
-                        (None, Some(n)) => format!(", page {n}"),
-                        (None, None) => String::new(),
-                    };
-                    job.append(&format!("{title}{place}"), 0.0, format(p.accent));
-                    if let Some(t) = sermon
-                        && !heard.iter().any(|(id, _)| *id == t.recording_id)
-                    {
-                        heard.push((t.recording_id.clone(), title));
-                    }
+                    cite_item(env, p, &mut job, &mut items, uid, *at_ms, *page, &format);
                 }
                 Segment::Sermon { id, at_ms } => {
-                    let sermon = sermons.iter().find(|t| t.recording_id.starts_with(id.as_str()));
-                    let title = sermon.map_or_else(|| "a sermon".to_string(), Transcript::title);
-                    job.append(&format!("{title}, {}", transcribe::clock(*at_ms)), 0.0, format(p.accent));
-                    if let Some(t) = sermon
-                        && !heard.iter().any(|(id, _)| *id == t.recording_id)
-                    {
-                        heard.push((t.recording_id.clone(), title));
-                    }
+                    cite_item(env, p, &mut job, &mut items, id, Some(*at_ms), None, &format);
                 }
             }
         }
@@ -878,16 +879,73 @@ fn answer(
                 Some(Chip { label: ref_label(env, r), icon: icons::book, action: jump, tip: None })
             })
             .collect();
-        list.extend(heard.into_iter().map(|(id, title)| Chip {
-            label: title,
-            icon: icons::mic,
-            action: Action::EditRecording(id),
-            tip: Some("Who preached and where"),
-        }));
+        list.extend(items);
         if !list.is_empty() {
+            // A chip is a label, not a note's first line: it keeps to the panel's width.
+            let font = text::SMALL.font();
+            for c in &mut list {
+                c.label = pages::elide(ui.painter(), &c.label, &font, width - 40.0);
+            }
             ui.add_space(6.0);
             chips(ui, p, &list, width, actions);
         }
+    }
+    let mut clicked = false;
+    if let Some(saved) = save {
+        ui.add_space(8.0);
+        let (band, _) = ui.allocate_exact_size(vec2(width + 2.0 * PAD, 24.0), Sense::hover());
+        if saved {
+            ui.painter().text(
+                pos2(band.left() + PAD, band.center().y),
+                Align2::LEFT_CENTER,
+                "Saved to your library",
+                text::SMALL.font(),
+                p.ink_3,
+            );
+        } else {
+            let b = Button::new(Kind::Plain, "Save to library").small().icon(icons::folder);
+            let id = egui::Id::new(("ask-save", ui.id(), band.top() as i32));
+            let (_, resp) = b.show_left(ui, p, band.left() + PAD, band.center().y, id);
+            clicked =
+                resp.on_hover_text("Keep this answer as a note, anchored to the verses it cites").clicked();
+        }
+    }
+    clicked
+}
+
+/// A citation of a library item: its title in the sentence, and a chip that opens it. An item
+/// the cache doesn't hold is named for what it is; one it has dropped says so.
+#[allow(clippy::too_many_arguments)]
+fn cite_item(
+    env: &AskEnv<'_>,
+    p: &Palette,
+    job: &mut LayoutJob,
+    items: &mut Vec<Chip>,
+    uid: &str,
+    at_ms: Option<u64>,
+    page: Option<u32>,
+    format: &dyn Fn(egui::Color32) -> TextFormat,
+) {
+    let place = match (at_ms, page) {
+        (Some(ms), _) => format!(", {}", transcribe::clock(ms)),
+        (None, Some(n)) => format!(", page {n}"),
+        (None, None) => String::new(),
+    };
+    match env.study.item(uid).ok().flatten() {
+        Some(item) if item.deleted_at.is_none() => {
+            let title = pages::library::title(&item);
+            job.append(&format!("{title}{place}"), 0.0, format(p.accent));
+            if !items.iter().any(|c| c.label == title) {
+                items.push(Chip {
+                    label: title,
+                    icon: pages::library::icon(item.kind),
+                    action: Action::OpenItem { uid: item.uid.clone(), at_ms },
+                    tip: Some("Open in your library"),
+                });
+            }
+        }
+        Some(_) => job.append("an item no longer in your library", 0.0, format(p.ink_2)),
+        None => job.append(&format!("an item not on this Mac{place}"), 0.0, format(p.ink_2)),
     }
 }
 

@@ -113,6 +113,21 @@ pub enum Action {
     RemoveTranslation(String),
     /// Show a page in the main area (the reader, the library, a study collection).
     OpenPage(crate::pages::Page),
+    /// Open a library item by its uid (or the start of it, as a citation gives it): a sermon on
+    /// the library page at that moment, a verse's own note in the notes page.
+    OpenItem {
+        uid: String,
+        at_ms: Option<u64>,
+    },
+    /// The library page, searched for a reference ("Romans 8:28"): the items anchored there.
+    OpenLibrary(String),
+    /// Keep an Ask answer as a note in the library, anchored to the passages it cites.
+    SaveToLibrary {
+        text: String,
+        ranges: Vec<(VerseRef, VerseRef)>,
+    },
+    /// Download the library as a zip (Settings → Account).
+    ExportLibrary,
     ShowShortcuts,
     ScrollLines(f32),
     ScrollPages(f32),

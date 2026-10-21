@@ -493,6 +493,7 @@ impl Reader {
         let mut c = Some(self.anchor.chapter);
         let mut hit: Option<VerseRef> = None;
         let mut marker_hit: Option<VerseRef> = None;
+        let mut library_hit: Option<VerseRef> = None;
         let mut first_visible: Option<(ChapterIdx, u8)> = None;
         let reading_line = rect.top() + rect.height() * 0.22;
         let toolbar_bottom = rect.top() + env.toolbar;
@@ -607,8 +608,51 @@ impl Reader {
                     }
                 }
             }
-            // Margin markers (notes, bookmarks) at each verse's first line, 32 pt right of the text.
+            // Margin markers (notes, bookmarks, library items) at each verse's first line, 32 pt
+            // right of the text.
             let right = geom.x0 + geom.total_w + layout::MARKER_GAP * self.em / layout::DESIGN_EM;
+            let spans = env.study.spans_in_chapter(ch).unwrap_or_default();
+            // "4 in your library" beside the chapter's heading, opening the list.
+            let in_library = {
+                let mut uids: Vec<&str> = spans.iter().map(|s| s.uid.as_str()).collect();
+                uids.sort_unstable();
+                uids.dedup();
+                uids.len()
+            };
+            if in_library > 0
+                && let Some((pos, g)) = l.labels.first()
+            {
+                let at = (origin + *pos).to_pos2();
+                let cy = at.y + g.size().y.min(self.em * 1.5) / 2.0;
+                if cy > toolbar_bottom && cy < rect.bottom() {
+                    let font = crate::theme::text::SMALL.font();
+                    let mut lg = painter.layout_no_wrap(
+                        format!("{in_library} in your library"),
+                        font.clone(),
+                        p.accent,
+                    );
+                    // A narrow margin (the Ask panel open) keeps the count alone.
+                    if right + 22.0 + lg.size().x > rect.right() - 8.0 {
+                        lg = painter.layout_no_wrap(in_library.to_string(), font, p.accent);
+                    }
+                    let r = Rect::from_min_size(pos2(right, cy - 10.0), vec2(22.0 + lg.size().x, 20.0));
+                    let resp = ui.interact(r, id.with(("in-library", ch.0)), Sense::click());
+                    let ink = if resp.hovered() { p.accent } else { p.accent.gamma_multiply(0.8) };
+                    icons::folder(
+                        &painter,
+                        Rect::from_center_size(pos2(right + 8.0, cy), vec2(16.0, 16.0)),
+                        ink,
+                    );
+                    painter.galley(pos2(right + 22.0, cy - lg.size().y / 2.0), lg, ink);
+                    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                        actions.push(Action::OpenLibrary(format!(
+                            "{} {}",
+                            ch.book().ref_name(),
+                            ch.chapter()
+                        )));
+                    }
+                }
+            }
             for a in l.anchors.iter().filter(|a| a.column == 0) {
                 let vref = VerseRef::new(ch.book(), ch.chapter(), a.number);
                 let top = y + a.top;
@@ -651,6 +695,18 @@ impl Reader {
                     icons::note(&painter, r, p.accent);
                     if pointer.is_some_and(|pt| r.expand(4.0).contains(pt)) {
                         marker_hit = Some(vref);
+                    }
+                    x += 24.0;
+                }
+                // A library item on the verse other than its own note: opens the library's list
+                // for the verse.
+                let own = env.study.note(vref).map(|n| n.uid.as_str());
+                if spans.iter().any(|s| (s.first..=s.last).contains(&a.number) && Some(s.uid.as_str()) != own)
+                {
+                    let r = Rect::from_center_size(pos2(x + 10.0, cy), vec2(16.0, 16.0));
+                    icons::folder(&painter, r, p.accent);
+                    if pointer.is_some_and(|pt| r.expand(4.0).contains(pt)) {
+                        library_hit = Some(vref);
                     }
                 }
             }
@@ -698,12 +754,14 @@ impl Reader {
         }
 
         // Interaction.
-        if marker_hit.is_some() || hit.is_some() {
+        if marker_hit.is_some() || library_hit.is_some() || hit.is_some() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
         if resp.clicked() {
             if let Some(v) = marker_hit {
                 actions.push(Action::EditNote(v));
+            } else if let Some(v) = library_hit {
+                actions.push(Action::OpenLibrary(v.to_string()));
             } else if let Some(v) = hit {
                 let shift = ui.input(|i| i.modifiers.shift);
                 self.select(v, shift);

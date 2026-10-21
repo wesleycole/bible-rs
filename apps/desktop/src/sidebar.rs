@@ -348,6 +348,21 @@ impl Sidebar {
                             self.study_items(ui, env, kind, actions);
                         }
                     }
+                    let items = study.item_count();
+                    let r = row(
+                        ui,
+                        p,
+                        &Row {
+                            icon: Some(crate::icons::folder),
+                            label: "Library",
+                            count: (items > 0).then(|| items.to_string()),
+                            selected: env.page == crate::pages::Page::Library,
+                            ..Row::default()
+                        },
+                    );
+                    if r.clicked() {
+                        actions.push(Action::OpenPage(crate::pages::Page::Library));
+                    }
                     let r = row(
                         ui,
                         p,

@@ -28,6 +28,23 @@ use crate::records::{Anchor, AnchorOrigin, Item, ItemKind, ItemStatus, VerseId};
 use crate::time::parse_rfc3339;
 pub use crate::time::{now, rfc3339};
 
+/// An item's text as the cache holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Body {
+    /// A note's, or any item whose text is inline.
+    Plain(String),
+    /// A sermon's `text` file.
+    Transcript(crate::records::Transcript),
+}
+
+/// An item's anchor within one chapter: verses `first..=last` of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemSpan {
+    pub uid: String,
+    pub first: u8,
+    pub last: u8,
+}
+
 /// A verse's own note: the note item whose only user anchor is that verse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
@@ -300,6 +317,12 @@ fn new_uid() -> String {
 
 /// A note as its verse's own note item: one user anchor on `verse`. `created` is Unix seconds.
 fn note_item(uid: &str, verse: VerseId, text: &str, created: i64) -> Item {
+    let anchor = Anchor { from: verse, to: verse, origin: AnchorOrigin::User, at_ms: None, page: None };
+    note_with_anchors(uid, vec![anchor], text, created)
+}
+
+/// A note item with the given user anchors and the `typed` anchors of its text.
+fn note_with_anchors(uid: &str, user: Vec<Anchor>, text: &str, created: i64) -> Item {
     Item {
         uid: uid.into(),
         seq: 0,
@@ -321,10 +344,7 @@ fn note_item(uid: &str, verse: VerseId, text: &str, created: i64) -> Item {
         captured_at: created.max(0) as u64 * 1000,
         updated_at: None,
         unreviewed: false,
-        anchors: vec![Anchor { from: verse, to: verse, origin: AnchorOrigin::User, at_ms: None, page: None }]
-            .into_iter()
-            .chain(typed_anchors(text))
-            .collect(),
+        anchors: user.into_iter().chain(typed_anchors(text)).collect(),
         files: Vec::new(),
     }
 }
@@ -403,6 +423,19 @@ fn put_item(tx: &Connection, item: &Item, created: i64, updated: i64) -> Result<
         )?;
     }
     Ok(())
+}
+
+/// An item's text from the cache: inline, or its fetched `text` file.
+pub(crate) fn body(conn: &Connection, item: &Item) -> Result<Option<Body>> {
+    if let Some(t) = &item.text {
+        return Ok(Some(Body::Plain(t.clone())));
+    }
+    let Some(file) = &item.text_file_uid else { return Ok(None) };
+    let path: Option<String> = conn
+        .query_row("SELECT path FROM files WHERE uid = ?1 AND path != ''", [file], |r| r.get(0))
+        .optional()?;
+    let Some(bytes) = path.and_then(|p| std::fs::read(p).ok()) else { return Ok(None) };
+    Ok(serde_json::from_slice(&bytes).ok().map(Body::Transcript))
 }
 
 /// The item `uid` as the cache holds it. Its `seq` is the column's, the server's: the record JSON
@@ -1250,6 +1283,85 @@ impl StudyStore {
             self.notes.iter().filter_map(|(k, n)| Some((VerseRef::from_key(*k)?, n))).collect();
         v.sort_by_key(|(r, _)| *r);
         v
+    }
+
+    /// The live library items in the cache, newest first.
+    pub fn items(&self) -> Result<Vec<Item>> {
+        let mut st =
+            self.conn.prepare_cached("SELECT record FROM items WHERE deleted = 0 ORDER BY created DESC")?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for record in rows {
+            out.push(serde_json::from_str(&record?)?);
+        }
+        Ok(out)
+    }
+
+    /// How many live library items the cache holds.
+    pub fn item_count(&self) -> usize {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0) as usize
+    }
+
+    /// The item whose uid starts with `prefix` (a citation gives the start of it), deleted or
+    /// not, when exactly one does.
+    pub fn item(&self, prefix: &str) -> Result<Option<Item>> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT record FROM items WHERE substr(uid, 1, length(?1)) = ?1 LIMIT 2")?;
+        let found: Vec<String> = st.query_map([prefix], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        match found.as_slice() {
+            [one] => Ok(Some(serde_json::from_str(one)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// An item's text as the cache holds it: inline, or its fetched text file.
+    pub fn body(&self, item: &Item) -> Result<Option<Body>> {
+        body(&self.conn, item)
+    }
+
+    /// The items anchored in a chapter, from the index: one span a verse range, so an anchor
+    /// that starts in the chapter before shows from this chapter's first verse.
+    pub fn spans_in_chapter(&self, c: ChapterIdx) -> Result<Vec<ItemSpan>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT a.uid, a.first, a.last FROM item_anchors a JOIN items i ON i.uid = a.uid
+             WHERE a.book = ?1 AND a.chapter = ?2 AND i.deleted = 0 ORDER BY a.first, a.uid",
+        )?;
+        let rows = st.query_map(params![c.book().index() as i64, c.chapter() as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (uid, first, last) = row?;
+            if let (Some(a), Some(b)) = (verse_of(first), verse_of(last)) {
+                out.push(ItemSpan { uid, first: a.verse, last: b.verse });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Saves a note in the library (an Ask answer kept) anchored to `ranges` and to the references
+    /// written in it, and queues it for the server. Returns its uid.
+    pub fn save_note_item(&mut self, text: &str, ranges: &[(VerseRef, VerseRef)]) -> Result<String> {
+        let t = now();
+        let uid = new_uid();
+        let mut user: Vec<Anchor> = Vec::new();
+        for (from, to) in ranges {
+            let (from, to) = (VerseId::from(*from), VerseId::from(*to));
+            if from.is_valid() && to.is_valid() && !user.iter().any(|a| (a.from, a.to) == (from, to)) {
+                user.push(Anchor { from, to, origin: AnchorOrigin::User, at_ms: None, page: None });
+            }
+        }
+        let item = note_with_anchors(&uid, user, text, t);
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        put_item(&tx, &item, t, t)?;
+        enqueue_uid(&tx, Kind::Note, &uid, t)?;
+        tx.commit()?;
+        self.reload()?;
+        self.queued();
+        Ok(uid)
     }
 
     pub fn bookmarks(&self) -> Vec<(VerseRef, &Bookmark)> {
@@ -2921,6 +3033,35 @@ mod tests {
 
     fn jn316() -> VerseRef {
         VerseRef::new(BookId(42), 3, 16)
+    }
+
+    #[test]
+    fn library_items_from_the_cache() {
+        let mut s = StudyStore::open_in_memory().unwrap();
+        let romans = BookId(44);
+        let range = (VerseRef::new(romans, 7, 24), VerseRef::new(romans, 8, 2));
+        let uid = s.save_note_item("Kept from Ask; see Romans 8:28.", &[range]).unwrap();
+        assert_eq!(s.item_count(), 1);
+        assert_eq!(s.items().unwrap()[0].uid, uid);
+        assert_eq!(
+            s.item(&uid[..8]).unwrap().unwrap().text.as_deref(),
+            Some("Kept from Ask; see Romans 8:28.")
+        );
+        assert_eq!(
+            s.body(&s.items().unwrap()[0]).unwrap(),
+            Some(Body::Plain("Kept from Ask; see Romans 8:28.".into()))
+        );
+        // The range that starts in chapter 7 shows in chapter 8 from its first verse; the
+        // reference written in the text is anchored too.
+        let spans: Vec<(u8, u8)> = s
+            .spans_in_chapter(ChapterIdx::new(romans, 8).unwrap())
+            .unwrap()
+            .iter()
+            .map(|sp| (sp.first, sp.last))
+            .collect();
+        assert_eq!(spans, [(1, 2), (28, 28)]);
+        assert_eq!(s.spans_in_chapter(ChapterIdx::new(romans, 7).unwrap()).unwrap()[0].first, 24);
+        assert_eq!(s.pending_changes(), 1);
     }
 
     #[test]
