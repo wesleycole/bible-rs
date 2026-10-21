@@ -614,3 +614,77 @@ fn another_account_signing_in_never_sees_the_last_ones_library() {
     assert!(second.highlight(VerseId::from(verse(1, 1))).is_some());
     assert!(first.highlight(VerseId::from(verse(1, 1))).is_none());
 }
+
+/// Records `seconds` of a moving tone in `data`, queueing the recording for the server as a
+/// recorder does: at the start, as each part closes, and at the end.
+fn record(device: &mut Device, seconds: u32) -> (PathBuf, linger_core::recording::Manifest) {
+    use linger_core::recording::{ChunkWriter, SAMPLE_RATE, Source};
+    let mut w = ChunkWriter::create(&device.dir, Source::Microphone).unwrap();
+    let dir = w.dir().to_path_buf();
+    let queue = |device: &mut Device| {
+        let m = linger_core::recording::read(&dir).unwrap();
+        device.store.queue_recording(&dir, &m).unwrap();
+    };
+    queue(device);
+    let pcm: Vec<i16> = (0..SAMPLE_RATE * seconds)
+        .map(|i| {
+            let t = f64::from(i) / f64::from(SAMPLE_RATE);
+            ((t * (300.0 + 50.0 * (t * 0.7).sin()) * std::f64::consts::TAU).sin() * 6000.0) as i16
+        })
+        .collect();
+    let mut parts = 0;
+    for block in pcm.chunks(SAMPLE_RATE as usize / 10) {
+        w.push(block).unwrap();
+        let m = linger_core::recording::read(&dir).unwrap();
+        let closed = m.aac.as_ref().map_or(0, |a| a.files.len());
+        if closed != parts {
+            parts = closed;
+            queue(device);
+        }
+    }
+    let m = w.finish().unwrap();
+    device.store.queue_recording(&dir, &m).unwrap();
+    // Queueing again adds nothing.
+    device.store.queue_recording(&dir, &m).unwrap();
+    (dir, m)
+}
+
+#[test]
+#[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+fn a_pro_recording_uploads_its_parts_then_one_m4a() {
+    let server = FakeServer::new();
+    let mut a = Device::new("sermon-pro");
+    a.start(&server);
+    let (dir, m) = record(&mut a, 5 * 60 + 20);
+    a.settle(&server);
+
+    let parts = m.aac.as_ref().unwrap();
+    let on_disk: Vec<u8> =
+        parts.files.iter().flat_map(|p| std::fs::read(dir.join(&p.file)).unwrap()).collect();
+    assert_eq!(server.joined_files(&m.id, "audioPart"), (2, on_disk), "both ADTS parts, in order");
+    let m4a = std::fs::read(dir.join("audio.m4a")).unwrap();
+    assert_eq!(server.joined_files(&m.id, "uploadPart"), (1, m4a), "the M4A, in slices");
+    // The fake's finish checked the slices against audioFileUid.
+    let finished = server.finished_sermons();
+    assert_eq!(finished.len(), 1);
+    assert!(finished[0]["audioFileUid"].is_string());
+    assert_eq!(finished[0]["durationMs"], (5 * 60 + 20) * 1000);
+    assert_eq!(a.store.pending_changes(), 0);
+}
+
+#[test]
+fn a_recording_without_audio_upload_sends_only_its_begin_and_finish() {
+    let server = FakeServer::new();
+    server.set_upload_audio(false);
+    let mut a = Device::new("sermon-free");
+    a.start(&server);
+    let (_, m) = record(&mut a, 5 * 60 + 20);
+    a.settle(&server);
+
+    assert_eq!(server.joined_files(&m.id, "audioPart").0, 0);
+    assert_eq!(server.joined_files(&m.id, "uploadPart").0, 0);
+    let finished = server.finished_sermons();
+    assert_eq!(finished.len(), 1);
+    assert!(finished[0].get("audioFileUid").is_none(), "{}", finished[0]);
+    assert_eq!(finished[0]["uid"], m.id.as_str());
+}

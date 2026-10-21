@@ -72,6 +72,16 @@ transcription (M5), the digest (M2), playback of synced audio in the desktop app
 4. **Linux:** one FLAC with a seek table at the end through `flacenc`.
 5. **Upload sequence**, in core, through the outbox: parts as they close, only if `sermons.begin` said
    `uploadAudio`; at the end, the M4A (or FLAC) in 8 MB `uploadPart` slices, then `sermons.finish`.
+   **Built (October 21):** `StudyStore::queue_recording(dir, manifest)` queues three outbox kinds,
+   in order: `sermon` (`begin`; its `uploadAudio` answer is kept in a `recordings` table, study
+   schema 3), `sermon_part` per closed part (an `audioPart` with its `partIndex`, sent only when
+   `begin` said so), and `sermon_end` (the M4A written beside the parts as `audio.m4a`, attached as
+   `uploadPart` slices, then `finish` with `audioFileUid`). A file's uid is the SHA-256 of its owner
+   and bytes, so two recordings' identical (silent) parts stay two files. The recorder calls it at
+   the start, as each part closes and at the end; calling again queues only what is new. A part or
+   slice retried after an attach went through is attached once, but its bytes are uploaded again,
+   and `files.attach` leaves that second blob in `_storage` unreferenced. No FLAC yet (item 4):
+   without AAC parts the end goes without audio.
 6. **`transcribe.rs`:** delete the proxy backend and the env-key AssemblyAI backend. Transcripts arrive
    through the change feed as the item's `text` file and are cached as `transcript.json` beside the
    recording, so `transcribe::all` and the details sheet keep working. Development uses a dev Convex
@@ -145,7 +155,9 @@ fake the provider at `fetch`; the Transcriber is the one provider abstraction.
 
 - **Core:** encoder → packets → M4A has the recording's exact sample count; parts join to the same
   packets the muxer wrote; the muxer's golden file is byte-stable; `ffprobe` on the macOS runner
-  reports the exact duration; a recording killed mid-part loses only the open part.
+  reports the exact duration; a recording killed mid-part loses only the open part. `ffprobe` isn't run in
+  CI (no ffmpeg on the runners): the spike's four-player measurements on the same `mp4::write`, and
+  `afinfo` on an M4A muxed from a recording's parts (727.0208 s, exactly its samples), stand in.
 - **convex-test:** `begin` answers `uploadAudio: false` for a Free user past the trial; the workflow
   settles the real duration, gives back the trial hour on failure, deletes trial audio and the parts,
   and resumes from a late webhook through the cron; the dead-device cron finishes with the parts it has

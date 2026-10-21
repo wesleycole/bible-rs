@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS chats(
 ";
 
 /// The `PRAGMA user_version` this build migrates a file to.
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 /// Migration 1 (M1): highlights and bookmarks become the library cache, keyed by [`VerseId`],
 /// with the outbox, the feed cursor and recorded conflicts beside them.
@@ -146,6 +146,14 @@ CREATE TABLE outbox_v2(
 INSERT INTO outbox_v2 SELECT * FROM outbox;
 DROP TABLE outbox;
 ALTER TABLE outbox_v2 RENAME TO outbox;
+";
+
+/// Migration 3 (M1b): the sermons this device records, and how far each has been queued for the
+/// server: `begin` once, each closed AAC part, then the end. `upload_audio` is `begin`'s answer.
+const MIGRATION_3: &str = "
+CREATE TABLE recordings(
+    uid TEXT PRIMARY KEY, parts INTEGER NOT NULL DEFAULT 0, ended INTEGER NOT NULL DEFAULT 0,
+    upload_audio INTEGER);
 ";
 
 /// Brings a file (new, or from any earlier version) up to [`VERSION`], one transaction a step.
@@ -258,6 +266,12 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         }
         tx.execute_batch("CREATE UNIQUE INDEX chats_uid ON chats(uid);")?;
         tx.pragma_update(None, "user_version", 2)?;
+        tx.commit()?;
+    }
+    if version < 3 {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(MIGRATION_3)?;
+        tx.pragma_update(None, "user_version", 3)?;
         tx.commit()?;
     }
     Ok(())
@@ -531,6 +545,12 @@ pub(crate) enum Kind {
     Bookmark,
     Note,
     Chat,
+    /// A recording's `sermons.begin`, keyed by its uid.
+    SermonBegin,
+    /// One AAC part of a recording, keyed `<uid>/<index>`.
+    SermonPart,
+    /// The end of a recording: its M4A's slices, then `sermons.finish`; keyed by its uid.
+    SermonEnd,
 }
 
 impl Kind {
@@ -540,12 +560,25 @@ impl Kind {
             Kind::Bookmark => "bookmark",
             Kind::Note => "note",
             Kind::Chat => "chat",
+            Kind::SermonBegin => "sermon",
+            Kind::SermonPart => "sermon_part",
+            Kind::SermonEnd => "sermon_end",
         }
     }
 
     #[cfg(feature = "sync")]
     pub(crate) fn from_name(name: &str) -> Option<Self> {
-        [Kind::Highlight, Kind::Bookmark, Kind::Note, Kind::Chat].into_iter().find(|k| k.name() == name)
+        [
+            Kind::Highlight,
+            Kind::Bookmark,
+            Kind::Note,
+            Kind::Chat,
+            Kind::SermonBegin,
+            Kind::SermonPart,
+            Kind::SermonEnd,
+        ]
+        .into_iter()
+        .find(|k| k.name() == name)
     }
 
     fn table(self) -> &'static str {
@@ -554,6 +587,7 @@ impl Kind {
             Kind::Bookmark => "bookmarks",
             Kind::Note => "items",
             Kind::Chat => "chats",
+            Kind::SermonBegin | Kind::SermonPart | Kind::SermonEnd => "items",
         }
     }
 
@@ -563,7 +597,7 @@ impl Kind {
         match self {
             Kind::Highlight => ("library/highlights:set", "color"),
             Kind::Bookmark => ("library/bookmarks:set", "label"),
-            Kind::Note | Kind::Chat => unreachable!("{self:?} is kept by uid"),
+            _ => unreachable!("{self:?} is kept by uid"),
         }
     }
 }
@@ -804,6 +838,62 @@ impl StudyStore {
         if let Some(f) = &self.on_outbox {
             f();
         }
+    }
+
+    /// Queues for the server what the recording in `dir` has ready: `sermons.begin` the first
+    /// time, each AAC part as it closes, and once it has ended, its M4A and `sermons.finish`. Call
+    /// it whenever the manifest changes (and at launch for any recording not yet uploaded):
+    /// calling again queues only what is new.
+    pub fn queue_recording(&mut self, dir: &Path, m: &crate::recording::Manifest) -> Result<()> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let queued: Option<(u32, bool)> = tx
+            .query_row("SELECT parts, ended FROM recordings WHERE uid = ?1", [&m.id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        let t = now();
+        let add = |kind: Kind, key: &str, payload: serde_json::Value| {
+            tx.execute(
+                "INSERT INTO outbox(kind, key, payload, base_seq, created) VALUES(?1, ?2, ?3, 0, ?4)",
+                params![kind.name(), key, payload.to_string(), t],
+            )
+        };
+        let (mut parts, ended) = queued.unwrap_or((0, false));
+        if queued.is_none() {
+            let started_ms = m.started_at.max(0) as u64 * 1000;
+            let details = json!({
+                "title": m.details.title, "speaker": m.details.speaker, "from": m.details.from,
+                "startedAt": started_ms,
+            });
+            let date = &crate::time::rfc3339(m.started_at)[..10];
+            add(Kind::SermonBegin, &m.id, json!({ "uid": m.id, "details": details, "recordedOn": date }))?;
+        }
+        let closed = m.aac.as_ref().map_or(&[][..], |a| &a.files[..]);
+        for part in closed.iter().skip(parts as usize) {
+            let path = dir.join(&part.file);
+            add(
+                Kind::SermonPart,
+                &format!("{}/{}", m.id, part.index),
+                json!({ "uid": m.id, "index": part.index, "path": path }),
+            )?;
+            parts += 1;
+        }
+        let ending = m.ended_at.is_some() && !ended;
+        if ending {
+            let duration_ms = m.samples * 1000 / u64::from(crate::recording::SAMPLE_RATE);
+            add(Kind::SermonEnd, &m.id, json!({ "uid": m.id, "dir": dir, "durationMs": duration_ms }))?;
+        }
+        let changed = queued != Some((parts, ended || ending));
+        tx.execute(
+            "INSERT INTO recordings(uid, parts, ended) VALUES(?1, ?2, ?3)
+             ON CONFLICT(uid) DO UPDATE SET parts = excluded.parts, ended = excluded.ended",
+            params![m.id, parts, ended || ending],
+        )?;
+        tx.commit()?;
+        if changed {
+            self.queued();
+        }
+        Ok(())
     }
 
     /// Changes made here that the server hasn't confirmed yet.
@@ -1597,7 +1687,7 @@ fn forget_library(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "DELETE FROM highlights; DELETE FROM bookmarks; DELETE FROM items; DELETE FROM item_anchors;
          DELETE FROM files; DELETE FROM chats; DELETE FROM outbox; DELETE FROM sync_state;
-         DELETE FROM conflicts;",
+         DELETE FROM conflicts; DELETE FROM recordings;",
     )?;
     if let Some(dir) = conn.path().and_then(|p| Path::new(p).parent()) {
         let _ = std::fs::remove_dir_all(dir.join("files"));
@@ -1619,17 +1709,49 @@ pub(crate) mod cache {
         pub id: i64,
         pub kind: Kind,
         pub key: Key,
-        /// The mutation that sends it.
-        pub name: &'static str,
+        /// The mutation that sends it, if one follows its files.
+        pub name: Option<&'static str>,
         /// The mutation's arguments, `baseSeq` included.
         pub args: Value,
-        /// A file to upload and attach first: its uid, bytes and SHA-256 (hex).
-        pub upload: Option<(String, Vec<u8>, String)>,
+        /// Files to upload and attach first, in order.
+        pub uploads: Vec<Upload>,
         rev: i64,
         pub attempts: i64,
         /// Unix milliseconds before which it isn't tried again (0: now).
         pub next_at: i64,
     }
+
+    /// A file an outbox entry uploads and attaches before its mutation.
+    #[derive(Debug, Clone)]
+    pub(crate) struct Upload {
+        pub uid: String,
+        pub owner: String,
+        pub role: &'static str,
+        pub part_index: Option<u32>,
+        pub content_type: &'static str,
+        pub bytes: Vec<u8>,
+        /// Of the bytes, hex.
+        pub sha256: String,
+    }
+
+    impl Upload {
+        /// Named by its owner and its bytes, so a retry attaches the same file once and the same
+        /// bytes in two records are two files.
+        fn new(
+            owner: &str,
+            role: &'static str,
+            part_index: Option<u32>,
+            content_type: &'static str,
+            bytes: Vec<u8>,
+        ) -> Self {
+            let sha256 = sha256_hex(&bytes);
+            let uid = sha256_hex(format!("{owner}:{sha256}").as_bytes());
+            Self { uid, owner: owner.into(), role, part_index, content_type, bytes, sha256 }
+        }
+    }
+
+    /// The bytes of an M4A upload slice: Convex takes an upload up to 20 MB; 8 MB keeps a retry cheap.
+    pub(crate) const SLICE_BYTES: usize = 8 << 20;
 
     /// What an outbox entry is about: a verse for a highlight or bookmark, a uid otherwise.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1678,8 +1800,17 @@ pub(crate) mod cache {
             let offset = clock_offset_ms(conn)?;
             // A device time in Unix seconds as server milliseconds.
             let made = |t: i64| json!((t * 1000 + offset).max(0));
-            let entry =
-                |key, name, args, upload| Entry { id, kind, key, name, args, upload, rev, attempts, next_at };
+            let entry = |key, name: &'static str, args, uploads| Entry {
+                id,
+                kind,
+                key,
+                name: (!name.is_empty()).then_some(name),
+                args,
+                uploads,
+                rev,
+                attempts,
+                next_at,
+            };
             match (kind, key) {
                 (Kind::Highlight | Kind::Bookmark, Sql::Integer(verse)) => {
                     let mut args: Value = serde_json::from_str(&payload)?;
@@ -1688,7 +1819,7 @@ pub(crate) mod cache {
                         // In this device's milliseconds until now.
                         args["createdAt"] = json!((created + offset).max(0));
                     }
-                    return Ok(Some(entry(Key::Verse(verse as u32), kind.mutation().0, args, None)));
+                    return Ok(Some(entry(Key::Verse(verse as u32), kind.mutation().0, args, Vec::new())));
                 }
                 (Kind::Note, Sql::Text(uid)) => {
                     let row = conn
@@ -1702,7 +1833,7 @@ pub(crate) mod cache {
                     };
                     if deleted {
                         let args = json!({ "uid": uid, "baseSeq": base });
-                        return Ok(Some(entry(Key::Uid(uid), "library/notes:remove", args, None)));
+                        return Ok(Some(entry(Key::Uid(uid), "library/notes:remove", args, Vec::new())));
                     }
                     if item.kind != ItemKind::Note {
                         // A sermon or a captured page: only its details are edited on a device.
@@ -1710,7 +1841,12 @@ pub(crate) mod cache {
                             "uid": uid, "title": item.title, "details": item.details,
                             "sermonUid": item.sermon_uid, "offsetMs": item.offset_ms, "baseSeq": base
                         });
-                        return Ok(Some(entry(Key::Uid(uid), "library/items:updateDetails", args, None)));
+                        return Ok(Some(entry(
+                            Key::Uid(uid),
+                            "library/items:updateDetails",
+                            args,
+                            Vec::new(),
+                        )));
                     }
                     if seq == 0 && base == 0 && already_there(conn, &item)? {
                         let tx = rusqlite::Transaction::new_unchecked(
@@ -1729,7 +1865,7 @@ pub(crate) mod cache {
                     if seq == 0 {
                         args["capturedAt"] = made(created);
                     }
-                    return Ok(Some(entry(Key::Uid(uid), "library/notes:upsert", args, None)));
+                    return Ok(Some(entry(Key::Uid(uid), "library/notes:upsert", args, Vec::new())));
                 }
                 (Kind::Chat, Sql::Text(uid)) => {
                     let row = conn
@@ -1755,26 +1891,102 @@ pub(crate) mod cache {
                     };
                     if deleted {
                         let args = json!({ "uid": uid, "baseSeq": base });
-                        return Ok(Some(entry(Key::Uid(uid), "library/chats:remove", args, None)));
+                        return Ok(Some(entry(Key::Uid(uid), "library/chats:remove", args, Vec::new())));
                     }
                     // The conversation is a `chat` file, named by the chat and its bytes, so a retry
                     // attaches the same file and an unchanged one isn't uploaded again.
                     let messages: Value = serde_json::from_str(&messages)?;
                     let bytes = json!({ "messages": messages, "api": api }).to_string().into_bytes();
-                    let sha = sha256_hex(&bytes);
-                    let file_uid = sha256_hex(format!("{uid}:{sha}").as_bytes());
-                    let upload =
-                        (attached.as_deref() != Some(&file_uid)).then(|| (file_uid.clone(), bytes, sha));
+                    let upload = Upload::new(&uid, "chat", None, "application/json", bytes);
+                    let file_uid = upload.uid.clone();
+                    let uploads =
+                        if attached.as_deref() == Some(&file_uid) { Vec::new() } else { vec![upload] };
                     let mut args =
                         json!({ "uid": uid, "title": title, "fileUid": file_uid, "baseSeq": base });
                     if seq == 0 {
                         args["createdAt"] = made(created);
                     }
-                    return Ok(Some(entry(Key::Uid(uid), "library/chats:save", args, upload)));
+                    return Ok(Some(entry(Key::Uid(uid), "library/chats:save", args, uploads)));
+                }
+                (Kind::SermonBegin, Sql::Text(uid)) => {
+                    let args: Value = serde_json::from_str(&payload)?;
+                    return Ok(Some(entry(Key::Uid(uid), "library/sermons:begin", args, Vec::new())));
+                }
+                (Kind::SermonPart | Kind::SermonEnd, Sql::Text(key)) => {
+                    let p: Value = serde_json::from_str(&payload)?;
+                    let uid = p["uid"].as_str().unwrap_or_default().to_string();
+                    let upload_audio: Option<bool> = conn
+                        .query_row("SELECT upload_audio FROM recordings WHERE uid = ?1", [&uid], |r| r.get(0))
+                        .optional()?
+                        .flatten();
+                    if kind == Kind::SermonPart {
+                        // A part goes only when `begin` (earlier in the queue) said to upload audio;
+                        // one whose file is gone can't go at all.
+                        let bytes = match upload_audio {
+                            Some(true) => std::fs::read(p["path"].as_str().unwrap_or_default()).ok(),
+                            _ => None,
+                        };
+                        let Some(bytes) = bytes else {
+                            conn.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+                            continue;
+                        };
+                        let index = p["index"].as_u64().map(|i| i as u32);
+                        let upload = Upload::new(&uid, "audioPart", index, "audio/aac", bytes);
+                        return Ok(Some(entry(Key::Uid(key), "", Value::Null, vec![upload])));
+                    }
+                    let mut args = json!({ "uid": uid, "durationMs": p["durationMs"] });
+                    let mut uploads = Vec::new();
+                    let audio = match upload_audio {
+                        Some(true) => m4a(Path::new(p["dir"].as_str().unwrap_or_default()))?,
+                        _ => None,
+                    };
+                    if let Some(bytes) = audio {
+                        args["audioFileUid"] = json!(sha256_hex(&bytes));
+                        for (i, slice) in bytes.chunks(SLICE_BYTES).enumerate() {
+                            uploads.push(Upload::new(
+                                &uid,
+                                "uploadPart",
+                                Some(i as u32),
+                                "application/octet-stream",
+                                slice.to_vec(),
+                            ));
+                        }
+                    }
+                    return Ok(Some(entry(Key::Uid(uid), "library/sermons:finish", args, uploads)));
                 }
                 (kind, key) => bail!("outbox entry {id} for a {kind:?} has the key {key:?}"),
             }
         }
+    }
+
+    /// The recording's M4A, written beside its parts the first time it is asked for; `None` when it
+    /// has no AAC parts (they failed, or this platform doesn't encode), so no audio goes.
+    fn m4a(dir: &Path) -> Result<Option<Vec<u8>>> {
+        let path = dir.join("audio.m4a");
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Ok(Some(bytes));
+        }
+        #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+        if let Some(m) = crate::recording::read(dir).filter(|m| m.aac.is_some()) {
+            let tmp = dir.join("audio.m4a.tmp");
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            crate::recording::write_m4a(dir, &m, &mut out)?;
+            std::io::Write::flush(&mut out)?;
+            drop(out);
+            std::fs::rename(&tmp, &path)?;
+            return Ok(Some(std::fs::read(&path)?));
+        }
+        Ok(None)
+    }
+
+    /// A change that answers no record went through: a recording's `begin` (with whether to
+    /// upload its audio) or one of its parts.
+    pub(crate) fn done(conn: &Connection, e: &Entry, upload_audio: Option<bool>) -> Result<()> {
+        conn.execute("DELETE FROM outbox WHERE id = ?1 AND rev = ?2", params![e.id, e.rev])?;
+        if let (Some(upload), Key::Uid(uid)) = (upload_audio, &e.key) {
+            conn.execute("UPDATE recordings SET upload_audio = ?2 WHERE uid = ?1", params![uid, upload])?;
+        }
+        Ok(())
     }
 
     fn sha256_hex(bytes: &[u8]) -> String {
@@ -1941,7 +2153,7 @@ pub(crate) mod cache {
             return Ok(false);
         }
         let mine = load_item(&tx, uid)?;
-        let removing = e.name == "library/notes:remove";
+        let removing = e.name == Some("library/notes:remove");
         match (copy, &mine) {
             (Some(FeedRecord::Item(copy)), Some(mine)) if !removing => {
                 tx.execute("DELETE FROM items WHERE uid = ?1", [&copy.uid])?;
@@ -2310,7 +2522,7 @@ pub(crate) mod cache {
                 ("color", color.map_or(0, HighlightColor::to_i64).into())
             }
             Kind::Bookmark => ("label", value.as_str().unwrap_or("").to_string().into()),
-            Kind::Note | Kind::Chat => unreachable!("{kind:?} is kept by uid"),
+            _ => unreachable!("{kind:?} is kept by uid"),
         };
         let deleted = value.is_null() as i64;
         tx.execute(

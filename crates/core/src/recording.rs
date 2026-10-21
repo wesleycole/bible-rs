@@ -148,7 +148,12 @@ const MANIFEST: &str = "recording.json";
 
 /// One recording's manifest.
 pub fn load(data_dir: &Path, id: &str) -> Option<Manifest> {
-    serde_json::from_slice(&std::fs::read(recordings_dir(data_dir).join(id).join(MANIFEST)).ok()?).ok()
+    read(&recordings_dir(data_dir).join(id))
+}
+
+/// The manifest of the recording in `dir`.
+pub fn read(dir: &Path) -> Option<Manifest> {
+    serde_json::from_slice(&std::fs::read(dir.join(MANIFEST)).ok()?).ok()
 }
 
 /// Replaces a finished recording's details.

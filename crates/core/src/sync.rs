@@ -552,6 +552,15 @@ impl Engine {
                 }
             };
             let done = match self.send(&entry) {
+                Ok(answer)
+                    if matches!(
+                        entry.kind,
+                        crate::study::Kind::SermonBegin | crate::study::Kind::SermonPart
+                    ) =>
+                {
+                    self.online();
+                    cache::done(&self.conn, &entry, answer["uploadAudio"].as_bool())
+                }
                 Ok(answer) => {
                     self.online();
                     match serde_json::from_value::<WriteAnswer>(answer.clone()) {
@@ -598,20 +607,28 @@ impl Engine {
         }
     }
 
-    /// Sends one change: its file first, if it has one (an upload URL, the bytes, then
-    /// `files.attach`), then its mutation.
+    /// Sends one change: its files first, if it has any (each an upload URL, the bytes, then
+    /// `files.attach`), then its mutation, if it has one.
     fn send(&mut self, entry: &cache::Entry) -> Result<Value, CallError> {
-        if let (Some((file_uid, bytes, sha256)), cache::Key::Uid(owner)) = (&entry.upload, &entry.key) {
+        for u in &entry.uploads {
             let url = self.backend.upload_url()?;
-            let storage_id = self.backend.upload(&url, bytes.clone(), "application/json")?;
-            let file = self.backend.mutate(
-                ATTACH,
-                json!({ "uid": file_uid, "ownerUid": owner, "role": "chat", "storageId": storage_id, "sha256": sha256 }),
-            )?;
-            cache::attached(&self.conn, owner, file_uid, file["url"].as_str().unwrap_or_default())
-                .map_err(|e| CallError::Refused(format!("{e:#}")))?;
+            let storage_id = self.backend.upload(&url, u.bytes.clone(), u.content_type)?;
+            let mut args = json!({
+                "uid": u.uid, "ownerUid": u.owner, "role": u.role, "storageId": storage_id, "sha256": u.sha256
+            });
+            if let Some(i) = u.part_index {
+                args["partIndex"] = json!(i);
+            }
+            let file = self.backend.mutate(ATTACH, args)?;
+            if u.role == "chat" {
+                cache::attached(&self.conn, &u.owner, &u.uid, file["url"].as_str().unwrap_or_default())
+                    .map_err(|e| CallError::Refused(format!("{e:#}")))?;
+            }
         }
-        self.backend.mutate(entry.name, entry.args.clone())
+        match entry.name {
+            Some(name) => self.backend.mutate(name, entry.args.clone()),
+            None => Ok(Value::Null),
+        }
     }
 
     /// Fetches the files the cache wants (conversations and text), while the server answers.
@@ -736,6 +753,12 @@ struct FakeState {
     chats: BTreeMap<String, Chat>,
     /// Attached files by uid: (owner uid, role, storage id).
     files: BTreeMap<String, (Option<String>, String, String)>,
+    /// Each attached file's `partIndex`, by storage id.
+    part_index: BTreeMap<String, u64>,
+    /// What `sermons.begin` answers for `uploadAudio`: whether the user may upload audio.
+    no_audio: bool,
+    /// The arguments of each `sermons.finish`, in order.
+    finished: Vec<Value>,
 }
 
 /// What `convex/lib/conflict.ts`'s `decideByUid` decides.
@@ -843,6 +866,24 @@ impl FakeServer {
         item.updated_at = Some(now_ms() as u64);
         s.items.insert(item.uid.clone(), item);
         s.wrote();
+    }
+
+    /// Whether `sermons.begin` lets a device upload audio (a Free user past the trial: no).
+    pub fn set_upload_audio(&self, upload: bool) {
+        self.lock().no_audio = !upload;
+    }
+
+    /// The bytes of `owner`'s attached files in `role` ("audioPart", "uploadPart"), joined in
+    /// `partIndex` order, and how many there are.
+    pub fn joined_files(&self, owner: &str, role: &str) -> (usize, Vec<u8>) {
+        let s = self.lock();
+        let n = s.files.values().filter(|(o, r, _)| o.as_deref() == Some(owner) && r == role).count();
+        (n, s.joined(owner, role))
+    }
+
+    /// The arguments of each `sermons.finish` so far.
+    pub fn finished_sermons(&self) -> Vec<Value> {
+        self.lock().finished.clone()
     }
 
     /// The live chats.
@@ -1135,7 +1176,82 @@ impl FakeState {
         let owner = args["ownerUid"].as_str().map(Into::into);
         let role = args["role"].as_str().unwrap_or_default().into();
         self.files.insert(uid.clone(), (owner, role, storage.clone()));
+        if let Some(i) = args["partIndex"].as_u64() {
+            self.part_index.insert(storage.clone(), i);
+        }
         Ok(answer(self, &storage))
+    }
+
+    /// `sermons.begin`: the item, as `recording`, and whether the plan lets the device upload audio.
+    fn begin_sermon(&mut self, args: &Value) -> Result<Value, CallError> {
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        if !self.items.contains_key(&uid) {
+            let seq = self.next_seq();
+            let item = Item {
+                uid: uid.clone(),
+                seq,
+                deleted_at: None,
+                kind: ItemKind::Sermon,
+                title: String::new(),
+                status: ItemStatus::Recording,
+                text: None,
+                text_file_uid: None,
+                excerpt: None,
+                summary: None,
+                outline: None,
+                source_uid: None,
+                sermon_uid: None,
+                offset_ms: None,
+                recorded_on: args["recordedOn"].as_str().map(Into::into),
+                details: serde_json::from_value(args["details"].clone()).ok(),
+                conflict_of: None,
+                captured_at: now_ms() as u64,
+                updated_at: Some(now_ms() as u64),
+                unreviewed: false,
+                anchors: Vec::new(),
+                files: Vec::new(),
+            };
+            self.items.insert(uid, item);
+            self.wrote();
+        }
+        Ok(json!({ "uploadAudio": !self.no_audio, "cloudTranscript": !self.no_audio }))
+    }
+
+    /// `sermons.finish`: with audio, its `uploadPart` slices must join to the bytes named by
+    /// `audioFileUid` (as `audio.join` checks); the item goes `uploading`, or `waiting` without.
+    fn finish_sermon(&mut self, args: &Value) -> Result<Value, CallError> {
+        use sha2::{Digest, Sha256};
+        let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        let status = match args["audioFileUid"].as_str() {
+            Some(sha) => {
+                let joined = self.joined(&uid, "uploadPart");
+                if format!("{:x}", Sha256::digest(&joined)) != sha {
+                    return Err(refused("The joined upload doesn't match the SHA-256 the device sent."));
+                }
+                ItemStatus::Uploading
+            }
+            None => ItemStatus::Waiting,
+        };
+        let seq = self.next_seq();
+        let item = self.items.get_mut(&uid).ok_or_else(|| refused("That sermon isn't in your library."))?;
+        (item.seq, item.status, item.updated_at) = (seq, status, Some(now_ms() as u64));
+        self.finished.push(args.clone());
+        self.wrote();
+        Ok(answer(WriteAnswer::Ok { seq, record: self.item(&uid) }))
+    }
+
+    /// The bytes of `owner`'s files in `role`, joined in `partIndex` order.
+    fn joined(&self, owner: &str, role: &str) -> Vec<u8> {
+        let mut pieces: Vec<(u64, &Vec<u8>)> = self
+            .files
+            .values()
+            .filter(|(o, r, _)| o.as_deref() == Some(owner) && r == role)
+            .filter_map(|(_, _, storage)| {
+                Some((self.part_index.get(storage).copied().unwrap_or(0), self.uploads.get(storage)?))
+            })
+            .collect();
+        pieces.sort_by_key(|(i, _)| *i);
+        pieces.into_iter().flat_map(|(_, b)| b.clone()).collect()
     }
 
     /// `chats.save`: the conversation must be attached first as the chat's own `chat` file.
@@ -1240,6 +1356,8 @@ impl FakeBackend {
             "library/items:updateDetails" => s.update_details(args),
             "library/chats:save" => s.save_chat(args),
             "library/chats:remove" => s.remove_chat(args),
+            "library/sermons:begin" => s.begin_sermon(args),
+            "library/sermons:finish" => s.finish_sermon(args),
             ATTACH => s.attach(args),
             FEED => Ok(s.page(args["after"].as_u64().unwrap_or(0))),
             CLOCK => Ok(json!({ "serverTime": now_ms() })),
