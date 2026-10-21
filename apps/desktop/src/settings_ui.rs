@@ -568,6 +568,11 @@ impl SettingsUi {
         };
         // Signing out waits for changes the library hasn't received, or goes now if asked.
         let (plan, sign_out, action) = match account.leaving {
+            Some(_) if account.leaving_audio => (
+                "Uploading a sermon recording to your library before signing out…".to_string(),
+                "Sign Out Anyway",
+                Action::SignOutNow,
+            ),
             Some(n) => (
                 format!(
                     "Sending {n} change{} to your library before signing out…",

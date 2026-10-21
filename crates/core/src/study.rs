@@ -860,13 +860,17 @@ impl StudyStore {
         };
         let (mut parts, ended) = queued.unwrap_or((0, false));
         if queued.is_none() {
-            let started_ms = m.started_at.max(0) as u64 * 1000;
-            let details = json!({
-                "title": m.details.title, "speaker": m.details.speaker, "from": m.details.from,
-                "startedAt": started_ms,
-            });
-            let date = &crate::time::rfc3339(m.started_at)[..10];
-            add(Kind::SermonBegin, &m.id, json!({ "uid": m.id, "details": details, "recordedOn": date }))?;
+            let details =
+                json!({ "title": m.details.title, "speaker": m.details.speaker, "from": m.details.from });
+            // The device's day; a recording that didn't note it falls back to UTC's.
+            let date =
+                m.recorded_on.clone().unwrap_or_else(|| crate::time::rfc3339(m.started_at)[..10].into());
+            // `startedAt` (device seconds here) is dated by the server's clock when it goes.
+            add(
+                Kind::SermonBegin,
+                &m.id,
+                json!({ "uid": m.id, "details": details, "recordedOn": date, "startedAt": m.started_at }),
+            )?;
         }
         let closed = m.aac.as_ref().map_or(&[][..], |a| &a.files[..]);
         for part in closed.iter().skip(parts as usize) {
@@ -894,6 +898,73 @@ impl StudyStore {
             self.queued();
         }
         Ok(())
+    }
+
+    /// Queues every recording in `data_dir` that the library doesn't have yet (see
+    /// [`queue_recording`](Self::queue_recording)), when sync starts: those recorded while it
+    /// wasn't running, and any the app stopped without finishing, which end at their last closed
+    /// chunk. `recording` is the one still being recorded, left open. Recordings already uploaded
+    /// (to this account or another) are skipped, as are those from before M1b (no `recorded_on`),
+    /// which come into the library by migration.
+    pub fn queue_recordings(&mut self, data_dir: &Path, recording: Option<&str>) -> Result<()> {
+        for m in crate::recording::list(data_dir) {
+            if m.uploaded.is_some() || m.recorded_on.is_none() {
+                continue;
+            }
+            let dir = crate::recording::recordings_dir(data_dir).join(&m.id);
+            let m =
+                if recording == Some(m.id.as_str()) { m } else { crate::recording::close_interrupted(&dir)? };
+            self.queue_recording(&dir, &m)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a recording's audio is still waiting to go (what a sign-out waits on longest).
+    pub fn uploading_recording(&self) -> bool {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM outbox WHERE kind IN ('sermon_part', 'sermon_end'))",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false)
+    }
+
+    /// Where a sermon recorded here is (`recording`, `waiting`, `ready`, …), once the library has
+    /// it.
+    pub fn sermon_status(&self, uid: &str) -> Option<crate::records::ItemStatus> {
+        load_item(&self.conn, uid).ok().flatten().filter(|i| i.kind == ItemKind::Sermon).map(|i| i.status)
+    }
+
+    /// Gives a recording's sermon what the user said of it: in its `begin`, if that hasn't gone
+    /// yet, or else as an edit of the item. False if neither is here (it went, but the library's
+    /// copy hasn't arrived); the recording keeps the details either way.
+    pub fn set_sermon_details(&mut self, uid: &str, d: &crate::recording::Details) -> Result<bool> {
+        let queued: Option<(i64, String)> = self
+            .conn
+            .query_row("SELECT id, payload FROM outbox WHERE kind = 'sermon' AND key = ?1", [uid], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?;
+        if let Some((id, payload)) = queued {
+            let mut p: serde_json::Value = serde_json::from_str(&payload)?;
+            p["details"] = json!({ "title": d.title, "speaker": d.speaker, "from": d.from });
+            self.conn.execute("UPDATE outbox SET payload = ?2 WHERE id = ?1", params![id, p.to_string()])?;
+            return Ok(true);
+        }
+        let Some(item) = load_item(&self.conn, uid)?.filter(|i| i.kind == ItemKind::Sermon) else {
+            return Ok(false);
+        };
+        let (started_at, ended_at) = item.details.map_or((0, None), |d| (d.started_at, d.ended_at));
+        let details = crate::records::ItemDetails {
+            title: d.title.clone(),
+            speaker: d.speaker.clone(),
+            from: d.from.clone(),
+            started_at,
+            ended_at,
+        };
+        self.set_item_details(uid, d.title.as_deref().unwrap_or_default(), Some(details), None)?;
+        Ok(true)
     }
 
     /// Changes made here that the server hasn't confirmed yet.
@@ -1909,7 +1980,10 @@ pub(crate) mod cache {
                     return Ok(Some(entry(Key::Uid(uid), "library/chats:save", args, uploads)));
                 }
                 (Kind::SermonBegin, Sql::Text(uid)) => {
-                    let args: Value = serde_json::from_str(&payload)?;
+                    let mut args: Value = serde_json::from_str(&payload)?;
+                    if let Some(started) = args.as_object_mut().and_then(|a| a.remove("startedAt")) {
+                        args["details"]["startedAt"] = made(started.as_i64().unwrap_or_default());
+                    }
                     return Ok(Some(entry(Key::Uid(uid), "library/sermons:begin", args, Vec::new())));
                 }
                 (Kind::SermonPart | Kind::SermonEnd, Sql::Text(key)) => {
@@ -1960,14 +2034,17 @@ pub(crate) mod cache {
     }
 
     /// The recording's M4A, written beside its parts the first time it is asked for; `None` when it
-    /// has no AAC parts (they failed, or this platform doesn't encode), so no audio goes.
+    /// has no AAC parts (they failed, this platform doesn't encode, or it was interrupted before
+    /// the first closed), so no audio goes.
     fn m4a(dir: &Path) -> Result<Option<Vec<u8>>> {
         let path = dir.join("audio.m4a");
         if let Ok(bytes) = std::fs::read(&path) {
             return Ok(Some(bytes));
         }
         #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
-        if let Some(m) = crate::recording::read(dir).filter(|m| m.aac.is_some()) {
+        if let Some(m) =
+            crate::recording::read(dir).filter(|m| m.aac.as_ref().is_some_and(|a| !a.files.is_empty()))
+        {
             let tmp = dir.join("audio.m4a.tmp");
             let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
             crate::recording::write_m4a(dir, &m, &mut out)?;
@@ -2234,10 +2311,7 @@ pub(crate) mod cache {
     /// (new, or kept from before owners were recorded) is adopted as it is. True if it cleared.
     pub(crate) fn claim(conn: &mut Connection, account: &str) -> Result<bool> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let owner: Option<String> = tx
-            .query_row("SELECT value FROM settings WHERE key = 'library_owner'", [], |r| r.get(0))
-            .optional()?;
-        let other = owner.is_some_and(|o| o != account);
+        let other = owner(&tx)?.is_some_and(|o| o != account);
         if other {
             forget_library(&tx)?;
         }
@@ -2248,6 +2322,13 @@ pub(crate) mod cache {
         )?;
         tx.commit()?;
         Ok(other)
+    }
+
+    /// The account the cache belongs to (a Clerk user id), once one has claimed it.
+    pub(crate) fn owner(conn: &Connection) -> Result<Option<String>> {
+        Ok(conn
+            .query_row("SELECT value FROM settings WHERE key = 'library_owner'", [], |r| r.get(0))
+            .optional()?)
     }
 
     /// The cursor: the `seq` of the last feed page applied.

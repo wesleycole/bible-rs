@@ -119,6 +119,20 @@ pub struct Manifest {
     /// The AAC parts, on Apple platforms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aac: Option<Parts>,
+    /// The day it was recorded in the recording device's time zone ("2026-10-18"), which the app
+    /// knows and core doesn't. Recordings from before M1b have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_on: Option<String>,
+    /// Set once the library has all of it (`sermons.finish` went through), so it isn't queued again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploaded: Option<Uploaded>,
+}
+
+/// Which account's library a recording went to, and the `seq` that took it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Uploaded {
+    pub owner: String,
+    pub seq: u64,
 }
 
 impl Manifest {
@@ -164,6 +178,25 @@ pub fn save_details(data_dir: &Path, id: &str, details: Details) -> Result<Manif
     Ok(m)
 }
 
+/// Marks the recording in `dir` as in `owner`'s library as of `seq`.
+pub fn mark_uploaded(dir: &Path, owner: &str, seq: u64) -> Result<()> {
+    let mut m = read(dir).with_context(|| format!("no recording in {}", dir.display()))?;
+    m.uploaded = Some(Uploaded { owner: owner.into(), seq });
+    write(dir, &m)
+}
+
+/// Ends a recording the app stopped without finishing (it was killed, or the Mac lost power) at
+/// its last closed chunk, which is what its WAV and its manifest agree on: the chunk and AAC part
+/// that were open are lost. Recordings that ended are returned as they are.
+pub fn close_interrupted(dir: &Path) -> Result<Manifest> {
+    let mut m = read(dir).with_context(|| format!("no recording in {}", dir.display()))?;
+    if m.ended_at.is_none() {
+        m.ended_at = Some(m.started_at + (m.samples / u64::from(SAMPLE_RATE)) as i64);
+        write(dir, &m)?;
+    }
+    Ok(m)
+}
+
 /// Writes then renames, so a reader never sees half a manifest.
 fn write(dir: &Path, m: &Manifest) -> Result<()> {
     let tmp = dir.join(format!("{MANIFEST}.tmp"));
@@ -189,7 +222,8 @@ pub struct ChunkWriter {
 // Off Apple platforms `PartWriter` is a unit struct.
 #[allow(clippy::default_constructed_unit_structs)]
 impl ChunkWriter {
-    pub fn create(data_dir: &Path, source: Source) -> Result<Self> {
+    /// `recorded_on` is the local date, from the caller, who knows the time zone.
+    pub fn create(data_dir: &Path, source: Source, recorded_on: Option<String>) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
         let dir = recordings_dir(data_dir).join(&id);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -203,6 +237,8 @@ impl ChunkWriter {
             details: Details::default(),
             samples: 0,
             aac: None,
+            recorded_on,
+            uploaded: None,
         };
         let mut w =
             Self { dir, manifest, current: None, in_chunk: 0, before: 0, parts: PartWriter::default() };
@@ -229,6 +265,11 @@ impl ChunkWriter {
     /// The chunks closed so far (those ready to transcribe).
     pub fn closed_chunks(&self) -> &[Chunk] {
         &self.manifest.chunks
+    }
+
+    /// AAC parts closed so far (none where nothing is encoded).
+    pub fn closed_parts(&self) -> u32 {
+        self.manifest.aac.as_ref().map_or(0, |a| a.files.len() as u32)
     }
 
     /// Appends mono samples at [`SAMPLE_RATE`], closing a chunk every [`CHUNK_SECONDS`].
@@ -439,7 +480,11 @@ pub fn write_m4a(dir: &Path, m: &Manifest, out: &mut impl std::io::Write) -> Res
         packets.extend(these);
     }
     let sizes: Vec<u32> = packets.iter().map(|p| p.len() as u32).collect();
-    mp4::write(out, parts.priming_frames, m.samples, &sizes, &mut Slices(packets.iter(), &[]))
+    // An interrupted recording's WAV goes on past its last closed part: present what the parts hold.
+    let encoded =
+        (packets.len() as u64 * u64::from(FRAMES_PER_PACKET)).saturating_sub(parts.priming_frames.into());
+    let frames = m.samples.min(encoded);
+    mp4::write(out, parts.priming_frames, frames, &sizes, &mut Slices(packets.iter(), &[]))
 }
 
 /// The packets back to back, read without copying them into one buffer.
@@ -486,7 +531,7 @@ mod tests {
     #[test]
     fn splits_into_chunks_with_running_offsets() {
         let data = temp("chunks");
-        let mut w = ChunkWriter::create(&data, Source::SystemAudio).unwrap();
+        let mut w = ChunkWriter::create(&data, Source::SystemAudio, None).unwrap();
         let second = vec![1000i16; SAMPLE_RATE as usize];
         // 70.5 s in uneven blocks: chunks of 30 s, 30 s and 10.5 s.
         for _ in 0..70 {
@@ -512,7 +557,7 @@ mod tests {
     #[test]
     fn an_unfinished_recording_keeps_its_closed_chunks() {
         let data = temp("crash");
-        let mut w = ChunkWriter::create(&data, Source::Microphone).unwrap();
+        let mut w = ChunkWriter::create(&data, Source::Microphone, None).unwrap();
         w.push(&vec![0i16; (SAMPLE_RATE * 45) as usize]).unwrap();
         // The app dies here: no finish().
         drop(w);
@@ -553,7 +598,7 @@ mod tests {
     fn the_parts_join_to_one_encoders_packets() {
         let data = temp("parts");
         let pcm = sweep(11 * 60 + 7);
-        let mut w = ChunkWriter::create(&data, Source::Microphone).unwrap();
+        let mut w = ChunkWriter::create(&data, Source::Microphone, None).unwrap();
         for block in pcm.chunks(1600) {
             w.push(block).unwrap();
         }
@@ -589,7 +634,7 @@ mod tests {
     #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
     fn a_failing_part_leaves_the_wav_recording() {
         let data = temp("partfail");
-        let mut w = ChunkWriter::create(&data, Source::Microphone).unwrap();
+        let mut w = ChunkWriter::create(&data, Source::Microphone, None).unwrap();
         // The second part can't be created.
         std::fs::create_dir(w.dir().join("part-0001.aac")).unwrap();
         let pcm = sweep(6 * 60);
@@ -606,7 +651,7 @@ mod tests {
     #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
     fn a_killed_recording_loses_only_its_open_part() {
         let data = temp("killed");
-        let mut w = ChunkWriter::create(&data, Source::Microphone).unwrap();
+        let mut w = ChunkWriter::create(&data, Source::Microphone, None).unwrap();
         w.push(&sweep(7 * 60)).unwrap();
         let dir = w.dir().to_path_buf();
         // The app dies here: no finish().

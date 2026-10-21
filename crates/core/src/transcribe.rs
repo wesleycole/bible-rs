@@ -252,7 +252,7 @@ mod tests {
     fn a_kept_transcript_and_an_earlier_one_both_read() {
         let data = std::env::temp_dir().join(format!("linger-transcripts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
-        let mut w = recording::ChunkWriter::create(&data, Source::Microphone).unwrap();
+        let mut w = recording::ChunkWriter::create(&data, Source::Microphone, None).unwrap();
         w.push(&[0; 16_000]).unwrap();
         let dir = w.dir().to_path_buf();
         let m = w.finish().unwrap();

@@ -122,6 +122,7 @@ struct Shared {
     status: SyncStatus,
     cursor: u64,
     clock_offset_ms: i64,
+    claimed: bool,
 }
 
 struct Inner {
@@ -157,6 +158,7 @@ pub fn start(data_dir: &Path, backend: Box<dyn Backend>, tokens: Arc<dyn TokenSo
             status: SyncStatus::Syncing(cache::pending(&conn)?),
             cursor: cache::cursor(&conn)?,
             clock_offset_ms: cache::clock_offset_ms(&conn)?,
+            claimed: false,
         }),
         changed: Condvar::new(),
         on_change: Mutex::new(None),
@@ -202,6 +204,12 @@ impl SyncHandle {
     /// The `seq` of the last feed page applied.
     pub fn cursor(&self) -> u64 {
         self.lock().cursor
+    }
+
+    /// The cache is the signed-in account's: another account's library is gone from it, so what
+    /// the app queues from now on (its recordings, at the start) stays queued.
+    pub fn claimed(&self) -> bool {
+        self.lock().claimed
     }
 
     /// The server's clock minus this device's, in milliseconds, from the last feed page.
@@ -338,6 +346,8 @@ impl Engine {
                 Err(e) => self.feed_error = Some(format!("{e:#}")),
             }
         }
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).claimed = true;
+        self.data_changed = true;
         self.authenticate();
         // The clock first, so the first pages a new device pulls are dated by it too; offline,
         // the loop measures it once the server answers.
@@ -590,7 +600,17 @@ impl Engine {
             WriteAnswer::Ok { seq, record } => {
                 self.written = self.written.max(seq);
                 self.data_changed |= matches!(entry.key, cache::Key::Uid(_));
-                cache::sent(&mut self.conn, entry, seq, record.as_ref())
+                cache::sent(&mut self.conn, entry, seq, record.as_ref())?;
+                // The library has the whole recording: it isn't queued again, by this account or
+                // the next to sign in here.
+                if let (crate::study::Kind::SermonEnd, cache::Key::Uid(uid)) = (entry.kind, &entry.key) {
+                    let dir = self.files_dir.parent().map(|d| crate::recording::recordings_dir(d).join(uid));
+                    if let (Some(dir), Some(owner)) = (dir.filter(|d| d.is_dir()), cache::owner(&self.conn)?)
+                    {
+                        crate::recording::mark_uploaded(&dir, &owner, seq)?;
+                    }
+                }
+                Ok(())
             }
             WriteAnswer::Conflict { seq, record, copy } => {
                 // A note's conflict copy is this device's write too.
@@ -903,6 +923,11 @@ impl FakeServer {
         (item.seq, item.status, item.text_file_uid, item.updated_at) =
             (seq, ItemStatus::Ready, Some(file_uid), Some(now_ms() as u64));
         s.wrote();
+    }
+
+    /// The item `uid`, as the server holds it.
+    pub fn item(&self, uid: &str) -> Option<Item> {
+        self.lock().items.get(uid).cloned()
     }
 
     /// The arguments of each `sermons.finish` so far.

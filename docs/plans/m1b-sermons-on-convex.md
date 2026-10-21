@@ -163,6 +163,31 @@ fake the provider at `fetch`; the Transcriber is the one provider abstraction.
 3. **Migration:** the M1 sheet gains "Bringing your sermons into your library", with the background
    audio upload shown in the sidebar's sync status.
 
+**Built (October 21), items 1 and 2:** the recorder thread hands PCM to core's `ChunkWriter` and
+counts the parts it closes; the app calls `StudyStore::queue_recording` when a recording starts, as
+each part closes and when it stops, while sync runs. When sync starts, once the engine has claimed
+the cache for the signed-in account (`SyncHandle::claimed`, so an account switch can't forget what
+was just queued), `StudyStore::queue_recordings` queues every recording on disk the library doesn't
+have. Decisions:
+- **The date:** the recorder computes the local date when recording starts and keeps it in the
+  manifest as `recorded_on`; core sends it as `recordedOn` and has no time zone. A manifest
+  without it falls back to the UTC date of `started_at`.
+- **`startedAt`** is sent through the clock offset, like a note's `capturedAt`.
+- **Already uploaded:** when `finish` is accepted the manifest records `uploaded` (the owner's
+  Clerk id and the `seq`), and the launch queue skips it, so a recording that went to one account
+  isn't sent again under the next to sign in here. Recordings from before M1b (no `recorded_on`)
+  aren't queued at launch; they come in by migration (item 3).
+- **A recording the app died in** (no `ended_at`) is closed at launch from what is on disk: it
+  ends at its last closed chunk (`ended_at` = start + its samples), and its M4A holds the AAC
+  parts that closed, presenting no more than they hold; the open chunk and part are lost, as a
+  crash loses them. Its `finish` then carries this device's duration, rather than the dead-device
+  cron's answer two hours later. The recording still being recorded is left open.
+- **Status:** About This Recording reads the sermon item's status and says it in a line;
+  `waiting` says why (Free: Pro transcribes in the cloud; Pro without hours: they renew; Pro
+  with hours: Transcribe Now, which calls `sermons.transcribeNow` through the engine). Saving
+  details writes the manifest and the item (`set_sermon_details`: into `begin` if it hasn't gone,
+  else an edit of the item). Signing out says when it is waiting on a recording's audio.
+
 ## Tests
 
 - **Core:** encoder → packets → M4A has the recording's exact sample count; parts join to the same

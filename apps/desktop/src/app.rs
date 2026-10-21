@@ -283,6 +283,10 @@ pub struct BibleApp {
     toasts: Vec<(String, f64)>,
     /// A sermon being recorded.
     recording: Option<crate::recorder::Recording>,
+    /// How many of its AAC parts are queued for the library; `None` until it is queued at all.
+    queued_parts: Option<u32>,
+    /// Recordings on disk were queued once the sync engine had claimed the cache for the account.
+    recordings_queued: bool,
     /// The reading (online) translation can't load the chapter being read.
     offline: Option<crate::offline::Offline>,
     /// The main area (right of the sidebar), where toasts centre.
@@ -440,6 +444,8 @@ impl BibleApp {
             open_more: false,
             more_highlight: None,
             recording: None,
+            queued_parts: None,
+            recordings_queued: false,
             toasts: Vec::new(),
             offline: None,
             main_area: egui::Rect::NOTHING,
@@ -531,7 +537,10 @@ impl BibleApp {
         mine: bool,
     ) {
         let from = details.from.clone();
-        if let Err(e) = linger_core::recording::save_details(&self.data_dir, id, details) {
+        // The recording keeps them, and its sermon in the library takes them.
+        if let Err(e) = linger_core::recording::save_details(&self.data_dir, id, details.clone())
+            .and_then(|m| self.study.set_sermon_details(id, &m.details))
+        {
             self.toast(ctx, format!("Couldn't save the details: {e:#}"));
             return;
         }
@@ -1059,7 +1068,10 @@ impl BibleApp {
             Action::StartRecording(source) => {
                 if self.recording.is_none() {
                     match crate::recorder::Recording::start(&self.data_dir, source) {
-                        Ok(r) => self.recording = Some(r),
+                        Ok(r) => {
+                            self.recording = Some(r);
+                            self.queued_parts = None;
+                        }
                         Err(e) => self.toast(ctx, format!("Couldn't start recording: {e:#}")),
                     }
                 }
@@ -1067,14 +1079,23 @@ impl BibleApp {
             Action::StopRecording => {
                 if let Some(r) = self.recording.take() {
                     let mut stopped = None;
+                    let dir = r.dir(&self.data_dir);
                     let msg = match r.stop() {
                         Ok(m) => {
+                            // To the library now if sync is running; if not, when it starts.
+                            if self.sync.is_some()
+                                && self.recordings_queued
+                                && let Err(e) = self.study.queue_recording(&dir, &m)
+                            {
+                                self.toast(
+                                    ctx,
+                                    format!("Couldn't send the recording to your library: {e:#}"),
+                                );
+                            }
                             if m.duration_ms() > 0 {
                                 stopped = Some(m.clone());
                             }
                             let length = crate::recorder::duration_label(m.duration_ms() / 1000);
-                            // Transcribed in the cloud once uploaded, which the next push wires up
-                            // (docs/plans/m1b-sermons-on-convex.md, "The desktop app").
                             format!("Saved a {length} recording")
                         }
                         Err(e) => format!("Recording stopped: {e:#}"),
@@ -2568,6 +2589,8 @@ impl BibleApp {
                         });
                         self.study.on_outbox(handle.notifier());
                         self.sync = Some(handle);
+                        self.recordings_queued = false;
+                        self.queued_parts = None;
                     }
                     Err(e) => self.sync_error = Some(format!("Couldn't start syncing: {e:#}")),
                 }
@@ -2580,6 +2603,7 @@ impl BibleApp {
             }
             _ => {}
         }
+        self.queue_recordings(ctx);
         if self.sync_dirty.swap(false, Ordering::Relaxed) {
             match self.study.refresh() {
                 Ok(true) => ctx.request_repaint(),
@@ -2593,7 +2617,39 @@ impl BibleApp {
                 self.finish_sign_out(ctx);
             } else {
                 self.account.leaving = Some(waiting);
+                self.account.leaving_audio = self.study.uploading_recording();
             }
+        }
+    }
+
+    /// Recordings go to the library through the outbox once the engine has claimed the cache for
+    /// this account: every one on disk it doesn't have yet, once, then the one being recorded as
+    /// each of its parts closes.
+    fn queue_recordings(&mut self, ctx: &egui::Context) {
+        let Some(sync) = &self.sync else { return };
+        let result = if !self.recordings_queued {
+            if !sync.claimed() {
+                return;
+            }
+            self.recordings_queued = true;
+            let open = self.recording.as_ref().map(|r| r.id().to_string());
+            self.study.queue_recordings(&self.data_dir, open.as_deref())
+        } else {
+            Ok(())
+        };
+        let result = result.and_then(|()| {
+            let Some(r) = &self.recording else { return Ok(()) };
+            let parts = r.parts();
+            if self.queued_parts == Some(parts) {
+                return Ok(());
+            }
+            let dir = r.dir(&self.data_dir);
+            let Some(m) = linger_core::recording::read(&dir) else { return Ok(()) };
+            self.queued_parts = Some(parts);
+            self.study.queue_recording(&dir, &m)
+        });
+        if let Err(e) = result {
+            self.toast(ctx, format!("Couldn't send a recording to your library: {e:#}"));
         }
     }
 
@@ -3250,12 +3306,34 @@ impl eframe::App for BibleApp {
             }
         }
         if let Some(sheet) = &mut self.details_sheet {
-            match sheet.show(&ctx, p) {
+            let status = self.study.sermon_status(sheet.id());
+            use crate::details_sheet::Plan;
+            let plan = match &self.account.me {
+                Some(m) if m.is_pro() && m.sermons.hours_left > 0.0 => Plan::ProWithHours,
+                Some(m) if m.is_pro() => Plan::Pro,
+                _ => Plan::Free,
+            };
+            match sheet.show(&ctx, p, status, plan) {
                 crate::details_sheet::Outcome::Open => {}
                 crate::details_sheet::Outcome::Close => self.details_sheet = None,
                 crate::details_sheet::Outcome::Save { id, details, mine } => {
                     self.details_sheet = None;
                     self.save_recording_details(&ctx, &id, details, mine);
+                }
+                crate::details_sheet::Outcome::TranscribeNow(uid) => {
+                    use linger_core::sync::CallKind;
+                    let answer = self.sync.as_ref().map(|s| {
+                        s.call(
+                            CallKind::Mutation,
+                            "library/sermons:transcribeNow",
+                            serde_json::json!({ "uid": uid }),
+                        )
+                    });
+                    match answer {
+                        Some(Ok(_)) => self.toast(&ctx, "Transcribing in the cloud"),
+                        Some(Err(e)) => self.toast(&ctx, format!("Couldn't transcribe it now: {e}")),
+                        None => self.toast(&ctx, "Turn on sync to transcribe in the cloud"),
+                    }
                 }
             }
         }

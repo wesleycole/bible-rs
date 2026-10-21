@@ -26,6 +26,8 @@ pub struct Account {
     was_focused: bool,
     /// Signing out, waiting for this many changes to reach the library first.
     pub leaving: Option<usize>,
+    /// One of them is a sermon recording's audio, which takes longest.
+    pub leaving_audio: bool,
     /// Calls in flight; results of an abandoned sign-in (an older `attempt`) are dropped.
     pending: usize,
     attempt: u64,
@@ -56,6 +58,7 @@ impl Account {
             awaiting_browser: false,
             was_focused: true,
             leaving: None,
+            leaving_audio: false,
             pending: 0,
             attempt: 0,
             tx,
@@ -106,6 +109,7 @@ impl Account {
 
     pub fn sign_out(&mut self) {
         self.leaving = None;
+        self.leaving_audio = false;
         self.api = None;
         self.me = None;
         self.error = None;

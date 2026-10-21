@@ -5,6 +5,7 @@
 use eframe::egui::{self, Order, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 use linger_core::recording::{Details, Manifest, Source};
+use linger_core::records::ItemStatus;
 use linger_core::transcribe;
 
 use crate::pages::text;
@@ -23,6 +24,33 @@ pub enum Outcome {
         details: Details,
         mine: bool,
     },
+    /// Transcribe recording `id`, `waiting`, in the cloud now.
+    TranscribeNow(String),
+}
+
+/// What the user's plan lets a `waiting` sermon do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plan {
+    Free,
+    /// Linger Pro, with this month's transcription hours used.
+    Pro,
+    ProWithHours,
+}
+
+/// Where the recording's sermon is in the library, said in a line; `None` until the library has
+/// it. A `waiting` sermon says why.
+fn status_line(status: Option<ItemStatus>, plan: Plan) -> &'static str {
+    match status {
+        None => "Only on this Mac until your library syncs.",
+        Some(ItemStatus::Recording) => "Recording.",
+        Some(ItemStatus::Uploading) => "Uploading to your library…",
+        Some(ItemStatus::Waiting) if plan == Plan::ProWithHours => "Waiting to be transcribed.",
+        Some(ItemStatus::Waiting) if plan == Plan::Pro => "Waiting until your Pro hours renew.",
+        Some(ItemStatus::Waiting) => "Not transcribed. Linger Pro transcribes in the cloud.",
+        Some(ItemStatus::Processing | ItemStatus::Review) => "Transcribing…",
+        Some(ItemStatus::Ready) => "Transcribed, and in your library.",
+        Some(ItemStatus::Error) => "Transcription failed.",
+    }
 }
 
 pub struct DetailsSheet {
@@ -77,7 +105,18 @@ impl DetailsSheet {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, p: &Palette) -> Outcome {
+    /// `status` is the sermon's in the library now.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        status: Option<ItemStatus>,
+        plan: Plan,
+    ) -> Outcome {
         let screen = ctx.content_rect();
         let mut close = false;
         egui::Area::new(egui::Id::new("details-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
@@ -93,15 +132,22 @@ impl DetailsSheet {
         egui::Area::new(egui::Id::new("details-sheet"))
             .order(Order::Foreground)
             .fixed_pos(at)
-            .show(ctx, |ui| outcome = self.sheet(ui, p, at));
+            .show(ctx, |ui| outcome = self.sheet(ui, p, at, status, plan));
         if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             return Outcome::Close;
         }
         outcome
     }
 
-    fn sheet(&mut self, ui: &mut Ui, p: &Palette, at: egui::Pos2) -> Outcome {
-        let height = 456.0;
+    fn sheet(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        at: egui::Pos2,
+        status: Option<ItemStatus>,
+        plan: Plan,
+    ) -> Outcome {
+        let height = 482.0;
         let sheet = Rect::from_min_size(at, vec2(WIDTH, height));
         ui.allocate_rect(sheet, Sense::hover());
         let painter = ui.painter().clone();
@@ -121,8 +167,20 @@ impl DetailsSheet {
         );
         painter.hline(sheet.x_range(), sheet.top() + 51.5, Stroke::new(1.0, p.separator));
         text(&painter, x, sheet.top() + 68.0, 18.0, &self.about, theme::ui_font(13.0), p.ink_2, false);
+        let line = status_line(status, plan);
+        text(&painter, x, sheet.top() + 90.0, 18.0, line, theme::ui_font(13.0), p.ink_3, false);
+        // A Pro sermon that waited for hours, now there are some.
+        if status == Some(ItemStatus::Waiting) && plan == Plan::ProWithHours {
+            let w = widgets::plain_button_width(ui, "Transcribe Now");
+            let r = Rect::from_min_size(pos2(sheet.right() - PAD - w, sheet.top() + 84.0), vec2(w, 28.0));
+            if widgets::plain_button(ui, p, r, "Transcribe Now", egui::Id::new("details-transcribe"))
+                .clicked()
+            {
+                return Outcome::TranscribeNow(self.id.clone());
+            }
+        }
 
-        let mut y = sheet.top() + 104.0;
+        let mut y = sheet.top() + 130.0;
         let fields: [(&str, &mut String, &str, &str); 3] = [
             ("Title", &mut self.title, &self.untitled, "details-title"),
             ("Preacher", &mut self.speaker, "Who preached", "details-speaker"),

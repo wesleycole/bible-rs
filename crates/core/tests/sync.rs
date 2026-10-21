@@ -37,6 +37,7 @@ impl Device {
         let handle =
             sync::start(&self.dir, Box::new(server.backend()), Arc::new(StaticToken(token.into()))).unwrap();
         self.store.on_outbox(handle.notifier());
+        eventually(|| handle.claimed());
         self.sync = Some(handle);
     }
 
@@ -615,23 +616,32 @@ fn another_account_signing_in_never_sees_the_last_ones_library() {
     assert!(first.highlight(VerseId::from(verse(1, 1))).is_none());
 }
 
+/// The local day a test recording says it was made on.
+const RECORDED_ON: &str = "2026-10-18";
+
+/// A moving tone, so the encoder has something to encode.
+fn tone(seconds: u32) -> Vec<i16> {
+    use linger_core::recording::SAMPLE_RATE;
+    (0..SAMPLE_RATE * seconds)
+        .map(|i| {
+            let t = f64::from(i) / f64::from(SAMPLE_RATE);
+            ((t * (300.0 + 50.0 * (t * 0.7).sin()) * std::f64::consts::TAU).sin() * 6000.0) as i16
+        })
+        .collect()
+}
+
 /// Records `seconds` of a moving tone in `data`, queueing the recording for the server as a
 /// recorder does: at the start, as each part closes, and at the end.
 fn record(device: &mut Device, seconds: u32) -> (PathBuf, linger_core::recording::Manifest) {
     use linger_core::recording::{ChunkWriter, SAMPLE_RATE, Source};
-    let mut w = ChunkWriter::create(&device.dir, Source::Microphone).unwrap();
+    let mut w = ChunkWriter::create(&device.dir, Source::Microphone, Some(RECORDED_ON.into())).unwrap();
     let dir = w.dir().to_path_buf();
     let queue = |device: &mut Device| {
         let m = linger_core::recording::read(&dir).unwrap();
         device.store.queue_recording(&dir, &m).unwrap();
     };
     queue(device);
-    let pcm: Vec<i16> = (0..SAMPLE_RATE * seconds)
-        .map(|i| {
-            let t = f64::from(i) / f64::from(SAMPLE_RATE);
-            ((t * (300.0 + 50.0 * (t * 0.7).sin()) * std::f64::consts::TAU).sin() * 6000.0) as i16
-        })
-        .collect();
+    let pcm = tone(seconds);
     let mut parts = 0;
     for block in pcm.chunks(SAMPLE_RATE as usize / 10) {
         w.push(block).unwrap();
@@ -704,4 +714,62 @@ fn a_sermons_transcript_arrives_beside_its_recording() {
     let t = linger_core::transcribe::load(&a.dir, &m.id).expect("the transcript, beside the recording");
     assert_eq!(t.text.segments[0].text, "Turn to Romans 8.");
     assert_eq!(linger_core::transcribe::all(&a.dir).len(), 1);
+}
+
+#[test]
+fn a_recording_the_library_has_is_not_queued_again_after_another_account_signs_in() {
+    let first = FakeServer::new();
+    let mut a = Device::new("sermon-owner");
+    a.start_as(&first, USER_1);
+    let (dir, m) = record(&mut a, 3);
+    a.settle(&first);
+    let item = first.item(&m.id).expect("the sermon");
+    assert_eq!(item.recorded_on.as_deref(), Some(RECORDED_ON), "the device's day, not UTC's");
+    let started = item.details.expect("details").started_at;
+    assert_eq!(started, (m.started_at * 1000 + a.sync.as_ref().unwrap().clock_offset_ms()) as u64);
+    let marked = linger_core::recording::read(&dir).unwrap().uploaded.expect("marked uploaded");
+    assert_eq!((marked.owner.as_str(), marked.seq), ("user_1", item.seq));
+
+    // Another account signs in on this Mac (the cache is forgotten), and sync starts.
+    let second = FakeServer::new();
+    a.stop();
+    a.start_as(&second, USER_2);
+    a.store.queue_recordings(&a.dir.clone(), None).unwrap();
+    a.settle(&second);
+    assert!(second.item(&m.id).is_none() && second.finished_sermons().is_empty());
+}
+
+/// The app was killed mid-recording: at the next start the recording ends at its last closed
+/// chunk and goes, with the AAC parts that closed.
+#[test]
+fn an_interrupted_recording_is_finished_from_what_is_on_disk() {
+    use linger_core::recording::{ChunkWriter, SAMPLE_RATE, Source};
+    let server = FakeServer::new();
+    let mut a = Device::new("sermon-killed");
+    a.start(&server);
+    let mut w = ChunkWriter::create(&a.dir, Source::Microphone, Some(RECORDED_ON.into())).unwrap();
+    let dir = w.dir().to_path_buf();
+    a.store.queue_recording(&dir, &linger_core::recording::read(&dir).unwrap()).unwrap();
+    for block in tone(5 * 60 + 40).chunks(SAMPLE_RATE as usize / 10) {
+        w.push(block).unwrap();
+    }
+    // Killed: nothing is finished or flushed.
+    std::mem::forget(w);
+    // The one being recorded is left alone.
+    a.store.queue_recordings(&a.dir.clone(), Some(dir.file_name().unwrap().to_str().unwrap())).unwrap();
+    a.settle(&server);
+    assert!(server.finished_sermons().is_empty());
+
+    a.store.queue_recordings(&a.dir.clone(), None).unwrap();
+    a.settle(&server);
+    let finished = server.finished_sermons();
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0]["durationMs"], 11 * 30 * 1000, "eleven closed chunks");
+    let m = linger_core::recording::read(&dir).unwrap();
+    assert_eq!(m.ended_at, Some(m.started_at + 330));
+    #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+    {
+        let m4a = std::fs::read(dir.join("audio.m4a")).unwrap();
+        assert_eq!(server.joined_files(&m.id, "uploadPart"), (1, m4a), "the one closed part's M4A");
+    }
 }

@@ -33,12 +33,16 @@ struct Shared {
     /// f32 bits: the level of the latest block, 0–1.
     level: AtomicU32,
     samples: AtomicU64,
+    /// AAC parts closed so far: the app queues each for the library as it closes.
+    parts: AtomicU32,
 }
 
 impl Recording {
     /// Starts capturing, or fails at once if the source can't be opened.
     pub fn start(data_dir: &Path, source: Source) -> Result<Self> {
-        let mut writer = ChunkWriter::create(data_dir, source)?;
+        let l = crate::time::local(linger_core::study::now());
+        let today = format!("{:04}-{:02}-{:02}", l.year, l.month, l.day);
+        let mut writer = ChunkWriter::create(data_dir, source, Some(today))?;
         let id = writer.id().to_string();
         let shared = Arc::new(Shared::default());
         let (opened_tx, opened_rx) = std::sync::mpsc::channel();
@@ -79,6 +83,7 @@ impl Recording {
                     }
                     shared.level.store(recording::level(&block).to_bits(), Ordering::Relaxed);
                     shared.samples.store(writer.samples(), Ordering::Relaxed);
+                    shared.parts.store(writer.closed_parts(), Ordering::Relaxed);
                 }
                 // The app heard playing most often.
                 writer.set_app(apps.into_iter().max_by_key(|(_, n)| *n).map(|(app, _)| app));
@@ -114,6 +119,16 @@ impl Recording {
     /// Length of audio captured so far.
     pub fn elapsed(&self) -> Duration {
         Duration::from_millis(self.shared.samples.load(Ordering::Relaxed) * 1000 / u64::from(SAMPLE_RATE))
+    }
+
+    /// AAC parts closed so far.
+    pub fn parts(&self) -> u32 {
+        self.shared.parts.load(Ordering::Relaxed)
+    }
+
+    /// The recording's folder.
+    pub fn dir(&self, data_dir: &Path) -> std::path::PathBuf {
+        recording::recordings_dir(data_dir).join(&self.id)
     }
 
     /// Capture ended by itself (the device went away); [`stop`](Self::stop) returns why.
