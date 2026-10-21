@@ -356,7 +356,7 @@ pub fn read_lexicon(conf: &SwordConf, files: &dyn ModuleFiles) -> Result<Vec<Lex
     };
     let mut blocks: HashMap<usize, Vec<u8>> = HashMap::new();
     let mut out = Vec::new();
-    for rec in idx.chunks_exact(8) {
+    for rec in idx.as_chunks::<8>().0 {
         let (off, size) = (u32_at(rec, 0)?, u32_at(rec, 4)?);
         let dat_rec = dat.get(off..off + size).context("dictionary key out of range")?;
         let nl = dat_rec.iter().position(|&b| b == b'\n').context("dictionary key without a newline")?;
