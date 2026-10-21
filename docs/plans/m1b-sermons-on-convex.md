@@ -195,7 +195,10 @@ have. Decisions:
   empty, or says what is still waiting for the next sync.
 - **Encoder fix (a2fba85):** before it, the encoder's input callback handed AudioToolbox memory
   that moved after each drain, so AAC parts recorded on dev or locally before a2fba85 may be
-  corrupt from packet 4 on. Production has none; nothing else is done for them.
+  corrupt from packet 4 on. Production has none; nothing else is done for them. Parts recorded
+  after it were checked against their source: six minutes of speech through the recorder's path
+  (`ChunkWriter`, a part boundary, `write_m4a`), decoded with `afconvert`, correlate 0.993 with
+  the input at lag 0, with every sample present.
 
 **Built (October 21), item 3, smaller than planned:** a recording from before M1b that was
 transcribed here is imported when sync starts, once (outbox kind `sermon_import`): its transcript
