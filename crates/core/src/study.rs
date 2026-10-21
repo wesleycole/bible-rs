@@ -2413,6 +2413,8 @@ pub(crate) mod cache {
         pub chat: bool,
         pub uid: String,
         pub url: String,
+        /// The item a text file belongs to.
+        pub owner: Option<String>,
     }
 
     /// Files the cache doesn't have yet. Text files are fetched as soon as they're known (they're
@@ -2420,11 +2422,15 @@ pub(crate) mod cache {
     pub(crate) fn to_fetch(conn: &Connection) -> Result<Vec<Fetch>> {
         let mut out = Vec::new();
         for (chat, sql) in [
-            (true, "SELECT uid, url FROM chats WHERE deleted = 0 AND fetched = 0 AND IFNULL(url, '') != ''"),
-            (false, "SELECT uid, url FROM files WHERE role = 'text' AND path = ''"),
+            (
+                true,
+                "SELECT uid, url, NULL FROM chats WHERE deleted = 0 AND fetched = 0 AND IFNULL(url, '') != ''",
+            ),
+            (false, "SELECT uid, url, owner FROM files WHERE role = 'text' AND path = ''"),
         ] {
             let mut st = conn.prepare_cached(sql)?;
-            let rows = st.query_map([], |r| Ok(Fetch { chat, uid: r.get(0)?, url: r.get(1)? }))?;
+            let rows =
+                st.query_map([], |r| Ok(Fetch { chat, uid: r.get(0)?, url: r.get(1)?, owner: r.get(2)? }))?;
             out.extend(rows.collect::<Result<Vec<_>, _>>()?);
         }
         Ok(out)
@@ -2447,6 +2453,16 @@ pub(crate) mod cache {
                 "UPDATE files SET path = ?2 WHERE uid = ?1",
                 params![f.uid, path.to_string_lossy()],
             )?;
+            // A sermon recorded here: its transcript goes beside the recording too, where the
+            // details sheet and Ask's sermon search read it.
+            let recording = f
+                .owner
+                .as_ref()
+                .zip(files_dir.parent())
+                .map(|(o, d)| crate::recording::recordings_dir(d).join(o));
+            if let Some(dir) = recording.filter(|d| d.is_dir()) {
+                let _ = crate::transcribe::keep(&dir, bytes);
+            }
         }
         Ok(())
     }

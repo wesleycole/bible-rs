@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use eframe::egui::{self, Align2, Frame, Id, Key, Modifiers, Sense, Stroke, Ui, vec2};
 use linger_core::books::{BookId, ChapterIdx, VerseRef};
 use linger_core::library::Library;
@@ -210,8 +210,6 @@ impl History {
 
 pub enum TaskResult {
     Bibles(Result<Vec<linger_core::online::apibible::RemoteBible>, String>),
-    /// A sermon finished transcribing (or couldn't be).
-    Transcribed(Result<linger_core::transcribe::Transcript, String>),
 }
 
 /// `LINGER_SCROLL_PROBE`: scrolls continuously and records how long each frame's UI takes.
@@ -552,20 +550,13 @@ impl BibleApp {
         }
     }
 
-    fn poll_tasks(&mut self, ctx: &egui::Context) {
+    fn poll_tasks(&mut self) {
         while let Ok(r) = self.task_rx.try_recv() {
             match r {
                 TaskResult::Bibles(r) => {
                     if let Some(s) = &mut self.settings_ui {
                         s.bibles_loaded(r);
                     }
-                }
-                TaskResult::Transcribed(Ok(t)) => {
-                    let words: usize = t.segments.iter().map(|s| s.text.split_whitespace().count()).sum();
-                    self.toast(ctx, format!("Transcribed the sermon: {words} words. Ask can search it now."));
-                }
-                TaskResult::Transcribed(Err(e)) => {
-                    self.toast(ctx, format!("Couldn't transcribe the sermon: {e}"))
                 }
             }
         }
@@ -1082,32 +1073,9 @@ impl BibleApp {
                                 stopped = Some(m.clone());
                             }
                             let length = crate::recorder::duration_label(m.duration_ms() / 1000);
-                            // A developer's own AssemblyAI key wins; otherwise Linger's
-                            // server, as the signed-in account.
-                            let aai = linger_core::transcribe::AssemblyAi::from_env();
-                            let api = self.account.api().cloned();
-                            if m.chunks.is_empty() || (aai.is_none() && api.is_none()) {
-                                format!("Saved a {length} recording")
-                            } else {
-                                let (tx, data_dir, ctx2) =
-                                    (self.task_tx.clone(), self.data_dir.clone(), ctx.clone());
-                                std::thread::spawn(move || {
-                                    let r = match (aai, api) {
-                                        (Some(aai), _) => aai.transcribe(&data_dir, &m, |_| {}),
-                                        (None, api) => api.context("sign in to transcribe").and_then(|api| {
-                                            linger_core::transcribe::transcribe_via_proxy(
-                                                &api,
-                                                &data_dir,
-                                                &m,
-                                                |_| {},
-                                            )
-                                        }),
-                                    };
-                                    let _ = tx.send(TaskResult::Transcribed(r.map_err(|e| format!("{e:#}"))));
-                                    ctx2.request_repaint();
-                                });
-                                format!("Saved a {length} recording. Transcribing it…")
-                            }
+                            // Transcribed in the cloud once uploaded, which the next push wires up
+                            // (docs/plans/m1b-sermons-on-convex.md, "The desktop app").
+                            format!("Saved a {length} recording")
                         }
                         Err(e) => format!("Recording stopped: {e:#}"),
                     };
@@ -2824,7 +2792,7 @@ impl eframe::App for BibleApp {
             }
             ctx.request_repaint();
         }
-        self.poll_tasks(&ctx);
+        self.poll_tasks();
         for msg in self.account.poll(&ctx) {
             self.toast(&ctx, msg);
         }

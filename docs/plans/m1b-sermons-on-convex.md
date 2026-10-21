@@ -86,6 +86,18 @@ transcription (M5), the digest (M2), playback of synced audio in the desktop app
    through the change feed as the item's `text` file and are cached as `transcript.json` beside the
    recording, so `transcribe::all` and the details sheet keep working. Development uses a dev Convex
    deployment, like everything else.
+   **Built (October 21):** both backends are gone, and with them `linger transcribe` and the
+   desktop's transcribe-on-stop, until the desktop half queues its recordings (between those two
+   pushes the Mac saves recordings untranscribed). `transcribe::Transcript` is a wrapper: the
+   recording's id and start, and `text`, a `records::Transcript`; `transcribe::Segment` is
+   `records::Segment`. When a sermon's `text` file is fetched and the sermon was recorded on this
+   device, the cache keeps it beside the recording as `transcript.json` (the library's camelCase
+   shape); files that earlier builds wrote are still read. A sermon recorded elsewhere isn't
+   copied beside a recording (there is none here); Ask reads it once M2 reads transcripts from the
+   library.
+   **For M5:** `sermon_end` reads the whole M4A into memory and slices copies (tens of MB for two
+   hours); fine on the Mac, and sign-out waits on it, which the desktop should show. On iOS the
+   slices should stream from the file.
 7. **Migration of recordings**: details and transcript first (the recording's UUID becomes the item's
    `uid`, the transcript its `text` file), so they're searchable at once; then, for Pro users only, the
    audio encoded from the WAV chunks and muxed in the background, uploaded in slices. Free users' audio

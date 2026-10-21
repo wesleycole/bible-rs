@@ -623,7 +623,7 @@ impl Tools {
         let mut out = Vec::new();
         for t in self.sermons.iter() {
             let voices = several_speakers(t);
-            for seg in &t.segments {
+            for seg in &t.text.segments {
                 let words: Vec<&str> = seg.text.split_whitespace().collect();
                 let norm: Vec<String> = words
                     .iter()
@@ -946,7 +946,7 @@ fn sermon_summary(t: &Transcript) -> Value {
     if let Some(p) = &t.about.passage {
         v["passage"] = p.as_str().into();
     }
-    v["length"] = transcribe::clock(t.duration_ms).into();
+    v["length"] = transcribe::clock(t.text.duration_ms).into();
     v
 }
 
@@ -964,7 +964,7 @@ fn attribution(t: &Transcript, v: &mut Value) {
 /// Whether the transcriber heard more than one voice. With one, its label ("A") tells the model
 /// nothing and would only be repeated as if it were a name.
 fn several_speakers(t: &Transcript) -> bool {
-    let mut voices = t.segments.iter().filter_map(|s| s.speaker.as_deref());
+    let mut voices = t.text.segments.iter().filter_map(|s| s.speaker.as_deref());
     let first = voices.next();
     voices.any(|v| Some(v) != first)
 }
@@ -975,7 +975,7 @@ fn read_sermon(t: &Transcript, from: u64, to: u64) -> Value {
     let mut truncated = false;
     let mut turns = Vec::new();
     let voices = several_speakers(t);
-    for seg in t.segments.iter().filter(|s| s.end_ms > from && s.start_ms < to) {
+    for seg in t.text.segments.iter().filter(|s| s.end_ms > from && s.start_ms < to) {
         let n = seg.text.split_whitespace().count();
         if words + n > SERMON_WORDS && !turns.is_empty() {
             truncated = true;
@@ -991,7 +991,7 @@ fn read_sermon(t: &Transcript, from: u64, to: u64) -> Value {
     }
     let mut v = sermon_summary(t);
     v["turns"] = turns.into();
-    v["truncated"] = (truncated || t.segments.iter().any(|s| s.start_ms >= to)).into();
+    v["truncated"] = (truncated || t.text.segments.iter().any(|s| s.start_ms >= to)).into();
     v
 }
 
@@ -1122,13 +1122,15 @@ mod tests {
         Transcript {
             recording_id: "a40671b1-af55-4640-b039-ebbb5b09900e".into(),
             recorded_at: 1_792_368_000,
-            duration_ms: 1_800_000,
-            language: Some("en".into()),
-            segments: vec![
-                seg(0, 60_000, "Good morning, church. Turn with me to John chapter three."),
-                seg(60_000, 260_000, &long),
-                seg(900_000, 960_000, "The wind blows where it wishes; new birth is God's work."),
-            ],
+            text: crate::records::Transcript {
+                duration_ms: 1_800_000,
+                language: Some("en".into()),
+                segments: vec![
+                    seg(0, 60_000, "Good morning, church. Turn with me to John chapter three."),
+                    seg(60_000, 260_000, &long),
+                    seg(900_000, 960_000, "The wind blows where it wishes; new birth is God's work."),
+                ],
+            },
             about: Default::default(),
         }
     }

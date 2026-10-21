@@ -881,6 +881,30 @@ impl FakeServer {
         (n, s.joined(owner, role))
     }
 
+    /// What the transcription workflow does at its end: stores `transcript` as the sermon's `text`
+    /// file and marks it `ready`.
+    pub fn transcribed(&self, uid: &str, transcript: &[u8]) {
+        let mut s = self.lock();
+        let storage = format!("storage-text-{uid}");
+        s.uploads.insert(storage.clone(), transcript.to_vec());
+        let file_uid = format!("text-{uid}");
+        s.files.insert(file_uid.clone(), (Some(uid.into()), "text".into(), storage.clone()));
+        let seq = s.next_seq();
+        let item = s.items.get_mut(uid).expect("a sermon");
+        item.files.push(crate::records::FileRef {
+            uid: file_uid.clone(),
+            role: crate::records::FileRole::Text,
+            content_type: "application/json".into(),
+            bytes: transcript.len() as u64,
+            url: format!("fake://storage/{storage}"),
+            page: None,
+            duration_ms: None,
+        });
+        (item.seq, item.status, item.text_file_uid, item.updated_at) =
+            (seq, ItemStatus::Ready, Some(file_uid), Some(now_ms() as u64));
+        s.wrote();
+    }
+
     /// The arguments of each `sermons.finish` so far.
     pub fn finished_sermons(&self) -> Vec<Value> {
         self.lock().finished.clone()

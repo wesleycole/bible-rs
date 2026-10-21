@@ -688,3 +688,20 @@ fn a_recording_without_audio_upload_sends_only_its_begin_and_finish() {
     assert!(finished[0].get("audioFileUid").is_none(), "{}", finished[0]);
     assert_eq!(finished[0]["uid"], m.id.as_str());
 }
+
+#[test]
+fn a_sermons_transcript_arrives_beside_its_recording() {
+    let server = FakeServer::new();
+    let mut a = Device::new("sermon-text");
+    a.start(&server);
+    let (_, m) = record(&mut a, 3);
+    a.settle(&server);
+    assert!(linger_core::transcribe::load(&a.dir, &m.id).is_none());
+
+    let text = br#"{"durationMs":3000,"segments":[{"startMs":0,"endMs":3000,"speaker":"A","text":"Turn to Romans 8."}]}"#;
+    server.transcribed(&m.id, text);
+    a.settle(&server);
+    let t = linger_core::transcribe::load(&a.dir, &m.id).expect("the transcript, beside the recording");
+    assert_eq!(t.text.segments[0].text, "Turn to Romans 8.");
+    assert_eq!(linger_core::transcribe::all(&a.dir).len(), 1);
+}

@@ -292,15 +292,6 @@ impl Api {
     pub fn delete_account(&self) -> Result<(), ApiError> {
         self.send("DELETE", "/v1/account", None).map(drop)
     }
-
-    pub(crate) fn json_call(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&Value>,
-    ) -> Result<Value, ApiError> {
-        self.json(method, path, body)
-    }
 }
 
 fn url_of(v: Value) -> Result<String, ApiError> {

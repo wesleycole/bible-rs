@@ -10,7 +10,6 @@
 //! linger import-notes <export.json>
 //! linger record [--source mic|system] [--seconds N]   (Enter stops)
 //! linger ask "what does born of water mean?" [--at "jn 3:5"] [--translation kjv] [--deep]
-//! linger transcribe [<recording-id>]   (the latest untranscribed recording by default)
 //! linger signin | signout [--force] | account    (Linger's account, for Ask and cloud transcripts)
 //! linger sync [--wait] [--timeout 120]   (sends local changes, pulls the library; prints the cursor)
 //! linger sermons
@@ -62,7 +61,6 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         "import-notes" => import_notes(rest, data_dir),
         "record" => record(rest, data_dir),
         "ask" => ask(rest, data_dir),
-        "transcribe" => transcribe(rest, data_dir),
         "signin" => signin(data_dir),
         "signout" => signout(rest, data_dir),
         "sync" => sync(rest, data_dir),
@@ -308,31 +306,6 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn transcribe(rest: &[String], data_dir: &Path) -> Result<()> {
-    use linger_core::{recording, transcribe};
-    let all = recording::list(data_dir);
-    let m = match positional(rest).first() {
-        Some(id) => {
-            all.iter().find(|m| m.id.starts_with(id.as_str())).context("no recording with that id")?
-        }
-        None => all
-            .iter()
-            .find(|m| m.ended_at.is_some() && transcribe::load(data_dir, &m.id).is_none())
-            .context("every recording is transcribed")?,
-    };
-    // A developer key goes straight to AssemblyAI; otherwise through Linger's proxy.
-    let t = match (transcribe::AssemblyAi::from_env(), signed_in(data_dir)) {
-        (Some(aai), _) => aai.transcribe(data_dir, m, |s| eprintln!("{s}…"))?,
-        (None, Some(api)) => transcribe::transcribe_via_proxy(&api, data_dir, m, |s| eprintln!("{s}…"))?,
-        (None, None) => bail!("sign in with `linger signin` (or set ASSEMBLYAI_API_KEY) to transcribe"),
-    };
-    for s in &t.segments {
-        println!("[{}] {}: {}", transcribe::clock(s.start_ms), s.speaker.as_deref().unwrap_or("?"), s.text);
-    }
-    eprintln!("Saved {}", transcribe::path(data_dir, &m.id).display());
-    Ok(())
-}
-
 /// The proxy client, when this device is signed in.
 fn signed_in(data_dir: &Path) -> Option<linger_core::api::Api> {
     let store = linger_core::secrets::SecretStore::new(data_dir);
@@ -432,7 +405,7 @@ fn account(data_dir: &Path) -> Result<()> {
 fn sermons(data_dir: &Path) -> Result<()> {
     use linger_core::transcribe;
     for t in transcribe::all(data_dir) {
-        let words: usize = t.segments.iter().map(|s| s.text.split_whitespace().count()).sum();
+        let words: usize = t.text.segments.iter().map(|s| s.text.split_whitespace().count()).sum();
         let d = &t.about.details;
         let by: Vec<&str> = [d.speaker.as_deref(), d.from.as_deref()].into_iter().flatten().collect();
         let by = if by.is_empty() { String::new() } else { format!("  ({})", by.join(", ")) };
@@ -440,7 +413,7 @@ fn sermons(data_dir: &Path) -> Result<()> {
             "{}  {}{by}  {}  {words} words",
             t.recording_id,
             t.title(),
-            transcribe::clock(t.duration_ms)
+            transcribe::clock(t.text.duration_ms)
         );
     }
     Ok(())
