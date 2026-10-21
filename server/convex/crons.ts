@@ -4,8 +4,6 @@ import { internal } from "./_generated/api.js"
 const crons = cronJobs()
 
 crons.interval("sweep reservations", { minutes: 5 }, internal.usage.sweepReservations)
-crons.interval("fail stuck sermons", { hours: 1 }, internal.maintenance.failStuckSermons)
-crons.interval("expire transcripts", { hours: 1 }, internal.sermons.expire)
 crons.interval("check transcription jobs", { hours: 1 }, internal.library.sermons.checkJobs, {})
 crons.interval("finish dead recordings", { hours: 1 }, internal.library.sermons.finishDead, {})
 crons.daily("reconcile App Store", { hourUTC: 7, minuteUTC: 0 }, internal.maintenance.reconcileAppStore)

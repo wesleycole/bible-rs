@@ -23,7 +23,7 @@ export class AllowanceExhausted extends Schema.TaggedError<AllowanceExhausted>()
 export class PlanRequired extends Schema.TaggedError<PlanRequired>()("PlanRequired", fields) {}
 /** 404: no such record (or not this user's). */
 export class NotFound extends Schema.TaggedError<NotFound>()("NotFound", fields) {}
-/** 409: an Ask contract this proxy no longer serves. */
+/** 409: an Ask contract, or a route, this proxy no longer serves. */
 export class ContractUnsupported extends Schema.TaggedError<ContractUnsupported>()("ContractUnsupported", fields) {}
 /** 413: the conversation is too long, or a file is over the storage limit. */
 export class TooLarge extends Schema.TaggedError<TooLarge>()("TooLarge", fields) {}

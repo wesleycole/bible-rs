@@ -6,7 +6,7 @@
 import { Config, Context, Effect, Layer, Option, Redacted } from "effect"
 
 export interface Settings {
-  /** The proxy's own base URL: webhook callbacks and local blob URLs point here. */
+  /** The proxy's own base URL, which Clerk's webhook is verified against. */
   readonly publicUrl: string
   readonly convexUrl: string
   readonly serverSecret: Redacted.Redacted<string>
@@ -22,13 +22,6 @@ export interface Settings {
     readonly url: string
     /** Used only when no Vercel OIDC token is available (local development). */
     readonly apiKey: Redacted.Redacted<string> | undefined
-  }
-  readonly assemblyAi: { readonly apiKey: Redacted.Redacted<string> | undefined }
-  readonly blob: {
-    readonly driver: "vercel" | "local"
-    readonly token: Redacted.Redacted<string> | undefined
-    readonly storeId: string | undefined
-    readonly localDir: string
   }
   readonly apple: {
     readonly bundleId: string | undefined
@@ -67,9 +60,6 @@ export class AppConfig extends Context.Service<AppConfig, Settings>()("linger/se
   static readonly layer = Layer.effect(
     AppConfig,
     Effect.gen(function*() {
-      const blobToken = yield* optionalSecret("BLOB_READ_WRITE_TOKEN")
-      const blobStoreId = yield* optional(Config.String("BLOB_STORE_ID"))
-      const onVercel = Option.isSome(yield* Config.option(Config.String("VERCEL")))
       return AppConfig.of({
         publicUrl: (yield* publicUrl).replace(/\/$/, ""),
         convexUrl: yield* Config.String("CONVEX_URL"),
@@ -87,15 +77,6 @@ export class AppConfig extends Context.Service<AppConfig, Settings>()("linger/se
         gateway: {
           url: yield* Config.String("AI_GATEWAY_URL").pipe(Config.withDefault("https://ai-gateway.vercel.sh")),
           apiKey: yield* optionalSecret("AI_GATEWAY_API_KEY")
-        },
-        assemblyAi: { apiKey: yield* optionalSecret("ASSEMBLYAI_API_KEY", "ASSEMBLY_AI_API_KEY") },
-        blob: {
-          driver: yield* Config.Literals(["vercel", "local"], "BLOB_DRIVER").pipe(
-            Config.withDefault(blobToken !== undefined || (onVercel && blobStoreId !== undefined) ? "vercel" : "local")
-          ),
-          token: blobToken,
-          storeId: blobStoreId,
-          localDir: yield* Config.String("LOCAL_BLOB_DIR").pipe(Config.withDefault(".data/blob"))
         },
         apple: {
           bundleId: yield* optional(Config.String("APPLE_BUNDLE_ID")),
@@ -130,8 +111,6 @@ export class AppConfig extends Context.Service<AppConfig, Settings>()("linger/se
         serverSecret: Redacted.make("test-secret"),
         clerk: { secretKey: undefined, jwtKey: undefined, issuer: undefined, authorizedParties: [], webhookSecret: undefined },
         gateway: { url: "http://gateway.test", apiKey: Redacted.make("gateway-key") },
-        assemblyAi: { apiKey: undefined },
-        blob: { driver: "local", token: undefined, storeId: undefined, localDir: ".data/test-blob" },
         apple: {
           bundleId: undefined,
           appAppleId: undefined,

@@ -15,11 +15,9 @@ import { AppConfig } from "../src/services/AppConfig.js"
 import { AppStore } from "../src/services/AppStore.js"
 import { Auth } from "../src/services/Auth.js"
 import { Background } from "../src/services/Background.js"
-import { Blob } from "../src/services/Blob.js"
 import { Gateway, type GatewayService } from "../src/services/Gateway.js"
 import { Store } from "../src/services/Store.js"
 import { Stripe } from "../src/services/Stripe.js"
-import { Transcriber } from "../src/services/Transcriber.js"
 import { UpstreamUnavailable } from "../src/Errors.js"
 
 export const SECRET = "test-secret"
@@ -94,8 +92,6 @@ export const fakeGateway = (): FakeGateway & { layer: Layer.Layer<Gateway> } => 
 const unavailable = Effect.fail(new UpstreamUnavailable({ message: "not in tests" }))
 
 export const vendorFakes = Layer.mergeAll(
-  Layer.succeed(Blob, Blob.of({ uploadTarget: () => unavailable, size: () => unavailable, transcriberSource: () => unavailable, delete: () => Effect.void })),
-  Layer.succeed(Transcriber, Transcriber.of({ start: () => unavailable, get: () => unavailable, delete: () => Effect.void })),
   Layer.succeed(AppStore, AppStore.of({ verifyTransaction: () => unavailable, verifyNotification: () => unavailable, history: () => unavailable })),
   Layer.succeed(
     Stripe,
@@ -125,7 +121,7 @@ export const storeFor = (t: TestConvex) =>
 export const makeApp = (layers: {
   readonly t: TestConvex
   readonly gateway?: Layer.Layer<Gateway>
-  readonly vendors?: Layer.Layer<Blob | Transcriber | AppStore | Stripe>
+  readonly vendors?: Layer.Layer<AppStore | Stripe>
   readonly config?: Parameters<typeof AppConfig.layerTest>[0]
 }) => {
   const services = Layer.mergeAll(

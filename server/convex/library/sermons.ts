@@ -63,7 +63,7 @@ const writeItem = Effect.fnUntraced(function*(
   patch: Partial<Doc<"items">>
 ): Effect.fn.Return<Doc<"items">, never, MutationCtx | Sequence> {
   const ctx = yield* MutationCtx
-  const item = (yield* db(() => ctx.db.get(sermon.itemId!)))!
+  const item = (yield* db(() => ctx.db.get(sermon.itemId)))!
   const files = yield* filesOf(sermon, item)
   const seq = yield* (yield* Sequence).next
   const updatedAt = yield* Clock.currentTimeMillis
@@ -323,7 +323,7 @@ export const itemOf = effectInternalQuery({
   args: { sermonId: v.id("sermons") },
   handler: Effect.fn("sermons.itemOf")(function*({ sermonId }) {
     const ctx = yield* QueryCtx
-    return { itemId: (yield* db(() => ctx.db.get(sermonId)))!.itemId! }
+    return { itemId: (yield* db(() => ctx.db.get(sermonId)))!.itemId }
   })
 })
 
@@ -333,7 +333,7 @@ export const pieces = effectInternalQuery({
   handler: Effect.fn("sermons.pieces")(function*({ sermonId }) {
     const ctx = yield* QueryCtx
     const sermon = (yield* db(() => ctx.db.get(sermonId)))!
-    const item = (yield* db(() => ctx.db.get(sermon.itemId!)))!
+    const item = (yield* db(() => ctx.db.get(sermon.itemId)))!
     const rows = yield* db(() => ctx.db.query("files").withIndex("by_owner", (q) => q.eq("userId", sermon.userId).eq("ownerUid", item.uid)).collect())
     const audio = rows.find((f) => f.role === "audio")
     if (audio) return { audio: { url: audio.url }, expected: undefined, contentType: audio.contentType, slices: [] }
@@ -353,7 +353,7 @@ export const joined = effectInternalMutation({
   handler: Effect.fn("sermons.joined")(function*({ sermonId, storageId, sha256 }) {
     const ctx = yield* MutationCtx
     const sermon = (yield* db(() => ctx.db.get(sermonId)))!
-    const item = (yield* db(() => ctx.db.get(sermon.itemId!)))!
+    const item = (yield* db(() => ctx.db.get(sermon.itemId)))!
     return yield* asOwner(
       sermon,
       Effect.gen(function*() {
@@ -435,7 +435,7 @@ export const settle = effectInternalMutation({
     const sermon = (yield* db(() => ctx.db.get(sermonId)))!
     // A step retried after it went through: the first run settled it.
     if (sermon.status !== "transcribing") return false
-    const item = (yield* db(() => ctx.db.get(sermon.itemId!)))!
+    const item = (yield* db(() => ctx.db.get(sermon.itemId)))!
     const audioSeconds = Math.ceil(transcript.durationMs / 1000)
     const doneAt = yield* Clock.currentTimeMillis
     yield* db(() => ctx.db.patch(sermon._id, { status: "done", audioSeconds, doneAt }))

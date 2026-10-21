@@ -1,16 +1,13 @@
 import { createHmac, randomBytes } from "node:crypto"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import StripeSdk from "stripe"
 import { Effect, Layer, Redacted } from "effect"
 import { SseMeter } from "../src/SseMeter.js"
-import { reachable, wavSizeAgrees } from "../src/routes/Json.js"
 import { AppConfig } from "../src/services/AppConfig.js"
 import { type AppleEntitlement, AppStore, entitlementFrom } from "../src/services/AppStore.js"
-import { Blob } from "../src/services/Blob.js"
 import { entitlementOfSubscription, Stripe, type SubscriptionState } from "../src/services/Stripe.js"
-import { type Job, Transcriber } from "../src/services/Transcriber.js"
 import { UpstreamFailed, UpstreamUnavailable } from "../src/Errors.js"
-import { accountOf, answer, api, get, makeApp, makeConvex, post, SECRET, sse, type TestConvex } from "./harness.js"
+import { accountOf, answer, api, get, makeApp, makeConvex, post, SECRET, sse } from "./harness.js"
 
 const bytes = (s: string) => new TextEncoder().encode(s)
 
@@ -46,22 +43,6 @@ describe("SseMeter", () => {
 })
 
 describe("pure policy", () => {
-  it("accepts a WAV size only near its duration's 16 kHz mono size", () => {
-    expect(wavSizeAgrees(3600, 3600 * 32000 + 44)).toBe(true)
-    expect(wavSizeAgrees(3600, Math.round(3600 * 32000 * 0.985))).toBe(true)
-    expect(wavSizeAgrees(3600, Math.round(3600 * 32000 * 0.97))).toBe(false)
-    // A 10-minute claim on a 3-hour file.
-    expect(wavSizeAgrees(600, 3 * 3600 * 32000)).toBe(false)
-    expect(wavSizeAgrees(1, 32044 + 60 * 1024)).toBe(true)
-  })
-
-  it("only calls back URLs the internet can reach", () => {
-    for (const url of ["http://127.0.0.1:3000", "http://localhost:3000", "http://10.1.2.3", "http://192.168.1.4", "http://172.20.0.1", "http://[::1]:3000", "http://mac.local"]) {
-      expect(reachable(url), url).toBe(false)
-    }
-    for (const url of ["https://api.trylinger.com", "http://172.32.0.1", "https://x.onamp.dev"]) expect(reachable(url), url).toBe(true)
-  })
-
   it("maps Stripe subscription states onto entitlements", () => {
     const sub = (status: string): SubscriptionState => ({ id: "sub_1", customer: "cus_1", status, productId: "price_1", periodStart: 0, periodEnd: Date.UTC(2099, 0, 1), livemode: false })
     expect(entitlementOfSubscription(sub("active")).status).toBe("active")
@@ -89,144 +70,19 @@ describe("pure policy", () => {
 })
 
 /** Fakes for the vendors that record what the routes asked of them. */
-const recordingVendors = (opts: { job?: () => Job; subscription?: () => Effect.Effect<SubscriptionState, UpstreamFailed>; apple?: AppleEntitlement; stripe?: Layer.Layer<Stripe> } = {}) => {
-  const calls = { started: [] as Array<{ webhook?: { url: string; secret: string } }>, deletedBlobs: [] as Array<string>, deletedJobs: [] as Array<string>, subscriptionReads: 0, uploads: new Map<string, number>() }
+const recordingVendors = (opts: { subscription?: () => Effect.Effect<SubscriptionState, UpstreamFailed>; apple?: AppleEntitlement; stripe?: Layer.Layer<Stripe> } = {}) => {
+  const calls = { deletedCustomers: [] as Array<string>, subscriptionReads: 0 }
   const unavailable = Effect.fail(new UpstreamUnavailable({ message: "not in tests" }))
   const layer = Layer.mergeAll(
-    Layer.succeed(
-      Blob,
-      Blob.of({
-        uploadTarget: (path, o) => Effect.succeed({ url: `http://blob.test/${path}`, method: "PUT" as const, headers: { "content-type": o.contentType }, expiresAt: Date.now() + o.validForMs }),
-        size: (path) => Effect.succeed(calls.uploads.get(path)),
-        transcriberSource: (path) => Effect.succeed({ _tag: "Url" as const, url: `http://blob.test/${path}?signed` }),
-        delete: (paths) => Effect.sync(() => void calls.deletedBlobs.push(...paths))
-      })
-    ),
-    Layer.succeed(
-      Transcriber,
-      Transcriber.of({
-        start: (input) => Effect.sync(() => (calls.started.push({ ...(input.webhook ? { webhook: input.webhook } : {}) }), `job_${calls.started.length}`)),
-        get: (id) => Effect.succeed({ ...(opts.job?.() ?? { status: "processing" as const }), id }),
-        delete: (id) => Effect.sync(() => void calls.deletedJobs.push(id))
-      })
-    ),
     Layer.succeed(
       AppStore,
       AppStore.of({ verifyTransaction: () => (opts.apple ? Effect.succeed(opts.apple) : unavailable), verifyNotification: () => unavailable, history: () => unavailable })
     ),
     opts.stripe ??
-      Layer.succeed(Stripe, Stripe.of({ ensureCustomer: () => unavailable, checkout: () => unavailable, portal: () => unavailable, parseEvent: () => unavailable, subscription: () => unavailable, deleteCustomer: () => Effect.void }))
+      Layer.succeed(Stripe, Stripe.of({ ensureCustomer: () => unavailable, checkout: () => unavailable, portal: () => unavailable, parseEvent: () => unavailable, subscription: () => unavailable, deleteCustomer: (id) => Effect.sync(() => void calls.deletedCustomers.push(id)) }))
   )
   return { calls, layer }
 }
-
-const completed = (): Job => ({
-  id: "",
-  status: "completed",
-  audio_duration: 61.5,
-  language_code: "en",
-  utterances: [
-    { start: 0, end: 4000, speaker: "A", text: " Turn with me to Romans 8. " },
-    { start: 4000, end: 9000, speaker: "B", text: "Amen." }
-  ]
-})
-
-/** Creates a 60-second sermon over HTTP and marks its upload complete. */
-const uploadedSermon = async (handler: (r: Request) => Promise<Response>, calls: ReturnType<typeof recordingVendors>["calls"], user: string) => {
-  const res = await handler(post("/v1/sermons", { recordingId: "rec-1", durationSec: 60, bytes: 60 * 32000 + 44, contentType: "audio/wav" }, user))
-  expect(res.status).toBe(200)
-  const created = await res.json()
-  const path = new URL(created.upload.url).pathname.slice(1)
-  calls.uploads.set(path, 60 * 32000 + 44)
-  return { created, path }
-}
-
-afterEach(() => {
-  vi.unstubAllGlobals()
-})
-
-/** Serves convex-test's storage URLs, which the GET route fetches the transcript from. */
-const serveStorage = (t: TestConvex) =>
-  vi.stubGlobal("fetch", async (url: string | URL) => {
-    // convex-test names a file by its sha256 in the URLs it hands out.
-    const sha256 = String(url).split("/api/storage/")[1]!
-    const text = await t.run(async (ctx) => {
-      const file = (await ctx.db.system.query("_storage").collect()).find((f) => f.sha256 === sha256)!
-      return (await ctx.storage.get(file._id))!.text()
-    })
-    return new Response(text)
-  })
-
-describe("sermon routes and the AssemblyAI webhook", () => {
-  it("runs a sermon from upload to transcript through the webhook, then leaves nothing with vendors", async () => {
-    const t = await makeConvex()
-    const vendors = recordingVendors({ job: completed })
-    const { handler } = makeApp({ t, vendors: vendors.layer })
-    const { created, path } = await uploadedSermon(handler, vendors.calls, "user_s1")
-    expect(created.trial).toBe(true)
-
-    const started = await handler(post(`/v1/sermons/${created.sermonId}/transcribe`, {}, "user_s1"))
-    expect(await started.json()).toEqual({ sermonId: created.sermonId, status: "transcribing" })
-    const webhook = vendors.calls.started[0]!.webhook!
-    expect(webhook.url).toBe("http://proxy.test/v1/webhooks/assemblyai")
-
-    const hook = (secret: string) =>
-      handler(new Request(webhook.url, { method: "POST", headers: { "x-linger-webhook": secret }, body: JSON.stringify({ transcript_id: "job_1", status: "completed" }) }))
-    expect((await hook("not-the-secret")).status).toBe(401)
-    expect(vendors.calls.deletedJobs).toEqual([])
-    expect((await hook(webhook.secret)).status).toBe(200)
-    expect(vendors.calls.deletedJobs).toEqual(["job_1"])
-    expect(vendors.calls.deletedBlobs).toEqual([path])
-
-    serveStorage(t)
-    const done = await (await handler(get(`/v1/sermons/${created.sermonId}`, "user_s1"))).json()
-    expect(done).toEqual({
-      sermonId: created.sermonId,
-      status: "done",
-      transcript: {
-        language: "en",
-        durationMs: 61500,
-        segments: [
-          { start_ms: 0, end_ms: 4000, speaker: "A", text: "Turn with me to Romans 8." },
-          { start_ms: 4000, end_ms: 9000, speaker: "B", text: "Amen." }
-        ]
-      }
-    })
-    const { ledger } = await accountOf(t, "user_s1")
-    expect(ledger).toMatchObject([{ kind: "sermon", status: "trial", audioSeconds: 62 }])
-  })
-
-  it("without a reachable public URL, finishes the job when the client polls", async () => {
-    const t = await makeConvex()
-    let status: Job["status"] = "processing"
-    const vendors = recordingVendors({ job: () => (status === "completed" ? completed() : { id: "", status }) })
-    const { handler } = makeApp({ t, vendors: vendors.layer, config: { publicUrl: "http://127.0.0.1:3000" } })
-    const { created } = await uploadedSermon(handler, vendors.calls, "user_s2")
-    await handler(post(`/v1/sermons/${created.sermonId}/transcribe`, {}, "user_s2"))
-    expect(vendors.calls.started[0]!.webhook).toBeUndefined()
-    expect((await (await handler(get(`/v1/sermons/${created.sermonId}`, "user_s2"))).json()).status).toBe("transcribing")
-    status = "completed"
-    serveStorage(t)
-    expect((await (await handler(get(`/v1/sermons/${created.sermonId}`, "user_s2"))).json()).status).toBe("done")
-    expect(vendors.calls.deletedJobs).toEqual(["job_1"])
-  })
-
-  it("refuses a size that doesn't match the duration, an incomplete upload, and another user's sermon", async () => {
-    const t = await makeConvex()
-    const vendors = recordingVendors()
-    const { handler } = makeApp({ t, vendors: vendors.layer })
-    const lie = await handler(post("/v1/sermons", { recordingId: "r", durationSec: 60, bytes: 10 * 3600 * 32000, contentType: "audio/wav" }, "user_s3"))
-    expect(lie.status).toBe(400)
-    const res = await handler(post("/v1/sermons", { recordingId: "r", durationSec: 60, bytes: 60 * 32000 + 44, contentType: "audio/wav" }, "user_s3"))
-    const created = await res.json()
-    vendors.calls.uploads.set(new URL(created.upload.url).pathname.slice(1), 1000)
-    const partial = await handler(post(`/v1/sermons/${created.sermonId}/transcribe`, {}, "user_s3"))
-    expect(partial.status).toBe(400)
-    expect((await partial.json()).error.message).toContain("1000 of")
-    expect(vendors.calls.started).toEqual([])
-    expect((await handler(get(`/v1/sermons/${created.sermonId}`, "user_other"))).status).toBe(404)
-  })
-})
 
 describe("the Stripe webhook", () => {
   it("verifies the signature, upserts the subscription's current state once per event, and retries after a failure", async () => {
@@ -326,14 +182,15 @@ describe("JSON routes", () => {
     expect((await ok.json()).plan).toBe("pro")
   })
 
-  it("DELETE /v1/account removes the user's rows and their vendor leftovers", async () => {
+  it("DELETE /v1/account removes the user's rows and their Stripe customer", async () => {
     const t = await makeConvex()
     const vendors = recordingVendors()
     const { handler } = makeApp({ t, vendors: vendors.layer })
-    const { path } = await uploadedSermon(handler, vendors.calls, "user_bye")
+    expect((await handler(get("/v1/me", "user_bye"))).status).toBe(200)
+    await t.mutation(api.users.setStripeCustomer, { secret: SECRET, clerkId: "user_bye", stripeCustomerId: "cus_bye" })
     const res = await handler(new Request("http://proxy.test/v1/account", { method: "DELETE", headers: { authorization: "Bearer test:user_bye" } }))
     expect(res.status).toBe(204)
-    expect(vendors.calls.deletedBlobs).toEqual([path])
+    expect(vendors.calls.deletedCustomers).toEqual(["cus_bye"])
     expect((await accountOf(t, "user_bye")).user).toBeNull()
   })
 
@@ -342,12 +199,22 @@ describe("JSON routes", () => {
     const vendors = recordingVendors()
     const { handler } = makeApp({ t, vendors: vendors.layer })
     const call = (token: string) =>
-      handler(new Request("http://proxy.test/v1/internal/cleanup", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ blobPaths: ["sermons/a"], assemblyIds: ["j1"] }) }))
+      handler(new Request("http://proxy.test/v1/internal/apple/reconcile", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ sinceMs: 0 }) }))
     expect((await call("test-secre")).status).toBe(401)
     expect((await call("test:user_x")).status).toBe(401)
-    expect(vendors.calls.deletedBlobs).toEqual([])
-    expect((await call(SECRET)).status).toBe(200)
-    expect(vendors.calls).toMatchObject({ deletedBlobs: ["sermons/a"], deletedJobs: ["j1"] })
+    const res = await call(SECRET)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ replayed: 0, skipped: "The App Store isn't configured." })
+  })
+
+  it("answers the retired /v1/sermons routes 409 contract_unsupported, so a build from before M1b says to update", async () => {
+    const t = await makeConvex()
+    const { handler } = makeApp({ t })
+    for (const req of [post("/v1/sermons", { recordingId: "r", durationSec: 60, bytes: 1_920_044, contentType: "audio/wav" }), post("/v1/sermons/s1/transcribe", {}), get("/v1/sermons/s1")]) {
+      const res = await handler(req)
+      expect(res.status, req.url).toBe(409)
+      expect((await res.json()).error).toMatchObject({ type: "contract_unsupported", message: "Update Linger to transcribe sermons." })
+    }
   })
 
   it("answers /v1/health without authentication", async () => {

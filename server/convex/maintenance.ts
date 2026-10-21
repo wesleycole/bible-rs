@@ -1,7 +1,6 @@
 import { Clock, Effect } from "effect"
-import { internal } from "./_generated/api.js"
 import { effectInternalAction, effectInternalMutation } from "./lib/effect.js"
-import { ActionCtx, MutationCtx } from "./lib/services.js"
+import { MutationCtx } from "./lib/services.js"
 import { DAY } from "./lib/time.js"
 
 /** Questions only pin a model for their tool loop; a week is far longer than any loop. */
@@ -49,19 +48,6 @@ const callProxy = (path: string, body: unknown) =>
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status} ${await res.text()}`)
     return res.json()
   })
-
-type Cleanup = { blobPaths: string[]; assemblyIds: string[] }
-
-/** Hourly: fail stuck sermons, then have the proxy delete their blobs and AssemblyAI jobs. */
-export const failStuckSermons = effectInternalAction({
-  args: {},
-  handler: Effect.fn("maintenance.failStuckSermons")(function*(): Effect.fn.Return<Cleanup, never, ActionCtx> {
-    const ctx = yield* ActionCtx
-    const cleanup: Cleanup = yield* Effect.promise(() => ctx.runMutation(internal.sermons.failStuck, {}))
-    if (cleanup.blobPaths.length || cleanup.assemblyIds.length) yield* callProxy("/v1/internal/cleanup", cleanup)
-    return cleanup
-  })
-})
 
 /** Nightly: replays App Store notifications the webhook may have missed. */
 export const reconcileAppStore = effectInternalAction({

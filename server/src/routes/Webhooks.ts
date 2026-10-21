@@ -1,20 +1,16 @@
 /**
- * /v1/webhooks/{apple,stripe,clerk,assemblyai}. Each verifies its sender on the raw body, is made
+ * /v1/webhooks/{apple,stripe,clerk}. Each verifies its sender on the raw body, is made
  * idempotent through Convex's webhookEvents table, and answers 500 on failure so the sender
  * retries (the claim is released first).
  */
 import { verifyWebhook } from "@clerk/backend/webhooks"
-import { createHash, timingSafeEqual } from "node:crypto"
 import { Effect, Layer, Redacted, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { type ApiError, InvalidRequest, toResponse, Unauthenticated, UpstreamUnavailable } from "../Errors.js"
-import { finishSermon } from "../SermonFlow.js"
 import { AppConfig } from "../services/AppConfig.js"
 import { type AppleNotification, AppStore } from "../services/AppStore.js"
-import { Blob } from "../services/Blob.js"
 import { Store } from "../services/Store.js"
 import { entitlementOfSubscription, Stripe } from "../services/Stripe.js"
-import { Transcriber, WEBHOOK_HEADER } from "../services/Transcriber.js"
 import { cleanupVendors } from "./Json.js"
 
 const ok = HttpServerResponse.jsonUnsafe({ received: true })
@@ -64,22 +60,17 @@ export const applyAppleNotification = (n: AppleNotification) =>
     })
   )
 
-const AssemblyHook = Schema.Struct({ transcript_id: Schema.String, status: Schema.String })
 const AppleHook = Schema.Struct({ signedPayload: Schema.String })
-
-const sha256 = (s: string) => createHash("sha256").update(s).digest()
 
 export const WebhookRoutes = HttpRouter.use((router) =>
   Effect.gen(function*() {
     const config = yield* AppConfig
     const services = Layer.mergeAll(
       Layer.succeed(Store, yield* Store),
-      Layer.succeed(Blob, yield* Blob),
-      Layer.succeed(Transcriber, yield* Transcriber),
       Layer.succeed(Stripe, yield* Stripe),
       Layer.succeed(AppStore, yield* AppStore)
     )
-    const route = (path: HttpRouter.PathInput, handler: (request: HttpServerRequest.HttpServerRequest, body: string) => Effect.Effect<HttpServerResponse.HttpServerResponse, unknown, Store | Blob | Transcriber | Stripe | AppStore>) =>
+    const route = (path: HttpRouter.PathInput, handler: (request: HttpServerRequest.HttpServerRequest, body: string) => Effect.Effect<HttpServerResponse.HttpServerResponse, unknown, Store | Stripe | AppStore>) =>
       router.add("POST", path, (request) =>
         respond(
           request.text.pipe(
@@ -94,23 +85,6 @@ export const WebhookRoutes = HttpRouter.use((router) =>
         Effect.flatMap(Schema.decodeUnknownEffect(schema)),
         Effect.mapError(() => new InvalidRequest({ message: "Unexpected payload." }))
       )
-
-    yield* route("/v1/webhooks/assemblyai", (request, body) =>
-      Effect.gen(function*() {
-        const hook = yield* json(AssemblyHook, body)
-        const store = yield* Store
-        const sermon = yield* store.sermonByAssembly({ assemblyId: hook.transcript_id })
-        // A job this deployment doesn't know (deleted account, another environment): acknowledge.
-        if (!sermon) return ok
-        const given = request.headers[WEBHOOK_HEADER] ?? ""
-        const expected = Buffer.from(sermon.webhookSecretHash ?? "", "hex")
-        if (expected.length === 0 || !timingSafeEqual(sha256(given), expected)) {
-          return yield* new Unauthenticated({ message: "Bad webhook secret." })
-        }
-        const job = yield* (yield* Transcriber).get(hook.transcript_id)
-        yield* finishSermon(sermon, job)
-        return ok
-      }))
 
     yield* route("/v1/webhooks/stripe", (request, body) =>
       Effect.gen(function*() {

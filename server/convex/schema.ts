@@ -151,18 +151,11 @@ export default defineSchema({
     .index("by_user_at", ["userId", "at"])
     .index("by_at", ["at"]),
 
-  /**
-   * The transcription job of a sermon item (library/sermons.ts): what billing and the webhook see.
-   * `recordingId`, `blobPath` and `bytes` belong to the proxy's flow, which goes with M1b's
-   * desktop half; its rows have no `itemId`.
-   */
+  /** The transcription job of a sermon item (library/sermons.ts): what billing and the webhook see. */
   sermons: defineTable({
     userId: v.id("users"),
-    itemId: v.optional(v.id("items")),
-    recordingId: v.optional(v.string()),
-    blobPath: v.optional(v.string()),
+    itemId: v.id("items"),
     durationSec: v.number(),
-    bytes: v.optional(v.number()),
     /** Whether this sermon spends the Free account's one-time trial hour. */
     trial: v.boolean(),
     /** The uid of the item's `audio` file, named by the bytes' SHA-256; set by `finish` before the bytes are joined. */
@@ -179,7 +172,6 @@ export default defineSchema({
       v.literal("done"),
       v.literal("error")
     ),
-    transcript: v.optional(v.id("_storage")),
     audioSeconds: v.optional(v.number()),
     createdAt: v.number(),
     transcribingAt: v.optional(v.number()),
@@ -189,8 +181,7 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_item", ["itemId"])
     .index("by_assembly", ["assemblyId"])
-    .index("by_status", ["status", "createdAt"])
-    .index("by_transcript", ["transcript"]),
+    .index("by_status", ["status", "createdAt"]),
 
   webhookEvents: defineTable({
     source: v.string(),

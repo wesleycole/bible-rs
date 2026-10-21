@@ -162,79 +162,46 @@ describe("webhooks.claim", () => {
   })
 })
 
-describe("sermons", () => {
-  const create = (clerkId: string, durationSec: number) => ({
-    secret: SECRET,
-    clerkId,
-    recordingId: "rec",
-    durationSec,
-    bytes: durationSec * 32000 + 44,
-    nonce: crypto.randomUUID().slice(0, 8)
-  })
-
-  it("gives Free one trial sermon of up to an hour, given back if transcription fails", async () => {
-    const t = await makeConvex()
-    const long = await t.mutation(api.sermons.create, create("user_trial", 3601))
-    expect(!long.ok && long.error.type).toBe("plan_required")
-    const first = await t.mutation(api.sermons.create, create("user_trial", 1800))
-    expect(first.ok && first.trial).toBe(true)
-    const second = await t.mutation(api.sermons.create, create("user_trial", 60))
-    expect(!second.ok && second.error.type).toBe("plan_required")
-    if (!first.ok) throw new Error("denied")
-    await t.mutation(api.sermons.fail, { secret: SECRET, sermonId: first.sermonId, error: "boom" })
-    const retry = await t.mutation(api.sermons.create, create("user_trial", 60))
-    expect(retry.ok).toBe(true)
-  })
-
-  it("holds Pro to 10 sermon-hours a month, counting reserved audio, and settles the real duration", async () => {
-    const t = await makeConvex()
-    await t.mutation(internal.admin.grant, { clerkId: "user_preacher", days: 30 })
-    const a = await t.mutation(api.sermons.create, create("user_preacher", 3 * 3600))
-    const b = await t.mutation(api.sermons.create, create("user_preacher", 3 * 3600))
-    const c = await t.mutation(api.sermons.create, create("user_preacher", 3 * 3600))
-    const d = await t.mutation(api.sermons.create, create("user_preacher", 3601))
-    expect([a.ok, b.ok, c.ok]).toEqual([true, true, true])
-    expect(!d.ok && d.error.type).toBe("allowance_exhausted")
-    if (!a.ok) throw new Error("denied")
-    // a finishes at 2.5 h of real audio: the half hour reserved beyond it is freed.
-    await t.action(api.sermons.complete, { secret: SECRET, sermonId: a.sermonId, transcript: "{}", audioSeconds: 2.5 * 3600 })
-    const me = await t.mutation(api.users.me, { secret: SECRET, clerkId: "user_preacher" })
-    expect(me.sermons.hoursLeft).toBe(1.5)
-    // A second completion (webhook and poll racing) settles nothing more.
-    const again = await t.action(api.sermons.complete, { secret: SECRET, sermonId: a.sermonId, transcript: "{}", audioSeconds: 2.5 * 3600 })
-    expect(again.done).toBe(false)
-    const ledger = await t.run((ctx) => ctx.db.query("ledger").collect())
-    expect(ledger.filter((r) => r.kind === "sermon")).toHaveLength(1)
-  })
-})
-
 describe("account.purge", () => {
-  it("deletes every row a user owns and reports what vendors still hold", async () => {
+  it("deletes every row a user owns, deletes their open AssemblyAI jobs, and returns the Stripe customer", async () => {
     const t = await makeConvex()
     await t.mutation(api.usage.beginRound, begin("user_gone"))
-    const s = await t.mutation(api.sermons.create, {
-      secret: SECRET,
-      clerkId: "user_gone",
-      recordingId: "r",
-      durationSec: 60,
-      bytes: 60 * 32000 + 44,
-      nonce: "abc"
+    await t.mutation(api.users.setStripeCustomer, { secret: SECRET, clerkId: "user_gone", stripeCustomerId: "cus_gone" })
+    // Two sermons: one still transcribing, one whose job went when its transcript was kept.
+    await t.run(async (ctx) => {
+      const user = (await ctx.db.query("users").withIndex("by_clerk", (q) => q.eq("clerkId", "user_gone")).unique())!
+      for (const [uid, status, assemblyId] of [["s1", "transcribing", "job_open"], ["s2", "done", "job_kept"]] as const) {
+        const itemId = await ctx.db.insert("items", { userId: user._id, uid, kind: "sermon", status: "processing", title: "", details: { startedAt: 0 }, unreviewed: false, files: [], anchors: [], capturedAt: 0, seq: 1, updatedAt: 0 })
+        await ctx.db.insert("sermons", { userId: user._id, itemId, durationSec: 60, trial: false, status, assemblyId, createdAt: 0 })
+      }
     })
     await t.mutation(api.users.me, { secret: SECRET, clerkId: "user_stays" })
+    vi.stubEnv("ASSEMBLYAI_API_KEY", "key")
+    const deleted: Array<string> = []
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      if (init.method === "DELETE") deleted.push(new URL(url).pathname)
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+    })
     vi.useFakeTimers()
-    const left = await t.mutation(api.account.purge, { secret: SECRET, clerkId: "user_gone" })
-    await t.finishAllScheduledFunctions(vi.runAllTimers)
-    vi.useRealTimers()
-    expect(left.found).toBe(true)
-    expect(left.blobPaths).toEqual([s.ok ? s.blobPath : ""])
+    try {
+      const left = await t.mutation(api.account.purge, { secret: SECRET, clerkId: "user_gone" })
+      await t.finishAllScheduledFunctions(vi.runAllTimers)
+      expect(left).toEqual({ found: true, stripeCustomerId: "cus_gone" })
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
+    expect(deleted).toEqual(["/v2/transcript/job_open"])
     const counts = await t.run(async (ctx) => ({
       users: (await ctx.db.query("users").collect()).map((u) => u.clerkId),
       reservations: (await ctx.db.query("reservations").collect()).length,
       questions: (await ctx.db.query("questions").collect()).length,
       usage: (await ctx.db.query("usage").collect()).length,
-      sermons: (await ctx.db.query("sermons").collect()).length
+      sermons: (await ctx.db.query("sermons").collect()).length,
+      items: (await ctx.db.query("items").collect()).length
     }))
-    expect(counts).toEqual({ users: ["user_stays"], reservations: 0, questions: 0, usage: 0, sermons: 0 })
-    expect((await t.mutation(api.account.purge, { secret: SECRET, clerkId: "user_gone" })).found).toBe(false)
+    expect(counts).toEqual({ users: ["user_stays"], reservations: 0, questions: 0, usage: 0, sermons: 0, items: 0 })
+    expect(await t.mutation(api.account.purge, { secret: SECRET, clerkId: "user_gone" })).toEqual({ found: false })
   })
 })

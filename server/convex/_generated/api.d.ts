@@ -52,7 +52,6 @@ import type * as library_sync from "../library/sync.js";
 import type * as library_whoami from "../library/whoami.js";
 import type * as maintenance from "../maintenance.js";
 import type * as rateLimits from "../rateLimits.js";
-import type * as sermons from "../sermons.js";
 import type * as sources from "../sources.js";
 import type * as usage from "../usage.js";
 import type * as users from "../users.js";
@@ -109,7 +108,6 @@ declare const fullApi: ApiFromModules<{
   "library/whoami": typeof library_whoami;
   maintenance: typeof maintenance;
   rateLimits: typeof rateLimits;
-  sermons: typeof sermons;
   sources: typeof sources;
   usage: typeof usage;
   users: typeof users;

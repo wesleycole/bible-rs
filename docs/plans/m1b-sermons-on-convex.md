@@ -147,10 +147,20 @@ in the desktop half, not before. `transcribeNow` is for any `waiting` sermon wit
 workflow with an event; the hourly `check transcription jobs` cron asks the provider about a job
 whose webhook is 30 minutes late and wakes it if done, and fails one stuck for 3 hours; the hourly
 `finish dead recordings` cron is item 5's first clause. Item 7 is M1's `purgeAccount`, which already
-deletes a user's `sermons` rows and every `files` row with its blob; nothing was added. Until item 6
-removes the proxy's flow, `blobPath`, `recordingId` and `bytes` stay as optional columns, the
-`expire transcripts` cron stays, and `convex/sermons.ts` ignores rows that have an `itemId`. Tests
+deletes a user's `sermons` rows and every `files` row with its blob; nothing was added. Tests
 fake the provider at `fetch`; the Transcriber is the one provider abstraction.
+
+**Built (October 21), item 6:** the proxy's flow is gone: `convex/sermons.ts`, `SermonFlow.ts`, the
+Blob and Transcriber services, `/v1/dev/blob`, `/v1/webhooks/assemblyai`, `/v1/internal/cleanup`,
+the `fail stuck sermons` and `expire transcripts` crons, the Blob and AssemblyAI variables and
+`@vercel/blob`. `POST /v1/sermons`, `POST /v1/sermons/:id/transcribe` and `GET /v1/sermons/:id`
+answer `409 contract_unsupported` ("Update Linger to transcribe sermons."). `sermons` loses
+`recordingId`, `blobPath`, `bytes` and `transcript`, and `itemId` is required: every row is a
+library job (dev had none of the proxy's rows). Account deletion no longer hands blobs or AssemblyAI
+ids to the proxy: `account.purge` schedules `account.forgetJobs`, which deletes the open jobs
+through Convex's own Transcriber, and returns only the Stripe customer for the proxy to delete. The
+Pro 10-hour cap test moved from the proxy's flow to `library.sermons`. Disconnecting the
+`linger-sermons` Blob store is left for after the proxy's next production deploy.
 
 ## The desktop app
 

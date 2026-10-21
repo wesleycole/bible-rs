@@ -5,9 +5,8 @@
 import { Effect, Layer } from "effect"
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http"
 import { HttpApiError } from "effect/http-api"
-import { bodyOf, InvalidRequest } from "./Errors.js"
+import { bodyOf, ContractUnsupported, InvalidRequest, toResponse } from "./Errors.js"
 import { AskRoute } from "./routes/Ask.js"
-import { DevBlobRoutes } from "./routes/DevBlob.js"
 import { InternalRoutes } from "./routes/Internal.js"
 import { JsonRoutes } from "./routes/Json.js"
 import { WebhookRoutes } from "./routes/Webhooks.js"
@@ -15,13 +14,22 @@ import { AppConfig } from "./services/AppConfig.js"
 import { AppStore } from "./services/AppStore.js"
 import { Auth } from "./services/Auth.js"
 import { Background } from "./services/Background.js"
-import { Blob } from "./services/Blob.js"
 import { Gateway } from "./services/Gateway.js"
 import { Store } from "./services/Store.js"
 import { Stripe } from "./services/Stripe.js"
-import { Transcriber } from "./services/Transcriber.js"
 
 const HealthRoute = HttpRouter.add("GET", "/v1/health", Effect.succeed(HttpServerResponse.jsonUnsafe({ ok: true })))
+
+/**
+ * Sermons moved into the library (Convex). Builds from before M1b still call /v1/sermons; for one
+ * release these answer 409 so they say "Update Linger" instead of failing oddly. Then they go.
+ */
+const updateLinger = Effect.succeed(toResponse(new ContractUnsupported({ message: "Update Linger to transcribe sermons." })))
+const RetiredSermonRoutes = Layer.mergeAll(
+  HttpRouter.add("POST", "/v1/sermons", updateLinger),
+  HttpRouter.add("POST", "/v1/sermons/:id/transcribe", updateLinger),
+  HttpRouter.add("GET", "/v1/sermons/:id", updateLinger)
+)
 
 /**
  * HttpApi answers a request it can't decode with an empty 400; this gives it the error contract's
@@ -51,7 +59,7 @@ export const Routes = Layer.mergeAll(
   AskRoute,
   WebhookRoutes,
   InternalRoutes,
-  DevBlobRoutes,
+  RetiredSermonRoutes,
   HealthRoute,
   RequestErrors
 )
@@ -61,8 +69,6 @@ export const Services = Layer.mergeAll(
   Store.layer,
   Gateway.layer,
   Background.layer,
-  Blob.layer,
-  Transcriber.layer,
   AppStore.layer,
   Stripe.layer
 ).pipe(Layer.provideMerge(AppConfig.layer))

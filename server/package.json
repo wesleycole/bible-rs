@@ -24,7 +24,6 @@
     "@convex-dev/workflow": "0.4.10",
     "@convex-dev/workpool": "0.4.14",
     "@effect/platform-node": "4.0.5",
-    "@vercel/blob": "2.8.2",
     "@vercel/functions": "3.10.1",
     "@vercel/oidc": "4.0.1",
     "convex": "1.47.0",

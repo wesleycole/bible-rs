@@ -48,8 +48,8 @@ export class Purge extends Context.Service<Purge, {
   /** Hard-deletes up to STEP tombstones past TOMBSTONE_DAYS, with an item's files and index rows; `more` when the budget ran out. */
   readonly tombstones: Effect.Effect<{ readonly deleted: number; readonly more: boolean }>
   /**
-   * Deletes up to STEP blobs created between `from` and ORPHAN_AGE ago that no `files` row or
-   * transcript points at (an upload refused over the storage limit, or never attached). Answers
+   * Deletes up to STEP blobs created between `from` and ORPHAN_AGE ago that no `files` row points
+   * at (an upload refused over the storage limit, or never attached). Answers
    * where the next call starts, if the budget ran out.
    */
   readonly orphans: (from: number) => Effect.Effect<{ readonly deleted: number; readonly next?: number }>
@@ -62,7 +62,6 @@ export class Purge extends Context.Service<Purge, {
 
       const remove = Effect.fnUntraced(function*(doc: Doc<any>) {
         if ("storageId" in doc && doc.storageId) yield* db(() => ctx.storage.delete(doc.storageId))
-        if ("transcript" in doc && doc.transcript) yield* db(() => ctx.storage.delete(doc.transcript))
         yield* db(() => ctx.db.delete(doc._id))
       })
 
@@ -120,8 +119,7 @@ export class Purge extends Context.Service<Purge, {
         let deleted = 0
         for (const blob of blobs) {
           const file = yield* db(() => ctx.db.query("files").withIndex("by_storage", (q) => q.eq("storageId", blob._id)).first())
-          const transcript = yield* db(() => ctx.db.query("sermons").withIndex("by_transcript", (q) => q.eq("transcript", blob._id)).first())
-          if (file || transcript) continue
+          if (file) continue
           yield* db(() => ctx.storage.delete(blob._id))
           deleted++
         }

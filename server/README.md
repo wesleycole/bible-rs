@@ -27,18 +27,15 @@ pnpm clerk-test-token --session   # a fresh session token (60 s)
 ```
 
 `.env.local` (gitignored) needs `CONVEX_URL`, `LINGER_SERVER_SECRET`, `CLERK_JWT_KEY`,
-`CLERK_JWT_ISSUER`, `BLOB_DRIVER=local` and `PUBLIC_URL`, plus `AI_GATEWAY_API_KEY` and
-`ASSEMBLYAI_API_KEY` (or `ASSEMBLY_AI_API_KEY`) from the environment. Without Clerk, sign requests
-with a local dev key:
+`CLERK_JWT_ISSUER` and `PUBLIC_URL`, plus `AI_GATEWAY_API_KEY` from the environment. Sermons are
+transcribed by Convex itself (`convex/library/sermons.ts`), so `ASSEMBLYAI_API_KEY` and
+`AI_GATEWAY_API_KEY` are set on the Convex deployment (`npx convex env set`), not here. Without
+Clerk, sign requests with a local dev key:
 
 ```sh
 npx tsx scripts/dev-token.ts --env        # CLERK_JWT_KEY and CLERK_JWT_ISSUER for .env.local
 npx tsx scripts/dev-token.ts user_ruth    # a session token for that user
 ```
-
-Locally, sermon audio is stored under `.data/blob` behind URLs the proxy signs and serves
-(`/v1/dev/blob/*`). AssemblyAI can't call a loopback URL back, so jobs start without a webhook and
-`GET /v1/sermons/:id` finishes them when they're done.
 
 `scripts/convex-local.sh` runs Convex's local backend under Nix's glibc on hosts whose glibc is
 older than the backend needs (Debian 12).
@@ -68,10 +65,11 @@ configuration" in the plan.
 - **Proxy:** `vercel deploy --prod` from `server/` (the project isn't connected to Git yet).
   `vercel.json` turns on Fluid compute in `iad1`, allows 800 s streams and rewrites `/v1/*` to
   `api/index.ts`. The variables are in `src/services/AppConfig.ts`; the Gateway uses the
-  deployment's OIDC token, so `AI_GATEWAY_API_KEY` isn't set there. Blob is the private store
-  `linger-sermons`, connected to the project.
+  deployment's OIDC token, so `AI_GATEWAY_API_KEY` isn't set there. `/v1/sermons*` answer
+  `409 contract_unsupported` for one release, so builds from before M1b say "Update Linger".
 - **Convex:** `CONVEX_DEPLOY_KEY=<production deploy key> npx convex deploy`, then
-  `npx convex run admin:seed --prod` after changing plans or models. Its crons call back into the
-  proxy at `LINGER_PROXY_URL` with `LINGER_SERVER_SECRET`, which must match the proxy's.
+  `npx convex run admin:seed --prod` after changing plans or models. Its nightly App Store replay
+  calls back into the proxy at `LINGER_PROXY_URL` with `LINGER_SERVER_SECRET`, which must match the
+  proxy's.
 - **Webhooks:** Clerk sends `user.deleted` to `/v1/webhooks/clerk`; Stripe and Apple point at
   `/v1/webhooks/stripe` and `/v1/webhooks/apple` once they're configured.

@@ -408,13 +408,7 @@ describe("purge, tombstones and storage", () => {
     expect(me.library).toEqual({ storageUsed: small.bytes, storageLimit: 10 })
 
     // The refused upload is nobody's: the daily sweep deletes it once it is a day old, and keeps
-    // the attached file and any blob a sermon's transcript holds.
-    const transcript = await t.run(async (ctx) => {
-      const id = await ctx.storage.store(new Blob(["{}"]))
-      const user = (await ctx.db.query("users").first())!
-      await ctx.db.insert("sermons", { userId: user._id, recordingId: "r", blobPath: "p", durationSec: 1, bytes: 45, trial: false, status: "done", transcript: id, createdAt: 0 })
-      return id
-    })
+    // the attached file.
     const blobs = async () => (await t.run((ctx) => ctx.db.system.query("_storage").collect())).map((b) => b._id as string)
     expect(await t.mutation(internal.library.purge.orphans, {})).toEqual({ deleted: 0 })
     vi.useFakeTimers({ toFake: ["Date"] })
@@ -425,7 +419,7 @@ describe("purge, tombstones and storage", () => {
       vi.useRealTimers()
     }
     const attached = (await t.run((ctx) => ctx.db.query("files").first()))!.storageId
-    expect((await blobs()).sort()).toEqual([attached, transcript].sort())
+    expect(await blobs()).toEqual([attached])
     expect(await blobs()).not.toContain(big.storageId)
   })
 })
@@ -605,6 +599,26 @@ describe("library.sermons (the transcription workflow)", () => {
     expect(account.usage.map((u) => u.sermonSeconds ?? 0).filter((n) => n > 0)).toEqual([])
     expect(account.ledger.map((l) => l.kind)).toEqual(["digest"])
     expect(await bob.mutation(api.library.sermons.begin, { uid: "new", details, recordedOn: "2026-10-18" })).toEqual({ uploadAudio: true, cloudTranscript: true })
+  })
+
+  it("holds Pro to 10 sermon-hours a month, counting the audio reserved for sermons still transcribing", async () => {
+    vi.useFakeTimers()
+    const t = await makeConvex()
+    await t.mutation(internal.admin.grant, { clerkId: "user_preacher", days: 30 })
+    const preacher = as(t, "user_preacher")
+    fakeProvider({ job })
+    const finish = async (uid: string, durationMs: number) => {
+      await preacher.mutation(api.library.sermons.begin, { uid, details, recordedOn: "2026-10-18" })
+      await attachSlices(t, "user_preacher", uid, "uploadPart", M4A)
+      await preacher.mutation(api.library.sermons.finish, { uid, durationMs, audioFileUid: hex(M4A) })
+    }
+    for (const uid of ["a", "b", "c"]) await finish(uid, 3 * HOUR)
+    const me = await t.mutation(api.users.me, { secret: SECRET, clerkId: "user_preacher" })
+    expect(me.sermons.hoursLeft).toBe(1)
+    // Over the hour left: its audio is kept, and it waits rather than transcribing.
+    await finish("d", HOUR + 1000)
+    expect((await accountOf(t, "user_preacher")).reservations).toHaveLength(3)
+    expect(await preacher.mutation(api.library.sermons.begin, { uid: "e", details, recordedOn: "2026-10-19" })).toEqual({ uploadAudio: true, cloudTranscript: true })
   })
 
   it("spends a Free user's trial hour once: a failed join gives it back, a trial transcript keeps no audio, and then the plan allows nothing", async () => {
