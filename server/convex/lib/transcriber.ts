@@ -7,6 +7,7 @@
  */
 import { Context, Effect, Layer, Schema } from "effect"
 import { UpstreamFailed, UpstreamUnavailable } from "../../shared/Errors.js"
+import type { Transcript } from "../../shared/records.js"
 
 const API = "https://api.assemblyai.com/v2"
 
@@ -24,19 +25,6 @@ const BOOK_NAMES = [
 /** The header the provider echoes on its webhook, carrying the job's secret. */
 export const WEBHOOK_HEADER = "x-linger-webhook"
 
-/** A transcript as the apps read it (`transcribe::Transcript` in core): the item's `text` file. */
-export const Transcript = Schema.Struct({
-  language: Schema.String,
-  durationMs: Schema.Number,
-  segments: Schema.Array(Schema.Struct({
-    start_ms: Schema.Number,
-    end_ms: Schema.Number,
-    speaker: Schema.NullOr(Schema.String),
-    text: Schema.String
-  }))
-})
-export type Transcript = typeof Transcript.Type
-
 const Job = Schema.Struct({
   id: Schema.String,
   status: Schema.Literals(["queued", "processing", "completed", "error"]),
@@ -53,15 +41,15 @@ const Job = Schema.Struct({
 })
 type Job = typeof Job.Type
 
-/** A finished job's transcript: its speaker turns, or one segment of its whole text when it has none. */
+/** A finished job's transcript (the item's `text` file, `records::Transcript`): its speaker turns, or one segment of its whole text when it has none. */
 const transcriptOf = (job: Job): Transcript => {
   const durationMs = Math.round((job.audio_duration ?? 0) * 1000)
   const turns = (job.utterances ?? [])
-    .map((u) => ({ start_ms: u.start, end_ms: u.end, speaker: u.speaker ?? null, text: u.text.trim() }))
+    .map((u) => ({ startMs: u.start, endMs: u.end, ...(u.speaker ? { speaker: u.speaker } : {}), text: u.text.trim() }))
     .filter((s) => s.text.length > 0)
   const text = job.text?.trim()
-  const segments = turns.length > 0 ? turns : text ? [{ start_ms: 0, end_ms: durationMs, speaker: null, text }] : []
-  return { language: job.language_code ?? "en", durationMs, segments }
+  const segments = turns.length > 0 ? turns : text ? [{ startMs: 0, endMs: durationMs, text }] : []
+  return { durationMs, ...(job.language_code ? { language: job.language_code } : {}), segments }
 }
 
 export type JobState =

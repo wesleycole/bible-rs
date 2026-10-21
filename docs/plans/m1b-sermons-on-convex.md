@@ -109,8 +109,11 @@ and the item is `uploading` while the workflow joins them. The join is `library/
 a step of the workflow rather than a function the device calls (a `"use node"` file can hold only
 actions, so it is not in `library/files.ts`); it stores the M4A as `audio/mp4` and a dead device's
 ADTS parts as `audio/aac`, which is how the item says the timeline is approximate (no new Item
-field). The transcript is kept as the item's `text` file, JSON in core's `transcribe::Transcript`
-shape, and the sermon row keeps no copy. `transcribeNow` is for any `waiting` sermon with audio that
+field). The transcript is kept as the item's `text` file, JSON in the shape of `records::Transcript`
+(declared once in `crates/core/src/records.rs`, generated into `server/shared/records.ts` like the
+records; camelCase, no `recording_id` or `recorded_at`, whose facts live on the item), and the sermon
+row keeps no copy. Core's `transcribe::Transcript` becomes an alias or wrapper of `records::Transcript`
+in the desktop half, not before. `transcribeNow` is for any `waiting` sermon with audio that
 `Allowance.admitSermon` admits now (Pro hours, or a Free trial still unused). The webhook wakes the
 workflow with an event; the hourly `check transcription jobs` cron asks the provider about a job
 whose webhook is 30 minutes late and wakes it if done, and fails one stuck for 3 hours; the hourly

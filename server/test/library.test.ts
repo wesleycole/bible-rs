@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto"
+import { Schema } from "effect"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { Transcript } from "../shared/records.js"
 import { WEBHOOK_HEADER } from "../convex/lib/transcriber.js"
 import { PAGE_RECORDS } from "../convex/library/sync.js"
 import { api, internal } from "../convex/_generated/api.js"
@@ -516,10 +518,11 @@ describe("library.sermons (the transcription workflow)", () => {
     expect(ready.files.map((f) => [f.role, f.durationMs])).toEqual([["audio", 62_000], ["text", undefined]])
     const text = await storedOf(t, ready.textFileUid!)
     expect(text.type).toBe("application/json")
-    expect(JSON.parse(Buffer.from(text.bytes).toString())).toEqual({
+    // The file is what core reads: records::Transcript, by the generated Schema.
+    expect(Schema.decodeUnknownSync(Transcript)(JSON.parse(Buffer.from(text.bytes).toString()))).toEqual({
       language: "en",
       durationMs: 61_200,
-      segments: [{ start_ms: 0, end_ms: 61_200, speaker: "A", text: "In the beginning God." }]
+      segments: [{ startMs: 0, endMs: 61_200, speaker: "A", text: "In the beginning God." }]
     })
     expect((await t.run((ctx) => ctx.db.query("files").collect())).map((f) => f.role).sort()).toEqual(["audio", "text"])
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /v2/transcript", "GET /v2/transcript/job1", "DELETE /v2/transcript/job1"])

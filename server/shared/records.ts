@@ -240,6 +240,33 @@ export const Chat = Schema.Struct({
 
 export type Chat = typeof Chat["Type"]
 
+/** A sermon's transcript, the JSON in its `text` file: turns of speech in order, with speakers "A", "B"… as the transcriber told them apart. A file's contents, not a record of the feed. */
+export const TranscriptFields = {
+  durationMs: v.number(),
+  /** The language the transcriber heard, as a BCP 47 tag, when it said. */
+  language: v.optional(v.string()),
+  segments: v.array(v.object({
+    endMs: v.number(),
+    speaker: v.optional(v.string()),
+    startMs: v.number(),
+    text: v.string(),
+  })),
+}
+
+export const Transcript = Schema.Struct({
+  durationMs: Schema.Int,
+  /** The language the transcriber heard, as a BCP 47 tag, when it said. */
+  language: Schema.optionalKey(Schema.String),
+  segments: Schema.Array(Schema.Struct({
+    endMs: Schema.Int,
+    speaker: Schema.optionalKey(Schema.String),
+    startMs: Schema.Int,
+    text: Schema.String,
+  })),
+})
+
+export type Transcript = typeof Transcript["Type"]
+
 /** One record in the change feed, of any synced type, tagged with that type. */
 export const FeedRecordValidator = v.union(v.object({
     color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),

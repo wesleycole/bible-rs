@@ -12,14 +12,14 @@ import { Clock, Effect, Option, Schema } from "effect"
 import { components, internal } from "../_generated/api.js"
 import type { Doc, Id } from "../_generated/dataModel.js"
 import { AllowanceExhausted, InvalidRequest, PlanRequired, UpstreamFailed, type UpstreamUnavailable } from "../../shared/Errors.js"
-import { Item, type WriteAnswer } from "../../shared/records.js"
+import { Item, type Transcript, TranscriptFields, type WriteAnswer } from "../../shared/records.js"
 import { Allowance } from "../lib/allowance.js"
 import { effectInternalAction, effectInternalMutation, effectInternalQuery, effectMutation, userServices } from "../lib/effect.js"
 import { Files, sha256Hex } from "../lib/files.js"
 import { Sequence } from "../lib/sequence.js"
 import { ActionCtx, CurrentUser, MutationCtx, QueryCtx } from "../lib/services.js"
 import { HOUR, MINUTE } from "../lib/time.js"
-import { Transcriber, type Transcript } from "../lib/transcriber.js"
+import { Transcriber } from "../lib/transcriber.js"
 import { asRecord, Uid } from "./notes.js"
 
 /** A webhook is late once a job has run this long; the hourly cron then asks the provider itself. */
@@ -339,11 +339,7 @@ export const settle = effectInternalMutation({
     sermonId: v.id("sermons"),
     storageId: v.id("_storage"),
     sha256: v.string(),
-    transcript: v.object({
-      language: v.string(),
-      durationMs: v.number(),
-      segments: v.array(v.object({ start_ms: v.number(), end_ms: v.number(), speaker: v.union(v.string(), v.null()), text: v.string() }))
-    })
+    transcript: v.object(TranscriptFields)
   },
   handler: Effect.fn("sermons.settle")(function*({ sermonId, storageId, sha256, transcript }) {
     const ctx = yield* MutationCtx

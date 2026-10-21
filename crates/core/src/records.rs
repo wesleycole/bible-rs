@@ -298,6 +298,29 @@ pub struct Item {
     pub files: Vec<FileRef>,
 }
 
+/// A sermon's transcript, the JSON in its `text` file: turns of speech in order, with speakers
+/// "A", "B"… as the transcriber told them apart. A file's contents, not a record of the feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Transcript {
+    pub duration_ms: u64,
+    /// The language the transcriber heard, as a BCP 47 tag, when it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    pub segments: Vec<Segment>,
+}
+
+/// One turn of speech in a transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Segment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+    pub text: String,
+}
+
 /// A saved Ask conversation; the conversation itself is a `chat` file, downloaded from `url`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -402,6 +425,10 @@ pub fn schemas() -> Vec<RecordSchema> {
         RecordSchema { name: "Bookmark", schema: sorted(generator.root_schema_for::<Bookmark>().to_value()) },
         RecordSchema { name: "Item", schema: sorted(generator.root_schema_for::<Item>().to_value()) },
         RecordSchema { name: "Chat", schema: sorted(generator.root_schema_for::<Chat>().to_value()) },
+        RecordSchema {
+            name: "Transcript",
+            schema: sorted(generator.root_schema_for::<Transcript>().to_value()),
+        },
         RecordSchema {
             name: "FeedRecord",
             schema: sorted(generator.root_schema_for::<FeedRecord>().to_value()),
@@ -679,6 +706,10 @@ mod tests {
             }
             assert_eq!(record.schema["type"], "object", "{}", record.name);
             let required = record.schema["required"].as_array().unwrap();
+            // A transcript is a file's contents, not a record of the feed: no uid, no seq.
+            if record.name == "Transcript" {
+                continue;
+            }
             assert!(required.iter().any(|r| r == "uid") && required.iter().any(|r| r == "seq"));
             assert!(!required.iter().any(|r| r == "deletedAt"), "tombstone time is optional");
         }
