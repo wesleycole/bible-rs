@@ -1054,6 +1054,16 @@ impl Engine {
     }
 }
 
+/// Convex's argument validators take a missing optional field but refuse a null one.
+fn no_nulls(details: &Value) -> Result<(), CallError> {
+    match details.as_object().and_then(|d| d.iter().find(|(_, v)| v.is_null())) {
+        Some((k, _)) => {
+            Err(refused(format!("The arguments are invalid: Expected string at [\"details\"][\"{k}\"]")))
+        }
+        None => Ok(()),
+    }
+}
+
 /// An in-memory Convex for tests: the library's per-verse writes with the server's conflict rule,
 /// the change feed (paged, with tombstones and `resync`), and failure injection. Several
 /// [`FakeBackend`]s on one server are several devices of one user.
@@ -1582,6 +1592,7 @@ impl FakeState {
     /// `sermons.begin`: the item, as `recording`, and whether the plan lets the device upload audio.
     fn begin_sermon(&mut self, args: &Value) -> Result<Value, CallError> {
         let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        no_nulls(&args["details"])?;
         if !self.items.contains_key(&uid) {
             let seq = self.next_seq();
             let item = Item {
@@ -1641,6 +1652,7 @@ impl FakeState {
     /// which must be the `text` it sends and a transcript.
     fn import_sermon(&mut self, args: &Value) -> Result<Value, CallError> {
         let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
+        no_nulls(&args["details"])?;
         if let Some(item) = self.items.get(&uid) {
             return Ok(answer(WriteAnswer::Ok { seq: item.seq, record: self.item(&uid) }));
         }

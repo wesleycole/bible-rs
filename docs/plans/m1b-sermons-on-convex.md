@@ -193,6 +193,9 @@ have. Decisions:
   consent was given: it queues through the same `queue_recording` as the app, as each part
   closes and at the end, then waits (`--timeout`, ten minutes by default) until the outbox is
   empty, or says what is still waiting for the next sync.
+- **Encoder fix (a2fba85):** before it, the encoder's input callback handed AudioToolbox memory
+  that moved after each drain, so AAC parts recorded on dev or locally before a2fba85 may be
+  corrupt from packet 4 on. Production has none; nothing else is done for them.
 
 **Built (October 21), item 3, smaller than planned:** a recording from before M1b that was
 transcribed here is imported when sync starts, once (outbox kind `sermon_import`): its transcript

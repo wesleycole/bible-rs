@@ -387,9 +387,12 @@ fn sync(rest: &[String], data_dir: &Path) -> Result<()> {
 fn upload_library(data_dir: &Path) -> Result<Option<(StudyStore, linger_core::sync::SyncHandle)>> {
     use linger_core::sync::{self, ConvexBackend};
     let mut study = StudyStore::open(&data_dir.join("study.sqlite"))?;
+    // Consent first: without it the sign-in (and the Keychain) isn't touched.
+    if crate::app::Settings::load(&study).library_consent != Some(true) {
+        return Ok(None);
+    }
     let store = linger_core::secrets::SecretStore::new(data_dir);
-    let consent = crate::app::Settings::load(&study).library_consent == Some(true);
-    let Some(tokens) = linger_core::auth::saved(&store).filter(|_| consent) else { return Ok(None) };
+    let Some(tokens) = linger_core::auth::saved(&store) else { return Ok(None) };
     let handle =
         sync::start(data_dir, Box::new(ConvexBackend::new(&linger_core::api::convex_url())?), tokens)?;
     study.on_outbox(handle.notifier());
@@ -481,11 +484,11 @@ fn record(rest: &[String], data_dir: &Path) -> Result<()> {
         Some(other) => bail!("--source is mic or system, not {other:?}"),
     };
     let seconds: Option<u64> = flag(rest, "--seconds").map(|s| s.parse()).transpose().context("--seconds")?;
+    // Signed in, with the library syncing: the recording goes to the library as it records, as
+    // in the app. Started first, so an engine that can't start leaves no recording behind.
+    let mut library = upload_library(data_dir)?;
     let rec = crate::recorder::Recording::start(data_dir, source)?;
     eprintln!("Recording {} (press Enter to stop)", rec.id());
-    // Signed in, with the library syncing: the recording goes to the library as it records, as
-    // in the app.
-    let mut library = upload_library(data_dir)?;
     if let Some((study, sync)) = &mut library {
         while !sync.claimed() {
             std::thread::sleep(std::time::Duration::from_millis(20));

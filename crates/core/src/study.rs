@@ -156,6 +156,22 @@ CREATE TABLE recordings(
     upload_audio INTEGER);
 ";
 
+/// A recording's details as the library's sermon item holds them (the server's `details`): its
+/// title, preacher and church, absent rather than null when unsaid, without the app it played in.
+fn sermon_details(
+    d: &crate::recording::Details,
+    started_at: u64,
+    ended_at: Option<u64>,
+) -> crate::records::ItemDetails {
+    crate::records::ItemDetails {
+        title: d.title.clone(),
+        speaker: d.speaker.clone(),
+        from: d.from.clone(),
+        started_at,
+        ended_at,
+    }
+}
+
 /// Brings a file (new, or from any earlier version) up to [`VERSION`], one transaction a step.
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -865,8 +881,8 @@ impl StudyStore {
         };
         let (mut parts, ended) = queued.unwrap_or((0, false));
         if queued.is_none() {
-            let details =
-                json!({ "title": m.details.title, "speaker": m.details.speaker, "from": m.details.from });
+            // `startedAt` is set when it goes, from the payload's own `startedAt` below.
+            let details = serde_json::to_value(sermon_details(&m.details, 0, None))?;
             // The device's day; a recording that didn't note it falls back to UTC's.
             let date =
                 m.recorded_on.clone().unwrap_or_else(|| crate::time::rfc3339(m.started_at)[..10].into());
@@ -976,7 +992,7 @@ impl StudyStore {
             .optional()?;
         if let Some((id, payload)) = queued {
             let mut p: serde_json::Value = serde_json::from_str(&payload)?;
-            p["details"] = json!({ "title": d.title, "speaker": d.speaker, "from": d.from });
+            p["details"] = serde_json::to_value(sermon_details(d, 0, None))?;
             self.conn.execute("UPDATE outbox SET payload = ?2 WHERE id = ?1", params![id, p.to_string()])?;
             return Ok(true);
         }
@@ -984,13 +1000,7 @@ impl StudyStore {
             return Ok(false);
         };
         let (started_at, ended_at) = item.details.map_or((0, None), |d| (d.started_at, d.ended_at));
-        let details = crate::records::ItemDetails {
-            title: d.title.clone(),
-            speaker: d.speaker.clone(),
-            from: d.from.clone(),
-            started_at,
-            ended_at,
-        };
+        let details = sermon_details(d, started_at, ended_at);
         self.set_item_details(uid, d.title.as_deref().unwrap_or_default(), Some(details), None)?;
         Ok(true)
     }
@@ -2025,12 +2035,10 @@ pub(crate) mod cache {
                     let text = serde_json::to_string(&transcript)?;
                     let upload =
                         Upload::new(&uid, "text", None, "application/json", text.clone().into_bytes());
+                    let started = made(m.started_at).as_u64().unwrap_or_default();
                     let args = json!({
                         "uid": uid,
-                        "details": {
-                            "title": m.details.title, "speaker": m.details.speaker, "from": m.details.from,
-                            "startedAt": made(m.started_at),
-                        },
+                        "details": sermon_details(&m.details, started, None),
                         "recordedOn": m.recorded_on.clone().unwrap_or_else(|| crate::time::rfc3339(m.started_at)[..10].into()),
                         "durationMs": m.samples * 1000 / u64::from(crate::recording::SAMPLE_RATE),
                         "textFileUid": upload.uid,
