@@ -30,7 +30,10 @@ targets:
         com.apple.developer.associated-domains:
           - webcredentials:elegant-mink-67.clerk.accounts.dev
     scheme:
-      testTargets: [LingerUITests]
+      testTargets: [LingerUITests, LingerTests]
+      # Pro's two subscriptions for runs and UI tests on the simulator, answered by Xcode instead of
+      # the App Store; the proxy accepts them with APPLE_ENVIRONMENT=Xcode.
+      storeKitConfiguration: Linger.storekit
     settings:
       base:
         PRODUCT_NAME: Linger
@@ -53,6 +56,9 @@ targets:
         # The XCFramework's simulator slice is Apple Silicon only (scripts/build-ios-core.sh), so
         # don't build for Intel simulators.
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+      configs:
+        Debug:
+          "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Linger/Linger-Simulator.entitlements
   # One headless check of the sign-in contract: Clerk's test address and code reach the reader.
   LingerUITests:
     type: bundle.ui-testing
@@ -66,4 +72,24 @@ targets:
         DEVELOPMENT_TEAM: 66W3WWYP3B
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  # Runs inside the app: storekitd accepts a StoreKit test session only from the app's own identity,
+  # and xcodebuild doesn't load the scheme's StoreKit configuration for UI tests. Skips without
+  # pnpm dev and LINGER_TEST_TOKEN (see PurchaseTests.swift), so CI builds it but doesn't run it.
+  LingerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [LingerTests]
+    dependencies:
+      - target: Linger
+      - package: LingerCore
+        link: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wesleycole.linger.tests
+        DEVELOPMENT_TEAM: 66W3WWYP3B
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Linger.app/Linger"
+        BUNDLE_LOADER: "$(TEST_HOST)"
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

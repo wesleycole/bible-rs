@@ -4,16 +4,21 @@ import SwiftUI
 @main
 struct LingerApp: App {
     @State private var model = ReaderModel()
-    @State private var library = Library()
+    @State private var library: Library
+    @State private var store: Store
 
     init() {
         Clerk.configure(publishableKey: Config.clerkPublishableKey)
+        let library = Library()
+        _library = State(initialValue: library)
+        _store = State(initialValue: Store(library: library))
     }
 
     var body: some Scene {
         WindowGroup {
             Root(model: model, library: library)
                 .environment(Clerk.shared)
+                .environment(store)
         }
     }
 }

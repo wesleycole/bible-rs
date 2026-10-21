@@ -89,6 +89,13 @@ final class Library {
         }
     }
 
+    /// Hands an App Store transaction to the proxy, which verifies it; the account it returns shows
+    /// the plan.
+    func attachAppleTransaction(_ jws: String) async throws {
+        let proxy = self.proxy
+        account = try await Task.detached { try proxy.attachAppleTransaction(jws: jws) }.value
+    }
+
     /// Deletes the account on the server, then everything of it on this device. If the server
     /// refuses, the device keeps its data.
     func deleteAccount() async {

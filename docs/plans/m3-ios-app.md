@@ -117,7 +117,12 @@ translations), and that the app launches to text as fast as now.
 - Rust: FFI round-trips for the new records; `Conversation` with a fake proxy.
 - UI tests for sign-in (against Clerk's test mode), selecting a verse and writing a note, and an Ask
   question with a citation chip.
-- StoreKit Testing in Xcode: purchase, renewal, refund and revoke move the plan on `/v1/me`.
+- StoreKit: a hosted test target, LingerTests (storekitd accepts only the app's identity; xcodebuild
+  doesn't load a scheme's StoreKit configuration into an XCUITest), proves purchase and refund against
+  `pnpm dev`; renewal and revoke by a scratch run; the sandbox purchase is manual. LingerTests needs
+  `pnpm dev` with `APPLE_ENVIRONMENT=Xcode` and `LINGER_TEST_TOKEN`, and skips without them; CI
+  doesn't build it. Debug simulator builds sign with `Linger-Simulator.entitlements`, which adds
+  `get-task-allow`; without it storekitd refuses the test session.
 
 ## Done when
 
@@ -140,7 +145,13 @@ translations), and that the app launches to text as fast as now.
   with 1 highlight and 1 note deleted its account from Settings; afterwards Clerk answered 404 for
   the user, dev Convex held 0 of its records and the device's study.sqlite was empty. On a device
   later.
-- A sandbox purchase on the iPhone unlocks Pro on the Mac.
+- A sandbox purchase on the iPhone unlocks Pro on the Mac. **Built; the Xcode-configuration path is
+  proven on the simulator** (iPhone 17 Pro, dev): LingerTests buys pro.yearly, the proxy makes the
+  test user Pro from App Store, and a refund makes it Free; a scratch run renewed it (a new
+  transaction on the same original, `renewsAt` moved) and expired it (Free). StoreKit Testing has no
+  separate revoke: a refund is the client-side revocation, and Family Sharing's REVOKE comes only by
+  App Store notification, which a local proxy can't receive. Waiting on Wes: the sandbox purchase
+  itself (Paid Applications agreement, the two products in App Store Connect, a sandbox tester).
 
 **M3b:**
 

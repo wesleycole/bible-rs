@@ -1,4 +1,4 @@
-//! Linger's proxy, as one signed-in user: the account's details and its deletion.
+//! Linger's proxy, as one signed-in user: the account's details, App Store purchases, and deletion.
 
 use std::sync::Arc;
 
@@ -76,6 +76,12 @@ impl Account {
 
     pub fn me(&self) -> Result<AccountInfo, AccountError> {
         Ok(self.api.me()?.into())
+    }
+
+    /// An App Store purchase, restore or renewal: the server verifies the transaction's JWS and
+    /// records it for this account. Returns the account after.
+    pub fn attach_apple_transaction(&self, jws: String) -> Result<AccountInfo, AccountError> {
+        Ok(self.api.attach_apple_transaction(&jws)?.into())
     }
 
     /// Deletes the account: the Clerk user, the library on the server, and any audio in flight.

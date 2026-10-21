@@ -274,6 +274,15 @@ impl Api {
         url_of(self.json("POST", "/v1/billing/stripe/checkout", Some(&body))?)
     }
 
+    /// Hands an App Store transaction (its JWS) to the server, which verifies it and records the
+    /// subscription; returns the account as it stands after.
+    pub fn attach_apple_transaction(&self, jws: &str) -> Result<Me, ApiError> {
+        let body = serde_json::json!({ "jws": jws });
+        let v = self.json("POST", "/v1/billing/apple/transactions", Some(&body))?;
+        serde_json::from_value(v)
+            .map_err(|e| ApiError::Unavailable(format!("Unreadable account details: {e}")))
+    }
+
     /// The Stripe Customer Portal, to manage or cancel the subscription.
     pub fn portal(&self) -> Result<String, ApiError> {
         url_of(self.json("POST", "/v1/billing/stripe/portal", None)?)

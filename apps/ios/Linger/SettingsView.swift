@@ -1,5 +1,6 @@
 import ClerkKit
 import LingerCore
+import StoreKit
 import SwiftUI
 
 /// Settings: the library's sync, and the account.
@@ -8,6 +9,8 @@ struct SettingsView: View {
     @Environment(Clerk.self) private var clerk
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDelete = false
+    @State private var showingPro = false
+    @State private var managing = false
 
     var body: some View {
         NavigationStack {
@@ -35,6 +38,18 @@ struct SettingsView: View {
                     LabeledContent("Email", value: clerk.user?.primaryEmailAddress?.emailAddress ?? "")
                     if let account = library.account {
                         LabeledContent("Plan", value: account.pro ? "Pro" : "Free")
+                        if account.pro {
+                            if let until = account.renewsAt.flatMap(date) {
+                                LabeledContent("Paid through", value: until.formatted(date: .abbreviated, time: .omitted))
+                            }
+                            if account.source == "app_store" {
+                                Button("Manage Subscription") { managing = true }
+                            } else if account.source == "stripe" {
+                                Text("Bought on the Mac: manage it in Linger there.").foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Button("Upgrade to Pro") { showingPro = true }
+                        }
                         LabeledContent("Questions left", value: "\(account.questionsLeft)")
                         LabeledContent("Sermon hours left", value: account.sermonHoursLeft.formatted(.number.precision(.fractionLength(0...1))))
                         if let used = account.storageUsed, let limit = account.storageLimit {
@@ -55,6 +70,8 @@ struct SettingsView: View {
                 Button("Done") { dismiss() }
             }
             .task { await library.loadAccount() }
+            .sheet(isPresented: $showingPro) { ProSheet(library: library) }
+            .manageSubscriptionsSheet(isPresented: $managing)
             .confirmationDialog("Delete your account?", isPresented: $confirmingDelete, titleVisibility: .visible) {
                 Button("Delete account", role: .destructive) {
                     Task { await library.deleteAccount() }
@@ -63,6 +80,12 @@ struct SettingsView: View {
                 Text("This deletes your library on Linger's servers and on this iPhone: notes, highlights, bookmarks and recordings. It can't be undone.")
             }
         }
+    }
+
+    private func date(_ iso: String) -> Date? {
+        let format = ISO8601DateFormatter()
+        format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return format.date(from: iso)
     }
 
     private func bytes(_ n: UInt64) -> String {
