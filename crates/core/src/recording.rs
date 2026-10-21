@@ -181,9 +181,9 @@ pub struct ChunkWriter {
 }
 
 #[cfg(feature = "native")]
+// Off Apple platforms `PartWriter` is a unit struct.
+#[allow(clippy::default_constructed_unit_structs)]
 impl ChunkWriter {
-    // Off Apple platforms `PartWriter` is a unit struct.
-    #[allow(clippy::default_constructed_unit_structs)]
     pub fn create(data_dir: &Path, source: Source) -> Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
         let dir = recordings_dir(data_dir).join(&id);
@@ -201,7 +201,9 @@ impl ChunkWriter {
         };
         let mut w =
             Self { dir, manifest, current: None, in_chunk: 0, before: 0, parts: PartWriter::default() };
-        w.parts.start(&mut w.manifest)?;
+        if let Err(e) = w.parts.start(&mut w.manifest) {
+            w.drop_parts(e);
+        }
         w.write_manifest()?;
         Ok(w)
     }
@@ -226,8 +228,13 @@ impl ChunkWriter {
 
     /// Appends mono samples at [`SAMPLE_RATE`], closing a chunk every [`CHUNK_SECONDS`].
     pub fn push(&mut self, mut samples: &[i16]) -> Result<()> {
-        if self.parts.push(&self.dir, &mut self.manifest, samples)? {
-            self.write_manifest()?;
+        match self.parts.push(&self.dir, &mut self.manifest, samples) {
+            Ok(false) => {}
+            Ok(true) => self.write_manifest()?,
+            Err(e) => {
+                self.drop_parts(e);
+                self.write_manifest()?;
+            }
         }
         let per_chunk = u64::from(SAMPLE_RATE * CHUNK_SECONDS);
         while !samples.is_empty() {
@@ -268,7 +275,9 @@ impl ChunkWriter {
     /// Closes the last chunk and marks the recording finished.
     pub fn finish(mut self) -> Result<Manifest> {
         self.close_chunk()?;
-        std::mem::take(&mut self.parts).finish(&self.dir, &mut self.manifest)?;
+        if let Err(e) = std::mem::take(&mut self.parts).finish(&self.dir, &mut self.manifest) {
+            self.drop_parts(e);
+        }
         self.manifest.ended_at = Some(crate::time::now());
         self.write_manifest()?;
         Ok(self.manifest)
@@ -292,6 +301,14 @@ impl ChunkWriter {
 
     fn write_manifest(&self) -> Result<()> {
         write(&self.dir, &self.manifest)
+    }
+
+    /// The AAC parts failed: the recording goes on as WAV chunks alone, which are what keeps it
+    /// safe, and its audio is encoded from them afterwards, as an old recording's is.
+    fn drop_parts(&mut self, e: anyhow::Error) {
+        eprintln!("recording {}: AAC parts stopped, WAV continues: {e:#}", self.manifest.id);
+        self.parts = PartWriter::default();
+        self.manifest.aac = None;
     }
 }
 
@@ -324,12 +341,14 @@ impl PartWriter {
 
     /// Encodes `samples`; true when a part closed, so the manifest changed.
     fn push(&mut self, dir: &Path, m: &mut Manifest, samples: &[i16]) -> Result<bool> {
-        let packets = self.encoder.as_mut().expect("started").push(samples)?;
+        let Some(encoder) = self.encoder.as_mut() else { return Ok(false) };
+        let packets = encoder.push(samples)?;
         self.write(dir, m, packets)
     }
 
     fn finish(mut self, dir: &Path, m: &mut Manifest) -> Result<()> {
-        let packets = self.encoder.take().expect("started").finish()?;
+        let Some(encoder) = self.encoder.take() else { return Ok(()) };
+        let packets = encoder.finish()?;
         self.write(dir, m, packets)?;
         self.close(m)
     }
@@ -389,6 +408,49 @@ impl PartWriter {
 
     fn finish(self, _: &Path, _: &mut Manifest) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Writes the recording's M4A: its parts' packets, unchanged, behind one `moov` that presents
+/// exactly the recorded samples. The packet sizes come from the parts' ADTS headers.
+#[cfg(all(feature = "native", feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+pub fn write_m4a(dir: &Path, m: &Manifest, out: &mut impl std::io::Write) -> Result<()> {
+    let parts = m.aac.as_ref().context("this recording has no AAC parts")?;
+    let files = parts
+        .files
+        .iter()
+        .map(|p| std::fs::read(dir.join(&p.file)).with_context(|| format!("reading {}", p.file)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut packets = Vec::new();
+    for (part, bytes) in parts.files.iter().zip(&files) {
+        let these = aac::adts_packets(bytes).with_context(|| format!("reading {}", part.file))?;
+        anyhow::ensure!(
+            these.len() as u32 == part.packets,
+            "{} holds {} packets, not {}",
+            part.file,
+            these.len(),
+            part.packets
+        );
+        packets.extend(these);
+    }
+    let sizes: Vec<u32> = packets.iter().map(|p| p.len() as u32).collect();
+    mp4::write(out, parts.priming_frames, m.samples, &sizes, &mut Slices(packets.iter(), &[]))
+}
+
+/// The packets back to back, read without copying them into one buffer.
+#[cfg(all(feature = "native", feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+struct Slices<'a>(std::slice::Iter<'a, &'a [u8]>, &'a [u8]);
+
+#[cfg(all(feature = "native", feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+impl std::io::Read for Slices<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.1.is_empty() {
+            match self.0.next() {
+                Some(next) => self.1 = next,
+                None => return Ok(0),
+            }
+        }
+        self.1.read(buf)
     }
 }
 
@@ -506,6 +568,33 @@ mod tests {
         assert_eq!(sizes[..2], [per_part, per_part]);
         assert_eq!(sizes.len(), 3);
         assert_eq!(part_packets(&dir, parts), expected);
+
+        // The M4A from the parts is the one the encoder's own packets make, presenting every
+        // recorded sample.
+        let mut from_parts = Vec::new();
+        write_m4a(&dir, &m, &mut from_parts).unwrap();
+        let mut direct = Vec::new();
+        let sizes: Vec<u32> = expected.iter().map(|p| p.len() as u32).collect();
+        mp4::write(&mut direct, priming, pcm.len() as u64, &sizes, &mut expected.concat().as_slice())
+            .unwrap();
+        assert!(from_parts == direct, "the M4A from the parts differs");
+    }
+
+    #[test]
+    #[cfg(all(feature = "apple-audio", any(target_os = "macos", target_os = "ios")))]
+    fn a_failing_part_leaves_the_wav_recording() {
+        let data = temp("partfail");
+        let mut w = ChunkWriter::create(&data, Source::Microphone).unwrap();
+        // The second part can't be created.
+        std::fs::create_dir(w.dir().join("part-0001.aac")).unwrap();
+        let pcm = sweep(6 * 60);
+        for block in pcm.chunks(1600) {
+            w.push(block).unwrap();
+        }
+        let m = w.finish().unwrap();
+        assert_eq!(m.aac, None);
+        assert_eq!(m.samples, pcm.len() as u64);
+        assert_eq!(load(&data, &m.id).unwrap(), m);
     }
 
     #[test]

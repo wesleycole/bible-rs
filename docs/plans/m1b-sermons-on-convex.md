@@ -62,6 +62,13 @@ transcription (M5), the digest (M2), playback of synced audio in the desktop app
    `esds` AudioSpecificConfig, the edit list and `roll` group the spike settled), then `mdat` copied
    from the parts; no re-encoding. Golden files in tests. The spike's `write` takes the packet sizes
    and a reader over the packets; the packet table from 2 feeds it.
+   **Built (October 21), where it is smaller:** a part is 4688 packets (the first boundary at or
+   after five minutes), and the manifest lists each closed part with its packet count, the
+   encoder's priming and the exact sample count; there is no separate packet table, because
+   `recording::write_m4a` reads the sizes back from the parts' ADTS headers. If the encoder or a
+   part file fails mid-recording, the parts stop (`aac` cleared from the manifest, the error
+   logged) and the WAV chunks go on; that recording's audio is encoded from the WAV afterwards,
+   as an old recording's is. The golden file is `recording/golden.m4a`, from fixed packets.
 4. **Linux:** one FLAC with a seek table at the end through `flacenc`.
 5. **Upload sequence**, in core, through the outbox: parts as they close, only if `sermons.begin` said
    `uploadAudio`; at the end, the M4A (or FLAC) in 8 MB `uploadPart` slices, then `sermons.finish`.

@@ -321,6 +321,22 @@ mod tests {
         assert!(write(&mut Vec::new(), 2112, 5000, &[10, 10, 10], &mut [7u8; 20].as_slice()).is_err());
     }
 
+    /// The whole file, byte for byte, for a fixed set of packets: any change to what the muxer
+    /// writes shows here. `LINGER_UPDATE_GOLDEN=1` rewrites it after a deliberate change, which
+    /// then needs checking in the players again (see the spike files below).
+    #[test]
+    fn the_file_is_byte_stable() {
+        let sizes: Vec<u32> = (0..150u32).map(|i| 6 + (i * 7) % 23).collect();
+        let packets: Vec<u8> = (0..sizes.iter().sum::<u32>()).map(|i| (i * 31 % 251) as u8).collect();
+        let mut m4a = Vec::new();
+        write(&mut m4a, 2112, 150 * 1024 - 2112 - 448, &sizes, &mut packets.as_slice()).unwrap();
+        let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/recording/golden.m4a");
+        if std::env::var_os("LINGER_UPDATE_GOLDEN").is_some() {
+            std::fs::write(&golden, &m4a).unwrap();
+        }
+        assert!(m4a == std::fs::read(&golden).unwrap(), "the muxer's output changed");
+    }
+
     /// The M1b spike's test files (docs/plans/m1b-sermons-on-convex.md): a five-minute and a
     /// two-hour recording whose every second carries two tones naming that second, encoded once
     /// and written as M4A and as bare ADTS, for the players and `ffprobe` to report on.
