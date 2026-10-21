@@ -71,7 +71,10 @@ SHA-256) and knows what to purge. `sources.passage { from, to, works? }` is a us
 library's tools are called by the apps; a signed-in user with no `users` row yet gets `[]`, like
 `highlights.list`. The term lookup for the topics tool is not written; the index is. No deployment
 has been loaded. Easton's module tags some continuation references ("Rev. 1:8, 11") with the wrong
-book; the citations are kept as the module has them and noted in `LICENSES/README.md`.
+book; the citations are kept as the module has them and noted in `LICENSES/README.md`. The
+byte-identity test (`checked_in_files_match_the_pinned_inputs`) only checks the works whose pinned
+zip is in `.sources/`, so it runs where `build-sources` has been run and never in CI, where
+`.sources/` is empty.
 
 ## Ask
 
