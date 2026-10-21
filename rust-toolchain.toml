@@ -1,0 +1,4 @@
+# One Rust for CI, the Mac and the orbs: a new stable's clippy lints otherwise reach CI first.
+[toolchain]
+channel = "1.99"
+components = ["rustfmt", "clippy"]
