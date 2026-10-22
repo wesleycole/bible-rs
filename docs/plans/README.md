@@ -16,6 +16,7 @@ Each fact is written in one document; the others link to it.
 |---|---|
 | [backend.md](backend.md) | Accounts and sign-in, Convex auth, the Ask proxy and contract, model routing, **plans and limits**, payments, licensing of Bible text, **privacy and consent**, observability, server testing, environments |
 | [library.md](library.md) | The library's data model, sync and handoff, capture (sermons, photos, notes), references and anchors, search and the library's Ask tools, outside sources, the web client, what the library costs |
+| [ios-design.md](ios-design.md) | How the iOS app looks and behaves: the tabs, the jump field, the verse row, Ask, Add, Library, Settings |
 | `m1-…` to `m9-…` | One implementation plan per milestone: the work, the tests, what "done" means, and the risks. They don't restate design; they link to it |
 
 [DECISIONS.md](../../DECISIONS.md) records why the reader is built the way it is (egui, typography,
@@ -34,7 +35,7 @@ on top of them.
 | M1 | [The library foundation](m1-library-foundation.md) | The production Clerk instance and `trylinger.com` first; Effect inside Convex, the record schema generated from Rust, the sync engine in core behind `LibraryBackend`, the desktop on it, migration of notes, highlights, bookmarks and Recents | |
 | M1b | [Sermons on Convex](m1b-sermons-on-convex.md) | One AAC encoder and one M4A muxer in core, parts for crash safety, the transcription workflow in Convex, recordings migrated, Pro audio kept, Vercel Blob gone | M1 |
 | M2 | [Search and Ask over the library](m2-search-and-ask.md) | Chunks, the digest step and its anchors, `library.search`, contract `ask/5`, citations, the reader's library marks, export, `cargo xtask eval-ask` | M1, M1b |
-| M3 | [The iOS app](m3-ios-app.md) | M3a: sign-in, sync, the reader with notes and highlights, Recents, StoreKit, account deletion; M3b: the library's sermons and Ask over the library | M1 (M3a); M1b, M2 (M3b) |
+| M3 | [The iOS app](m3-ios-app.md) | M3a: sign-in, sync, the reader with notes and highlights, Recents, StoreKit, account deletion; M3b: the [redesign](ios-design.md) around Bible, Library and Ask | M1 (M3a); M1b, M2 (M3b) |
 | M4 | [Photo capture](m4-photo-capture.md) | Camera and scanner, PencilKit marks, extraction, review, sources, photo allowances | M3 |
 | M5 | [Recording everywhere](m5-recording-everywhere.md) | iOS recording on core's encoder, slides attached by time, on-device transcription for Free (iOS, macOS, Linux) | M1b, M3, M4 |
 | M6 | [The Mac as a capture device, and handoff](m6-mac-capture-and-handoff.md) | Continuity Camera, drag-and-drop, marks on the Mac, reading position and plan sync, `ASWebAuthenticationSession` | M4 |

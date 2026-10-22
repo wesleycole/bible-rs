@@ -18,8 +18,10 @@ had before M1 cross the FFI cheaply; otherwise it waits for M3b. Build order: th
 and `LingerCoreTests`, sign-in, the reader and notes with sync, then the rest. Every UI step is
 checked on the simulator.
 
-**M3b, after M1b and M2.** The library tab's sermon views and playback (app 4), and Ask with the
-library tools (FFI 4, app 5), plus the Done-when items that need them.
+**M3b, after M1b and M2.** The app's redesign around Bible, Library and Ask
+([ios-design.md](ios-design.md)), with the library's item views (app 4, without playback) and Ask with
+the library tools (FFI 4, app 5), plus the Done-when items that need them. The work is
+[below](#m3b-the-redesign); where the redesign and "The app" disagree, the redesign wins.
 
 **Proxy for M3a.** `me()`, deletion, Ask and StoreKit go to the proxy, and the production proxy
 verifies production tokens, so the simulator talks to a proxy on dev Clerk and dev Convex: `pnpm dev`
@@ -91,6 +93,59 @@ translations), and that the app launches to text as fast as now.
 8. **Sync status** in the library tab, as on the desktop.
 9. **Handoff basics:** opening a citation link from the Mac isn't in scope; reading position sync is M6.
 
+## M3b: the redesign
+
+The design is [ios-design.md](ios-design.md). Today's app (`apps/ios/Linger`, about 1,000 lines) is
+one reader with sheets for Notes, Recents and Settings; the redesign replaces its shell and reuses its
+pieces.
+
+**Where today's views go.**
+
+| Today | In the redesign |
+|---|---|
+| `LingerApp.Root` → `ReaderView` | A `TabView`: Bible, Library, Settings, and Ask in the search-role slot |
+| `ReaderView`'s toolbar (‹ › arrows, translation picker, typed jump) | The jump field with the book and chapter navigator; end-of-chapter links |
+| `ReaderView`'s selection sheet and `VerseRow` marks | The glass verse row, the ··· menu, margin glyphs and the margin popover |
+| `Notes.swift` (verse note sheet, notes list) | The note sheet from the + menu; the list becomes Library's Notes filter |
+| `Recents.swift` (read-only chats) | Ask's history list, and Ask itself |
+| `SettingsView`, `ProSheet` | The Settings tab, with Reading on top; the Pro sheet's no-prices state |
+| `ConsentSheet`, `SignInView`, `Store` | Unchanged |
+
+**The FFI grows** (adding to 1–7 above):
+
+8. **Library items:** `Study` gains the cache calls the desktop's Library page and chips use since
+   ecd2896: `StudyStore::items`, `item`, `body` and `spans_in_chapter`, and `save_note_item` for Save
+   to library. Filtering by kind and origin stays in core, not Swift.
+9. **Search:** `LibrarySync` exposes the library search the Ask tools already use
+   (`chat::UserLibrary::search`, which answers from the cache when offline, adba3b9), so the jump
+   field shows verses from `BibleLibrary.search` and library items together.
+   `suggest_references` already gives "Go to John 3".
+10. **Ask:** FFI 4 as planned. The "Read 1 sermon and 1 note" line is built from the `Tool` events the
+    device already reports while it runs the library tools; the proxy and contract don't change. The
+    scope control ("Bible only") keeps the library tools from running; whether the proxy, which adds
+    the tools to the request, needs a contract change for it is settled when FFI 10 starts.
+
+**Outside this milestone, and what shows until it lands.**
+
+- **Reference works** in Library, the popover and Ask's third source group need M7 loaded and
+  `ask/6` ([m7](m7-outside-sources.md#ask)). Until then those sections are absent, not empty.
+- **Photo** in the + menu is M4; **Record** is M5 on iOS. **Import** has no milestone yet. Until each
+  lands its menu entry is hidden.
+- The Marks filter and the bookmark glyph use what M3a already syncs.
+
+**Build order:** the deployment target (below), the tab shell with today's reader inside it, the jump
+field and navigator, the verse row, ··· and the + menu, the margin popover and verse page, Library
+from the cache (FFI 8, 9), Ask with sources, peek and the return bar (FFI 10), then Settings. Each step
+is checked on the simulator against the prototype's screenshots.
+
+**Deployment target:** iOS 26.1, raised from 17. The glass, the search-role tab and
+`tabViewBottomAccessory` need it, and Linger has no iOS users yet. The owner confirms this before the
+build starts ([ios-design.md](ios-design.md#open-questions)).
+
+**Tests:** extend LingerUITests with the prototype's script: jump to John 3 through the navigator, tap
+Romans 8:28, highlight it, ask a question against a mock proxy, open a source and come back by the
+return bar, add a note through the +, and open the verse page. `LingerCoreTests` covers FFI 8–10.
+
 ## StoreKit 2
 
 - Products `pro.monthly` and `pro.yearly` in one group; a StoreKit configuration file for Xcode testing.
@@ -155,7 +210,9 @@ translations), and that the app launches to text as fast as now.
 
 **M3b:**
 
-- Ask on the iPhone cites a sermon recorded on the Mac and plays it from the cited second.
+- The redesign's script (above) passes on the simulator, and its screens match the prototype's.
+- Ask on the iPhone cites a sermon recorded on the Mac and opens its transcript at the cited moment
+  (playback is later).
 - A TestFlight build is in testers' hands, with review notes explaining why sign-in is required.
 
 ## Risks
