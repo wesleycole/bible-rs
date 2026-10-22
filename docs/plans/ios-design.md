@@ -114,7 +114,8 @@ own "Ask about this verse" bar opens the same Ask sheet, so the page's sections 
 
 The + opens a small glass menu: Note, Photo, Record, Import, and "Anchored to Romans 8:28 · Change".
 With nothing selected it anchors to the chapter on screen. Library's home also has a Record / Photo /
-Note / Import row.
+Note / Import row. Cancelling a note keeps the verse selection, so another action can follow (the
+owner's decision, October 22).
 
 ## Library
 
@@ -135,6 +136,12 @@ left "23 of 30 this month", Upgrade to Pro, sync, storage, export, Sign out, and
 The Pro sheet shows "Couldn't load prices. Try again" when StoreKit returns no products, never an empty
 section.
 
+## The deployment target
+
+iOS 26.1 and later only, with no fallback for older versions (the owner's decision, October 22). The
+design needs iOS 26 APIs: Liquid Glass, the search-role tab, and `tabViewBottomAccessory` from 26.1.
+Linger has no iOS users yet.
+
 ## Not in this design
 
 - Audio playback of sermons: later, by the owner's decision.
@@ -144,12 +151,8 @@ section.
 
 ## Open questions
 
-- **The deployment target.** The design uses iOS 26 APIs (glass, the search-role tab,
-  `tabViewBottomAccessory` from 26.1). M3 targets iOS 17. Linger has no iOS users yet, so the
-  recommendation is iOS 26.1 and no fallback.
 - The navigator scrolls to the current book's grid on open, which hides Recent until you scroll up.
   Kept for now.
 - A long selection whose start has scrolled away has nothing saying where it starts. Left out until it
   comes up.
-- Cancelling a note clears the verse selection in the prototype. The recommendation is to keep it.
 - The Ask button's bubble draws black, as the system draws that slot. It could take the navy accent.

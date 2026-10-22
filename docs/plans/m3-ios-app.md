@@ -138,9 +138,9 @@ field and navigator, the verse row, ··· and the + menu, the margin popover an
 from the cache (FFI 8, 9), Ask with sources, peek and the return bar (FFI 10), then Settings. Each step
 is checked on the simulator against the prototype's screenshots.
 
-**Deployment target:** iOS 26.1, raised from 17. The glass, the search-role tab and
-`tabViewBottomAccessory` need it, and Linger has no iOS users yet. The owner confirms this before the
-build starts ([ios-design.md](ios-design.md#open-questions)).
+**Deployment target:** iOS 26.1, raised from 17, with no fallback for older versions (the owner's
+decision, October 22; [ios-design.md](ios-design.md#the-deployment-target)). The glass, the
+search-role tab and `tabViewBottomAccessory` need it, and Linger has no iOS users yet.
 
 **Tests:** extend LingerUITests with the prototype's script: jump to John 3 through the navigator, tap
 Romans 8:28, highlight it, ask a question against a mock proxy, open a source and come back by the
@@ -163,7 +163,8 @@ return bar, add a note through the +, and open the verse page. `LingerCoreTests`
   with Apple joins when Apple sign-in is turned on in Clerk.
 - Usage descriptions arrive with the features that need them (camera and photo library in M4,
   microphone in M5).
-- The deployment target stays iOS 17; SpeechTranscriber (M5) is used only on iOS 26 and later.
+- The deployment target is iOS 26.1 from M3b ([above](#m3b-the-redesign)), so SpeechTranscriber (M5)
+  needs no availability check.
 
 ## Tests
 
