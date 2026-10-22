@@ -44,6 +44,7 @@ import type * as library_files from "../library/files.js";
 import type * as library_highlights from "../library/highlights.js";
 import type * as library_items from "../library/items.js";
 import type * as library_notes from "../library/notes.js";
+import type * as library_preferences from "../library/preferences.js";
 import type * as library_purge from "../library/purge.js";
 import type * as library_rank from "../library/rank.js";
 import type * as library_search from "../library/search.js";
@@ -100,6 +101,7 @@ declare const fullApi: ApiFromModules<{
   "library/highlights": typeof library_highlights;
   "library/items": typeof library_items;
   "library/notes": typeof library_notes;
+  "library/preferences": typeof library_preferences;
   "library/purge": typeof library_purge;
   "library/rank": typeof library_rank;
   "library/search": typeof library_search;

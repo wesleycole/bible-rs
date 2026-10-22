@@ -285,6 +285,22 @@ impl Study {
         Ok(on)
     }
 
+    /// The colour scheme and theme, as last chosen on any of the account's devices (System and
+    /// Linger until one is). The observer hears when another device changes them.
+    pub fn appearance(&self) -> crate::Appearance {
+        let (scheme, theme) = self.lock().appearance();
+        crate::Appearance { scheme: scheme.into(), theme: theme.into() }
+    }
+
+    /// Chooses the colour scheme and theme, for every device on the account.
+    pub fn set_appearance(
+        &self,
+        scheme: crate::AppearanceScheme,
+        theme: crate::ThemeName,
+    ) -> Result<(), BibleError> {
+        self.write(|s| s.set_appearance(scheme.into(), theme.into()).map_err(failed))
+    }
+
     /// Every verse note, in canonical order.
     pub fn notes(&self) -> Vec<VerseNote> {
         self.lock()

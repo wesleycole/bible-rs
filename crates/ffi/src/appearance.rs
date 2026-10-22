@@ -39,6 +39,13 @@ macro_rules! same_enum {
 same_enum!(AppearanceScheme, core::Scheme, System, Light, Dark);
 same_enum!(ThemeName, core::Theme, Linger, Paper, Forest, Oxblood, Plum, Graphite);
 
+/// What Settings › Appearance chose: synced, last writer wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct Appearance {
+    pub scheme: AppearanceScheme,
+    pub theme: ThemeName,
+}
+
 /// One palette. Field names are the design's colour roles; see `linger_core::appearance::Palette`.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ThemePalette {

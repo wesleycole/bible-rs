@@ -138,6 +138,33 @@ const page = async (t: TestConvex, subject: string, after: number): Promise<Page
   return p
 }
 
+describe("library.preferences", () => {
+  it("keeps one record a user, the last write standing, and feeds it at its latest seq without ids", async () => {
+    const t = await makeConvex()
+    const ann = as(t, "user_ann")
+    await ann.mutation(api.library.highlights.set, { verse: JOHN_3_16, color: "yellow" })
+    expect(await ann.mutation(api.library.preferences.set, { scheme: "dark", theme: "forest" })).toMatchObject({
+      result: "ok",
+      seq: 2,
+      record: { type: "preferences", uid: "preferences", seq: 2, scheme: "dark", theme: "forest" }
+    })
+    // Another device's later choice wins outright: there is no baseSeq to be stale.
+    expect(await ann.mutation(api.library.preferences.set, { scheme: "system", theme: "paper" })).toMatchObject({ result: "ok", seq: 3 })
+    expect(await t.run((ctx) => ctx.db.query("preferences").collect())).toHaveLength(1)
+    expect((await page(t, "user_ann", 0)).records.at(-1)).toEqual({
+      type: "preferences",
+      uid: "preferences",
+      seq: 3,
+      updatedAt: expect.any(Number),
+      scheme: "system",
+      theme: "paper"
+    })
+    expect((await page(t, "user_ann", 3)).records).toEqual([])
+    expect((await page(t, "user_bob", 0)).records).toEqual([])
+    await expect(ann.mutation(api.library.preferences.set, { scheme: "dim", theme: "paper" } as never)).rejects.toThrow()
+  })
+})
+
 describe("library.sync.changes", () => {
   it("pages every type by seq without skipping, tombstones included, and never leaks ids", async () => {
     const t = await makeConvex()
@@ -809,6 +836,7 @@ describe("library.search, items.read, items.forChapter and export (M2's Convex h
       const t = await makeConvex()
       const ann = as(t, "user_ann")
       await ann.mutation(api.library.notes.upsert, { uid: "n1", text: "Grace for the whole world.", anchors: [{ from: JOHN_3_16, to: JOHN_3_16, origin: "user" }], capturedAt: Date.UTC(2026, 9, 18) })
+      await ann.mutation(api.library.preferences.set, { scheme: "dark", theme: "forest" })
       const started = await ann.action(api.library.export.start, {})
       expect(started).toEqual({ url: expect.stringContaining("/api/storage/"), expiresAt: Date.now() + 24 * 3600_000 })
       const file = (await t.run((ctx) => ctx.db.query("files").unique()))!
@@ -823,6 +851,7 @@ describe("library.search, items.read, items.forChapter and export (M2's Convex h
       expect(text).toContain("README.md")
       expect(text).toContain("2026-10-18-grace-for-the-whole-world-n1/grace-for-the-whole-world.md")
       expect(text).toContain("- References:\n  - John 3:16\n")
+      expect(text).toContain("Appearance: the Forest theme, dark.")
       // A day on, the file is gone.
       await t.finishAllScheduledFunctions(vi.runAllTimers)
       expect(await t.run((ctx) => ctx.db.query("files").collect())).toEqual([])

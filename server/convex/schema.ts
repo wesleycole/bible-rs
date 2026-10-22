@@ -1,6 +1,6 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
-import { BookmarkFields, ChatFields, HighlightFields, ItemFields } from "../shared/records.js"
+import { BookmarkFields, ChatFields, HighlightFields, ItemFields, PreferencesFields } from "../shared/records.js"
 
 /** Token prices for one model, in micro-dollars per million tokens. */
 export const prices = v.object({
@@ -207,6 +207,9 @@ export default defineSchema({
     .index("by_user_seq", ["userId", "seq"])
     .index("by_deleted", ["deletedAt"])
     .index("by_user_uid", ["userId", "uid"]),
+
+  /** One per user: the synced colour scheme and theme. */
+  preferences: defineTable({ userId: v.id("users"), ...PreferencesFields }).index("by_user_seq", ["userId", "seq"]),
 
   chats: defineTable({ userId: v.id("users"), ...ChatFields })
     .index("by_user_seq", ["userId", "seq"])

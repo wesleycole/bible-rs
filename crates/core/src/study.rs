@@ -24,7 +24,7 @@ use crate::books::{BookId, ChapterIdx, VerseRef};
 #[cfg(feature = "sync")]
 use crate::records::FeedRecord;
 pub use crate::records::HighlightColor;
-use crate::records::{Anchor, AnchorOrigin, Item, ItemKind, ItemStatus, VerseId};
+use crate::records::{Anchor, AnchorOrigin, Item, ItemKind, ItemStatus, Scheme, Theme, VerseId};
 use crate::time::parse_rfc3339;
 pub use crate::time::{now, rfc3339};
 
@@ -71,6 +71,8 @@ pub struct StudyStore {
     /// Conflict copies of each verse's own note, oldest first.
     copies: HashMap<u32, Vec<Note>>,
     bookmarks: BTreeMap<u32, Bookmark>,
+    /// The synced appearance: the colour scheme and the theme.
+    appearance: (Scheme, Theme),
     generation: u64,
     /// SQLite's `data_version` when the mirrors were last read: it moves when another connection
     /// (the sync engine's) commits.
@@ -108,7 +110,7 @@ CREATE TABLE IF NOT EXISTS chats(
 ";
 
 /// The `PRAGMA user_version` this build migrates a file to.
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 
 /// Migration 1 (M1): highlights and bookmarks become the library cache, keyed by [`VerseId`],
 /// with the outbox, the feed cursor and recorded conflicts beside them.
@@ -171,6 +173,13 @@ const MIGRATION_3: &str = "
 CREATE TABLE recordings(
     uid TEXT PRIMARY KEY, parts INTEGER NOT NULL DEFAULT 0, ended INTEGER NOT NULL DEFAULT 0,
     upload_audio INTEGER);
+";
+
+/// Migration 4 (M3b): the synced appearance, one row (`uid` "preferences") with the server's `seq`.
+const MIGRATION_4: &str = "
+CREATE TABLE preferences(
+    uid TEXT PRIMARY KEY, scheme TEXT NOT NULL, theme TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0,
+    updated INTEGER NOT NULL);
 ";
 
 /// A recording's details as the library's sermon item holds them (the server's `details`): its
@@ -305,6 +314,12 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(MIGRATION_3)?;
         tx.pragma_update(None, "user_version", 3)?;
+        tx.commit()?;
+    }
+    if version < 4 {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(MIGRATION_4)?;
+        tx.pragma_update(None, "user_version", 4)?;
         tx.commit()?;
     }
     Ok(())
@@ -603,6 +618,8 @@ pub(crate) enum Kind {
     /// A recording transcribed here before M1b: its transcript as the `text` file, then
     /// `sermons.import`; keyed by its uid.
     SermonImport,
+    /// The appearance, keyed by its uid, "preferences".
+    Preferences,
 }
 
 impl Kind {
@@ -616,6 +633,7 @@ impl Kind {
             Kind::SermonPart => "sermon_part",
             Kind::SermonEnd => "sermon_end",
             Kind::SermonImport => "sermon_import",
+            Kind::Preferences => "preferences",
         }
     }
 
@@ -630,6 +648,7 @@ impl Kind {
             Kind::SermonPart,
             Kind::SermonEnd,
             Kind::SermonImport,
+            Kind::Preferences,
         ]
         .into_iter()
         .find(|k| k.name() == name)
@@ -642,6 +661,7 @@ impl Kind {
             Kind::Note => "items",
             Kind::Chat => "chats",
             Kind::SermonBegin | Kind::SermonPart | Kind::SermonEnd | Kind::SermonImport => "items",
+            Kind::Preferences => "preferences",
         }
     }
 
@@ -654,6 +674,19 @@ impl Kind {
             _ => unreachable!("{self:?} is kept by uid"),
         }
     }
+}
+
+/// The uid of the one `preferences` record.
+const PREFERENCES: &str = "preferences";
+
+/// A unit enum's serialized name ("dark", "forest").
+fn name_of(v: impl Serialize) -> String {
+    serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+}
+
+/// A unit enum from its serialized name; its default if this build doesn't know the name.
+fn named<T: serde::de::DeserializeOwned + Default>(name: &str) -> T {
+    serde_json::from_value(json!(name)).unwrap_or_default()
 }
 
 /// Queues the note or chat `uid` in the outbox, against the `seq` of the copy in the cache. Its
@@ -861,6 +894,7 @@ impl StudyStore {
             notes: HashMap::new(),
             copies: HashMap::new(),
             bookmarks: BTreeMap::new(),
+            appearance: Default::default(),
             generation: 1,
             data_version: 0,
             on_outbox: None,
@@ -1105,6 +1139,14 @@ impl StudyStore {
                 self.bookmarks.insert(vr.key(), Bookmark { label, created });
             }
         }
+        self.appearance = self
+            .conn
+            .query_row("SELECT scheme, theme FROM preferences WHERE uid = ?1", [PREFERENCES], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .optional()?
+            .map(|(scheme, theme)| (named(&scheme), named(&theme)))
+            .unwrap_or_default();
         self.generation += 1;
         Ok(())
     }
@@ -1189,6 +1231,33 @@ impl StudyStore {
         if changed {
             self.queued();
         }
+        Ok(())
+    }
+
+    /// The colour scheme and theme, as last chosen on any of the account's devices (System and
+    /// Linger until one is).
+    pub fn appearance(&self) -> (Scheme, Theme) {
+        self.appearance
+    }
+
+    /// Chooses the colour scheme and theme, and queues them for the account's other devices.
+    pub fn set_appearance(&mut self, scheme: Scheme, theme: Theme) -> Result<()> {
+        if self.appearance == (scheme, theme) {
+            return Ok(());
+        }
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let t = now();
+        tx.execute(
+            "INSERT INTO preferences(uid, scheme, theme, updated) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(uid) DO UPDATE SET scheme = excluded.scheme, theme = excluded.theme,
+               updated = excluded.updated",
+            params![PREFERENCES, name_of(scheme), name_of(theme), t],
+        )?;
+        enqueue_uid(&tx, Kind::Preferences, PREFERENCES, t)?;
+        tx.commit()?;
+        self.appearance = (scheme, theme);
+        self.generation += 1;
+        self.queued();
         Ok(())
     }
 
@@ -1908,7 +1977,8 @@ fn forget_library(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "DELETE FROM highlights; DELETE FROM bookmarks; DELETE FROM items; DELETE FROM item_anchors;
          DELETE FROM files; DELETE FROM chats; DELETE FROM outbox; DELETE FROM sync_state;
-         DELETE FROM conflicts; DELETE FROM recordings;",
+         DELETE FROM conflicts; DELETE FROM recordings;
+         UPDATE preferences SET seq = 0;",
     )?;
     if let Some(dir) = conn.path().and_then(|p| Path::new(p).parent()) {
         let _ = std::fs::remove_dir_all(dir.join("files"));
@@ -2087,6 +2157,19 @@ pub(crate) mod cache {
                         args["capturedAt"] = made(created);
                     }
                     return Ok(Some(entry(Key::Uid(uid), "library/notes:upsert", args, Vec::new())));
+                }
+                (Kind::Preferences, Sql::Text(uid)) => {
+                    let row = conn
+                        .query_row("SELECT scheme, theme FROM preferences WHERE uid = ?1", [&uid], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                        })
+                        .optional()?;
+                    let Some((scheme, theme)) = row else {
+                        conn.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+                        continue;
+                    };
+                    let args = json!({ "scheme": scheme, "theme": theme });
+                    return Ok(Some(entry(Key::Uid(uid), "library/preferences:set", args, Vec::new())));
                 }
                 (Kind::Chat, Sql::Text(uid)) => {
                     let row = conn
@@ -2324,6 +2407,16 @@ pub(crate) mod cache {
                 put_item(tx, item, created, updated)
             }
             FeedRecord::Chat(chat) => write_chat(tx, chat, clock_offset_ms),
+            FeedRecord::Preferences(p) => {
+                let updated = local_time(Some(p.updated_at), clock_offset_ms).unwrap_or_else(now);
+                tx.execute(
+                    "INSERT INTO preferences(uid, scheme, theme, seq, updated) VALUES(?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(uid) DO UPDATE SET scheme = excluded.scheme, theme = excluded.theme,
+                       seq = excluded.seq, updated = excluded.updated",
+                    params![p.uid, name_of(p.scheme), name_of(p.theme), p.seq as i64, updated],
+                )?;
+                Ok(())
+            }
             FeedRecord::Highlight(_) | FeedRecord::Bookmark(_) => Ok(()),
         }
     }
@@ -2565,6 +2658,13 @@ pub(crate) mod cache {
                 }
                 FeedRecord::Chat(chat) => {
                     if newer_by_uid(&tx, Kind::Chat, &chat.uid, chat.seq)? {
+                        put_server(&tx, record, clock_offset_ms)?;
+                        changed += 1;
+                    }
+                    continue;
+                }
+                FeedRecord::Preferences(p) => {
+                    if newer_by_uid(&tx, Kind::Preferences, &p.uid, p.seq)? {
                         put_server(&tx, record, clock_offset_ms)?;
                         changed += 1;
                     }

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use linger_core::auth::StaticToken;
 use linger_core::books::{BookId, VerseRef};
-use linger_core::records::VerseId;
+use linger_core::records::{Scheme, Theme, VerseId};
 use linger_core::study::{HighlightColor, StudyStore};
 use linger_core::sync::{self, FakeServer, SyncHandle, SyncStatus};
 
@@ -562,6 +562,34 @@ fn a_conversation_saved_on_one_device_opens_on_the_other() {
     a.settle(&server);
     assert!(a.store.chats().is_empty());
     assert!(server.chats().is_empty());
+}
+
+#[test]
+fn the_appearance_follows_whichever_device_chose_last() {
+    let server = FakeServer::new();
+    let (mut a, mut b) = (Device::new("look-a"), Device::new("look-b"));
+    assert_eq!(a.store.appearance(), (Scheme::System, Theme::Linger), "until someone chooses");
+    a.start(&server);
+    b.start(&server);
+    a.store.set_appearance(Scheme::Dark, Theme::Forest).unwrap();
+    a.settle(&server);
+    b.settle(&server);
+    assert_eq!(b.store.appearance(), (Scheme::Dark, Theme::Forest));
+
+    // Last writer wins, with no conflict: the second choice, made on the other device, stands on both.
+    b.store.set_appearance(Scheme::Light, Theme::Plum).unwrap();
+    b.settle(&server);
+    a.settle(&server);
+    assert_eq!(a.store.appearance(), (Scheme::Light, Theme::Plum));
+    assert!(a.store.conflicts().is_empty() && b.store.conflicts().is_empty());
+
+    // Another account's library on this device: the look stays, and isn't sent to that account.
+    let other = FakeServer::new();
+    a.stop();
+    a.start_as(&other, USER_2);
+    a.settle(&other);
+    assert_eq!(a.store.appearance(), (Scheme::Light, Theme::Plum));
+    assert_eq!(other.seq(), 0);
 }
 
 #[test]

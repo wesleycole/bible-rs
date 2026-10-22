@@ -35,7 +35,7 @@ const encodeRecord = Schema.encodeUnknownEffect(FeedRecord)
 /** A stored record as the feed sends it, for a write's answer (`WriteAnswer`). */
 export const asRecord = (
   type: FeedRecord["type"],
-  doc: Doc<"items"> | Doc<"chats"> | Doc<"highlights"> | Doc<"bookmarks">
+  doc: Doc<"items"> | Doc<"chats"> | Doc<"highlights"> | Doc<"bookmarks"> | Doc<"preferences">
 ) => Effect.orDie(encodeRecord({ ...doc, type }))
 
 /** A note's title: its first line, trimmed. */

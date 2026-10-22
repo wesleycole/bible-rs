@@ -26,7 +26,9 @@ mod appearance;
 mod study;
 
 pub use account::{Account, AccountError, AccountInfo};
-pub use appearance::{AppearanceScheme, ThemeName, ThemePalette, theme_label, theme_palette, themes};
+pub use appearance::{
+    Appearance, AppearanceScheme, ThemeName, ThemePalette, theme_label, theme_palette, themes,
+};
 pub use study::{
     ChatMessage, ChatSummary, ConsentText, HighlightColor, LibrarySync, Note, Study, StudyObserver,
     SyncObserver, SyncState, TokenProvider, VerseMarks, VerseNote, VerseRef, highlight_colors,

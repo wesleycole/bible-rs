@@ -37,6 +37,8 @@ const EXTENSIONS: Record<string, string> = {
   "text/plain": "txt"
 }
 
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
 /** A file name from a title: plain letters, digits and dashes. */
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "untitled"
 
@@ -60,7 +62,7 @@ export const markdown = (item: Doc<"items">, text: string): string => {
   return lines.join("\n") + "\n"
 }
 
-/** The library as the action reads it: every live item with its files. */
+/** The library as the action reads it: every live item with its files, and the chosen appearance. */
 export const manifest = effectInternalQuery({
   args: { userId: v.id("users") },
   handler: Effect.fn("export.manifest")(function*({ userId }) {
@@ -72,7 +74,8 @@ export const manifest = effectInternalQuery({
       const files = yield* db(() => ctx.db.query("files").withIndex("by_owner", (q) => q.eq("userId", userId).eq("ownerUid", item.uid)).collect())
       out.push({ item, files })
     }
-    return out
+    const preferences = yield* db(() => ctx.db.query("preferences").withIndex("by_user_seq", (q) => q.eq("userId", userId)).first())
+    return { items: out, preferences }
   })
 })
 
@@ -83,11 +86,14 @@ export const start = effectAction({
   handler: Effect.fn("export.start")(function*(): Effect.fn.Return<Export | null, InvalidRequest | TooLarge, ActionCtx | CurrentUser> {
     const ctx = yield* ActionCtx
     const { userId } = yield* CurrentUser
-    const library: Array<{ item: Doc<"items">; files: Array<Doc<"files">> }> = yield* db(() => ctx.runQuery(internal.library.export.manifest, { userId }))
+    const { items: library, preferences }: { items: Array<{ item: Doc<"items">; files: Array<Doc<"files">> }>; preferences: Doc<"preferences"> | null } = yield* db(() =>
+      ctx.runQuery(internal.library.export.manifest, { userId })
+    )
     const now = yield* Clock.currentTimeMillis
     const encoder = new TextEncoder()
     const entries: Array<Entry> = []
     const index: Array<string> = ["# Your Linger library", "", `Exported ${new Date(now).toISOString()}.`, ""]
+    if (preferences) index.push(`Appearance: the ${capitalize(preferences.theme)} theme, ${preferences.scheme === "system" ? "following the system's light or dark" : preferences.scheme}.`, "")
     for (const { item, files } of library) {
       const folder = `${new Date(item.details?.startedAt ?? item.capturedAt).toISOString().slice(0, 10)}-${slug(item.title)}-${item.uid.slice(0, 8)}`
       let text = item.text ?? ""

@@ -36,7 +36,7 @@ export const changes = effectQuery({
     // device starting from 0 has nothing to delete and just pulls what is there.
     if (library && after > 0 && after < library.purgedThrough) return { resync: true } satisfies Changes
     const serverTime = yield* Clock.currentTimeMillis
-    const since = { highlight: "highlights", bookmark: "bookmarks", item: "items", chat: "chats" } as const
+    const since = { highlight: "highlights", bookmark: "bookmarks", item: "items", chat: "chats", preferences: "preferences" } as const
     const docs = yield* Effect.promise(() =>
       mergeBySeq(
         Object.entries(since).map(([type, table]) =>

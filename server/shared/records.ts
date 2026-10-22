@@ -240,6 +240,33 @@ export const Chat = Schema.Struct({
 
 export type Chat = typeof Chat["Type"]
 
+/** The appearance a person chose, the same on each of their devices: one record per user, `uid` "preferences", last writer wins. */
+export const PreferencesFields = {
+  /** System, light or dark: which of the theme's palettes shows. */
+  scheme: v.union(v.literal("system"), v.literal("light"), v.literal("dark")),
+  /** The per-user sequence number of the write that last changed this record. */
+  seq: v.number(),
+  theme: v.union(v.literal("linger"), v.literal("paper"), v.literal("forest"), v.literal("oxblood"), v.literal("plum"), v.literal("graphite")),
+  /** The record's id: always "preferences". */
+  uid: v.string(),
+  /** When the record was last written, in server milliseconds. */
+  updatedAt: v.number(),
+}
+
+export const Preferences = Schema.Struct({
+  /** System, light or dark: which of the theme's palettes shows. */
+  scheme: Schema.Literals(["system", "light", "dark"]),
+  /** The per-user sequence number of the write that last changed this record. */
+  seq: Schema.Int,
+  theme: Schema.Literals(["linger", "paper", "forest", "oxblood", "plum", "graphite"]),
+  /** The record's id: always "preferences". */
+  uid: Schema.String,
+  /** When the record was last written, in server milliseconds. */
+  updatedAt: Schema.Int,
+})
+
+export type Preferences = typeof Preferences["Type"]
+
 /** A sermon's transcript, the JSON in its `text` file: turns of speech in order, with speakers "A", "B"… as the transcriber told them apart. A file's contents, not a record of the feed. */
 export const TranscriptFields = {
   durationMs: v.number(),
@@ -483,6 +510,17 @@ export const FeedRecordValidator = v.union(v.object({
     /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
     updatedAt: v.optional(v.number()),
     url: v.string(),
+  }), v.object({
+    /** System, light or dark: which of the theme's palettes shows. */
+    scheme: v.union(v.literal("system"), v.literal("light"), v.literal("dark")),
+    /** The per-user sequence number of the write that last changed this record. */
+    seq: v.number(),
+    theme: v.union(v.literal("linger"), v.literal("paper"), v.literal("forest"), v.literal("oxblood"), v.literal("plum"), v.literal("graphite")),
+    type: v.literal("preferences"),
+    /** The record's id: always "preferences". */
+    uid: v.string(),
+    /** When the record was last written, in server milliseconds. */
+    updatedAt: v.number(),
   }))
 
 export const FeedRecord = Schema.Union([Schema.Struct({
@@ -591,6 +629,17 @@ export const FeedRecord = Schema.Union([Schema.Struct({
     /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
     updatedAt: Schema.optionalKey(Schema.Int),
     url: Schema.String,
+  }), Schema.Struct({
+    /** System, light or dark: which of the theme's palettes shows. */
+    scheme: Schema.Literals(["system", "light", "dark"]),
+    /** The per-user sequence number of the write that last changed this record. */
+    seq: Schema.Int,
+    theme: Schema.Literals(["linger", "paper", "forest", "oxblood", "plum", "graphite"]),
+    type: Schema.Literal("preferences"),
+    /** The record's id: always "preferences". */
+    uid: Schema.String,
+    /** When the record was last written, in server milliseconds. */
+    updatedAt: Schema.Int,
   })])
 
 export type FeedRecord = typeof FeedRecord["Type"]
@@ -704,6 +753,17 @@ export const ChangesValidator = v.union(v.object({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: v.optional(v.number()),
       url: v.string(),
+    }), v.object({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: v.union(v.literal("system"), v.literal("light"), v.literal("dark")),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      theme: v.union(v.literal("linger"), v.literal("paper"), v.literal("forest"), v.literal("oxblood"), v.literal("plum"), v.literal("graphite")),
+      type: v.literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: v.string(),
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: v.number(),
     }))),
     /** The highest `seq` in `records`, or `after` when there are none: the next cursor. */
     seq: v.number(),
@@ -822,6 +882,17 @@ export const Changes = Schema.Union([Schema.Struct({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: Schema.optionalKey(Schema.Int),
       url: Schema.String,
+    }), Schema.Struct({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: Schema.Literals(["system", "light", "dark"]),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      theme: Schema.Literals(["linger", "paper", "forest", "oxblood", "plum", "graphite"]),
+      type: Schema.Literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: Schema.String,
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: Schema.Int,
     })])),
     /** The highest `seq` in `records`, or `after` when there are none: the next cursor. */
     seq: Schema.Int,
@@ -834,7 +905,7 @@ export const Changes = Schema.Union([Schema.Struct({
 
 export type Changes = typeof Changes["Type"]
 
-/** What every library write answers (`library/highlights.set`, `bookmarks.set`, `notes.upsert` and `.remove`, `chats.save` and `.remove`, `items.updateDetails`). The records are as the feed sends them at their `seq`, so the writing device holds exactly what every other device gets. */
+/** What every library write answers (`library/highlights.set`, `bookmarks.set`, `notes.upsert` and `.remove`, `chats.save` and `.remove`, `items.updateDetails`, `preferences.set`). The records are as the feed sends them at their `seq`, so the writing device holds exactly what every other device gets. */
 export const WriteAnswerValidator = v.union(v.object({
     record: v.optional(v.union(v.object({
       color: v.union(v.literal("yellow"), v.literal("green"), v.literal("blue"), v.literal("pink"), v.literal("purple"), v.literal("orange")),
@@ -942,6 +1013,17 @@ export const WriteAnswerValidator = v.union(v.object({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: v.optional(v.number()),
       url: v.string(),
+    }), v.object({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: v.union(v.literal("system"), v.literal("light"), v.literal("dark")),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      theme: v.union(v.literal("linger"), v.literal("paper"), v.literal("forest"), v.literal("oxblood"), v.literal("plum"), v.literal("graphite")),
+      type: v.literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: v.string(),
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: v.number(),
     }))),
     result: v.literal("ok"),
     seq: v.number(),
@@ -1052,6 +1134,17 @@ export const WriteAnswerValidator = v.union(v.object({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: v.optional(v.number()),
       url: v.string(),
+    }), v.object({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: v.union(v.literal("system"), v.literal("light"), v.literal("dark")),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      theme: v.union(v.literal("linger"), v.literal("paper"), v.literal("forest"), v.literal("oxblood"), v.literal("plum"), v.literal("graphite")),
+      type: v.literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: v.string(),
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: v.number(),
     }))),
     /** One record in the change feed, of any synced type, tagged with that type. */
     record: v.union(v.object({
@@ -1160,6 +1253,17 @@ export const WriteAnswerValidator = v.union(v.object({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: v.optional(v.number()),
       url: v.string(),
+    }), v.object({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: v.union(v.literal("system"), v.literal("light"), v.literal("dark")),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: v.number(),
+      theme: v.union(v.literal("linger"), v.literal("paper"), v.literal("forest"), v.literal("oxblood"), v.literal("plum"), v.literal("graphite")),
+      type: v.literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: v.string(),
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: v.number(),
     })),
     result: v.literal("conflict"),
     seq: v.number(),
@@ -1272,6 +1376,17 @@ export const WriteAnswer = Schema.Union([Schema.Struct({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: Schema.optionalKey(Schema.Int),
       url: Schema.String,
+    }), Schema.Struct({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: Schema.Literals(["system", "light", "dark"]),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      theme: Schema.Literals(["linger", "paper", "forest", "oxblood", "plum", "graphite"]),
+      type: Schema.Literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: Schema.String,
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: Schema.Int,
     })])),
     result: Schema.Literal("ok"),
     seq: Schema.Int,
@@ -1382,6 +1497,17 @@ export const WriteAnswer = Schema.Union([Schema.Struct({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: Schema.optionalKey(Schema.Int),
       url: Schema.String,
+    }), Schema.Struct({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: Schema.Literals(["system", "light", "dark"]),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      theme: Schema.Literals(["linger", "paper", "forest", "oxblood", "plum", "graphite"]),
+      type: Schema.Literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: Schema.String,
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: Schema.Int,
     })])),
     /** One record in the change feed, of any synced type, tagged with that type. */
     record: Schema.Union([Schema.Struct({
@@ -1490,6 +1616,17 @@ export const WriteAnswer = Schema.Union([Schema.Struct({
       /** When the record was last written, in server milliseconds, stamped by the server on every write. Absent only on records written before the field existed. */
       updatedAt: Schema.optionalKey(Schema.Int),
       url: Schema.String,
+    }), Schema.Struct({
+      /** System, light or dark: which of the theme's palettes shows. */
+      scheme: Schema.Literals(["system", "light", "dark"]),
+      /** The per-user sequence number of the write that last changed this record. */
+      seq: Schema.Int,
+      theme: Schema.Literals(["linger", "paper", "forest", "oxblood", "plum", "graphite"]),
+      type: Schema.Literal("preferences"),
+      /** The record's id: always "preferences". */
+      uid: Schema.String,
+      /** When the record was last written, in server milliseconds. */
+      updatedAt: Schema.Int,
     })]),
     result: Schema.Literal("conflict"),
     seq: Schema.Int,

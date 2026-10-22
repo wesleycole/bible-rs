@@ -32,7 +32,8 @@ use crate::auth::{self, TokenSource};
 use crate::books::ChapterIdx;
 use crate::chat::UserLibrary;
 use crate::records::{
-    Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, ItemText, SearchHit, VerseId, WriteAnswer,
+    Anchor, Changes, Chat, FeedRecord, Item, ItemKind, ItemStatus, ItemText, Preferences, SearchHit, VerseId,
+    WriteAnswer,
 };
 use crate::search::Query;
 use crate::study::cache;
@@ -771,7 +772,7 @@ impl Engine {
     fn apply(&mut self, value: Value) -> Result<()> {
         // A record type newer than this build: stop here rather than skip it (the cursor would
         // move past records this device never kept), and say what mends it.
-        let known = ["highlight", "bookmark", "item", "chat"];
+        let known = ["highlight", "bookmark", "item", "chat", "preferences"];
         if let Some(t) = value["records"]
             .as_array()
             .into_iter()
@@ -1079,6 +1080,7 @@ struct FakeState {
     /// Notes and chats by uid, as the feed sends them.
     items: BTreeMap<String, Item>,
     chats: BTreeMap<String, Chat>,
+    preferences: Option<Preferences>,
     /// Attached files by uid: (owner uid, role, storage id).
     files: BTreeMap<String, (Option<String>, String, String)>,
     /// Each attached file's `partIndex`, by storage id.
@@ -1284,6 +1286,9 @@ impl FakeState {
             self.items.values().filter(|i| i.seq > after).map(|i| FeedRecord::Item(Box::new(i.clone())));
         let by_uid =
             by_uid.chain(self.chats.values().filter(|c| c.seq > after).map(|c| FeedRecord::Chat(c.clone())));
+        let by_uid = by_uid.chain(
+            self.preferences.iter().filter(|p| p.seq > after).map(|p| FeedRecord::Preferences(p.clone())),
+        );
         records.extend(by_uid.map(|r| serde_json::to_value(r).unwrap_or_default()));
         records.sort_by_key(|r| r["seq"].as_u64());
         records.truncate(self.page_records.unwrap_or(500));
@@ -1708,6 +1713,17 @@ impl FakeState {
     }
 
     /// `chats.save`: the conversation must be attached first as the chat's own `chat` file.
+    /// `preferences.set`: last writer wins.
+    fn set_preferences(&mut self, args: &Value) -> Result<Value, CallError> {
+        let scheme = serde_json::from_value(args["scheme"].clone()).map_err(refused)?;
+        let theme = serde_json::from_value(args["theme"].clone()).map_err(refused)?;
+        let seq = self.next_seq();
+        let p = Preferences { uid: "preferences".into(), seq, updated_at: now_ms() as u64, scheme, theme };
+        self.preferences = Some(p.clone());
+        self.wrote();
+        Ok(answer(WriteAnswer::Ok { seq, record: Some(FeedRecord::Preferences(p)) }))
+    }
+
     fn save_chat(&mut self, args: &Value) -> Result<Value, CallError> {
         let uid = args["uid"].as_str().ok_or_else(|| refused("no uid"))?.to_string();
         let (title, file_uid) = (
@@ -1809,6 +1825,7 @@ impl FakeBackend {
             "library/items:updateDetails" => s.update_details(args),
             "library/chats:save" => s.save_chat(args),
             "library/chats:remove" => s.remove_chat(args),
+            "library/preferences:set" => s.set_preferences(args),
             "library/sermons:begin" => s.begin_sermon(args),
             "library/sermons:finish" => s.finish_sermon(args),
             "library/sermons:import" => s.import_sermon(args),

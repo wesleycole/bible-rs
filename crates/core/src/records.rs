@@ -433,6 +433,22 @@ pub struct Chat {
     pub bytes: u64,
 }
 
+/// The appearance a person chose, the same on each of their devices: one record per user, `uid`
+/// "preferences", last writer wins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Preferences {
+    /// The record's id: always "preferences".
+    pub uid: String,
+    /// The per-user sequence number of the write that last changed this record.
+    pub seq: u64,
+    /// When the record was last written, in server milliseconds.
+    pub updated_at: u64,
+    /// System, light or dark: which of the theme's palettes shows.
+    pub scheme: Scheme,
+    pub theme: Theme,
+}
+
 /// One record in the change feed, of any synced type, tagged with that type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -441,6 +457,7 @@ pub enum FeedRecord {
     Bookmark(Bookmark),
     Item(Box<Item>),
     Chat(Chat),
+    Preferences(Preferences),
 }
 
 impl FeedRecord {
@@ -450,12 +467,13 @@ impl FeedRecord {
             FeedRecord::Bookmark(r) => r.seq,
             FeedRecord::Item(r) => r.seq,
             FeedRecord::Chat(r) => r.seq,
+            FeedRecord::Preferences(r) => r.seq,
         }
     }
 }
 
 /// What every library write answers (`library/highlights.set`, `bookmarks.set`, `notes.upsert`
-/// and `.remove`, `chats.save` and `.remove`, `items.updateDetails`). The records are as the feed
+/// and `.remove`, `chats.save` and `.remove`, `items.updateDetails`, `preferences.set`). The records are as the feed
 /// sends them at their `seq`, so the writing device holds exactly what every other device gets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -514,6 +532,10 @@ pub fn schemas() -> Vec<RecordSchema> {
         RecordSchema { name: "Bookmark", schema: sorted(generator.root_schema_for::<Bookmark>().to_value()) },
         RecordSchema { name: "Item", schema: sorted(generator.root_schema_for::<Item>().to_value()) },
         RecordSchema { name: "Chat", schema: sorted(generator.root_schema_for::<Chat>().to_value()) },
+        RecordSchema {
+            name: "Preferences",
+            schema: sorted(generator.root_schema_for::<Preferences>().to_value()),
+        },
         RecordSchema {
             name: "Transcript",
             schema: sorted(generator.root_schema_for::<Transcript>().to_value()),
