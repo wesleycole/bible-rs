@@ -3,9 +3,10 @@
 name: Linger
 options:
   bundleIdPrefix: com.wesleycole
+  # iOS 26.1 and later only, with no fallback (docs/plans/ios-design.md#the-deployment-target).
   # Keep in step with scripts/build-ios-core.sh and LingerCore/Package.swift.
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "26.1"
 packages:
   LingerCore:
     path: LingerCore

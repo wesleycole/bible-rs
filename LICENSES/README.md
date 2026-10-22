@@ -185,6 +185,9 @@ one, and the citations are left as the module has them.
 | Inter (variable) | Interface | github.com/google/fonts `ofl/inter` | [OFL-Inter.txt](../apps/desktop/assets/fonts/OFL-Inter.txt) |
 | Inter Medium, Inter SemiBold (static instances of the variable Inter, made with `fonttools varLib.instancer`, wght 500/600, opsz 14) | Interface, verse numbers | derived from the above | [OFL-Inter.txt](../apps/desktop/assets/fonts/OFL-Inter.txt) |
 
+The iOS app bundles the same Literata and Inter files, with their licences, in
+`apps/ios/Linger/Fonts`.
+
 egui's default fonts (Ubuntu-Light, Hack, Noto Emoji, emoji-icon-font; OFL/Apache/MIT) remain as
 fallbacks for symbols.
 

@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "LingerCore",
     // Keep in step with scripts/build-ios-core.sh and ../project.yml.
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS("26.1"), .macOS(.v14)],
     products: [.library(name: "LingerCore", targets: ["LingerCore"])],
     targets: [
         .binaryTarget(name: "LingerFFI", path: "LingerFFI.xcframework"),

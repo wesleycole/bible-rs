@@ -25,7 +25,7 @@ TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin)
 
 # Also reach the C code that cc builds (SQLite, zstd). Keep in step with apps/ios/project.yml and
 # Package.swift.
-export IPHONEOS_DEPLOYMENT_TARGET=17.0
+export IPHONEOS_DEPLOYMENT_TARGET=26.1
 export MACOSX_DEPLOYMENT_TARGET=14.0
 
 rustup target add "${TARGETS[@]}" >/dev/null

@@ -9,6 +9,7 @@ struct LingerApp: App {
 
     init() {
         Clerk.configure(publishableKey: Config.clerkPublishableKey)
+        Fonts.register()
         let library = Library()
         _library = State(initialValue: library)
         _store = State(initialValue: Store(library: library))
