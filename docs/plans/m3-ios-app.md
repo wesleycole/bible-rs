@@ -125,6 +125,18 @@ pieces.
     scope control ("Bible only") keeps the library tools from running; whether the proxy, which adds
     the tools to the request, needs a contract change for it is settled when FFI 10 starts.
 
+**Appearance, shared with the Mac** ([ios-design.md](ios-design.md#appearance)). Built before the
+iOS screens, in this orb:
+
+11. **Themes in core:** `linger_core::appearance` holds the six themes' light and dark palettes,
+    read from the token file, and the FFI hands Swift the palette for a theme and scheme. The
+    desktop's `theme.rs` takes its palettes from it instead of its own accent mixing.
+12. **The `preferences` record:** one per user (`uid` "preferences") with `scheme` and `theme`,
+    declared in `records.rs` and synced through the feed, `library/preferences.set` and the outbox
+    like the others, last writer wins. Purge and export include it.
+13. **The desktop's Settings › Appearance** becomes the scheme cards and theme grid, writing the
+    record; its old `theme`, `theme_system` and `accent` settings migrate once.
+
 **Outside this milestone, and what shows until it lands.**
 
 - **Reference works** in Library, the popover and Ask's third source group need M7 loaded and
@@ -133,9 +145,9 @@ pieces.
   lands its menu entry is hidden.
 - The Marks filter and the bookmark glyph use what M3a already syncs.
 
-**Build order:** the deployment target (below), the tab shell with today's reader inside it, the jump
+**Build order:** appearance (11–13, here), then on the Mac: the deployment target (below), the tab shell with today's reader inside it, the jump
 field and navigator, the verse row, ··· and the + menu, the margin popover and verse page, Library
-from the cache (FFI 8, 9), Ask with sources, peek and the return bar (FFI 10), then Settings. Each step
+from the cache (FFI 8, 9), Ask with sources, peek and the return bar (FFI 10), then Settings with Appearance. Each step
 is checked on the simulator against the prototype's screenshots.
 
 **Deployment target:** iOS 26.1, raised from 17, with no fallback for older versions (the owner's
@@ -144,7 +156,7 @@ search-role tab and `tabViewBottomAccessory` need it, and Linger has no iOS user
 
 **Tests:** extend LingerUITests with the prototype's script: jump to John 3 through the navigator, tap
 Romans 8:28, highlight it, ask a question against a mock proxy, open a source and come back by the
-return bar, add a note through the +, and open the verse page. `LingerCoreTests` covers FFI 8–10.
+return bar, add a note through the +, and open the verse page. `LingerCoreTests` covers FFI 8–11.
 
 ## StoreKit 2
 

@@ -18,8 +18,10 @@ pages and handwriting, slides, imports) and the reference works that come with L
 in one place with one search. Ask answers from the Bible and that library and says where each claim
 came from.
 
-The tone is calm and editorial, like Apple Books: a warm white page, Literata for scripture and
-titles, small sans-serif UI text, hairline dividers, a navy accent used sparingly, no sparkle icons.
+The tone is calm and editorial and matches the desktop app: its design tokens
+(`apps/desktop/assets/design-tokens.json`) exactly, through the shared themes in
+[Appearance](#appearance). Literata for scripture and titles, Inter for UI text, hairline dividers, the
+theme's accent used sparingly, no sparkle icons.
 Liquid Glass is only on controls that float over content: the tab bar, the top bar's field and +, the
 verse row, the capture menu, the margin popover and the return bar. Lists, the chat, Library, item
 pages and Settings are plain.
@@ -67,7 +69,7 @@ Tapping the field opens it with the keyboard up. The field and the list under it
 paging.
 
 **Margin marks.** One small grey glyph beside each verse that has library items, with no counts; a
-bookmark adds a small navy bookmark glyph. Tapping the library glyph opens a glass popover anchored to
+bookmark adds a small bookmark glyph in the accent. Tapping the library glyph opens a glass popover anchored to
 the verse: "Romans 8:28 ›" (which opens the verse page), Your library, then Reference, each row with
 an Ask button. A quiet "3 in your library" under the chapter number opens Library filtered to the
 chapter.
@@ -97,7 +99,7 @@ own "Ask about this verse" bar opens the same Ask sheet, so the page's sections 
 - **Context** at the top: the selection quoted with ×, or "Reading Romans 8" with nothing selected, or
   the item being asked about. A scope control: "Bible + library" (the default) or "Bible only".
 - **Empty:** three suggested questions as plain rows, drawn from the context and the library.
-- **Answering:** a grey user bubble, the answer in serif with navy inline citations, and one grey line
+- **Answering:** a grey user bubble, the answer in serif with inline citations in the accent, and one grey line
   saying what it read ("Read 1 sermon and 1 note from your library"). A stop button while it writes.
   The answer appears without cross-fading over the suggestions.
 - **Sources** come in three groups: From the Bible, From your library, From reference works. Small
@@ -105,7 +107,7 @@ own "Ask about this verse" bar opens the same Ask sheet, so the page's sections 
 - **Tapping a source** opens a peek card in the chat with the verse text or the item's excerpt, and
   "Open in Bible" (or "Open"). Opening collapses the sheet and leaves a return bar above the tab bar,
   "‹ What does 8:28 really promise?" (`tabViewBottomAccessory`), which brings the chat back as it was.
-  While it shows, the field reads "‹ Romans 8 | Genesis 50": the navy back link first, then the place.
+  While it shows, the field reads "‹ Romans 8 | Genesis 50": the back link first, in the accent, then the place.
 - **History:** a clock button in the header opens past chats grouped by day, with search.
 - **Out of questions:** plain text above a disabled composer, with a link to Pro. Reading, notes and
   the library keep working.
@@ -131,10 +133,28 @@ owner's decision, October 22).
 
 ## Settings
 
-Reading (theme, font, size with a sample line), then the account: email, plan (Free or Pro), questions
+Reading (Appearance, font, size with a sample line), then the account: email, plan (Free or Pro), questions
 left "23 of 30 this month", Upgrade to Pro, sync, storage, export, Sign out, and Delete account in red.
 The Pro sheet shows "Couldn't load prices. Try again" when StoreKit returns no products, never an empty
 section.
+
+## Appearance
+
+Settings › Appearance, the same on the Mac and the iPhone, and synced between them (the owner's
+decisions, October 22):
+
+- **Color scheme:** System (the default), Light or Dark, as three cards with a small drawing of the
+  reader; System's is split light and dark.
+- **Themes:** Linger (the default), Paper, Forest, Oxblood, Plum and Graphite. Each is a light and a
+  dark palette; the scheme picks which shows. A card shows both as round swatches, the one in use
+  ringed with a sun or moon badge. No custom themes.
+- Linger is the desktop's `color.light` and `color.dark` exactly. Paper is `color.sepia` and a warm
+  dark (paper #1C1915, ink #E8DFCF, accent #D9A86C). Forest (#2F6B4F, dark #7CC4A0), Oxblood
+  (#8E2B2B, dark #E8908A), Plum (#6B3F7A, dark #C9A2DA) and Graphite (#4A4D55, dark #B7BBC6) are
+  Linger's neutrals with that accent. Verse numbers follow the accent. Highlights keep their hues.
+- The themes live in `linger-core`, so both apps draw from one definition, and the scheme and theme
+  sync as one `preferences` record, last writer wins. The desktop's Light/Sepia/Dark and accent
+  settings carry over: Sepia becomes Paper, an accent becomes its theme, Dark becomes the Dark scheme.
 
 ## The deployment target
 
@@ -155,4 +175,4 @@ Linger has no iOS users yet.
   Kept for now.
 - A long selection whose start has scrolled away has nothing saying where it starts. Left out until it
   comes up.
-- The Ask button's bubble draws black, as the system draws that slot. It could take the navy accent.
+- The Ask button's bubble draws black, as the system draws that slot. It could take the accent.
