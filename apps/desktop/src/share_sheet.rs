@@ -15,7 +15,7 @@ use linger_core::{Translation, VerseRef};
 
 use crate::icons;
 use crate::pages::text;
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, Theme};
 use crate::widgets::{self, Button, Kind};
 
 const WIDTH: f32 = 760.0;
@@ -92,11 +92,11 @@ fn colours(style: CardStyle) -> Colours {
         rubric: p.rubric,
     };
     match style {
-        CardStyle::Paper => from(&theme::LIGHT),
-        CardStyle::Sepia => from(&theme::SEPIA),
-        CardStyle::Night => from(&theme::DARK),
+        CardStyle::Paper => from(Theme::LIGHT.palette()),
+        CardStyle::Sepia => from(Theme::SEPIA.palette()),
+        CardStyle::Night => from(Theme::DARK.palette()),
         CardStyle::Ink => Colours {
-            ground: theme::LIGHT.accent,
+            ground: Theme::LIGHT.palette().accent,
             ink: Color32::WHITE,
             label: Color32::WHITE,
             footer: Color32::from_white_alpha(200),

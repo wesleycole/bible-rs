@@ -28,12 +28,12 @@ fn open_in(size: egui::Vec2) -> Harness<'static, Vec<Action>> {
     let mut harness = Harness::builder().with_size(size).with_pixels_per_point(2.0).build_ui_state(
         move |ui, actions: &mut Vec<Action>| {
             let anchor = ui.button("John 1");
-            book_picker::show(&anchor, Theme::Light.palette(), None, here, actions);
+            book_picker::show(&anchor, Theme::LIGHT.palette(), None, here, actions);
         },
         Vec::new(),
     );
     harness.ctx.set_fonts(theme::font_definitions());
-    theme::apply(&harness.ctx, Theme::Light);
+    theme::apply(&harness.ctx, Theme::LIGHT);
     harness.run();
     harness.get_by_label("John 1").click();
     harness.run();
@@ -76,7 +76,7 @@ fn selected(harness: &Harness<'_, Vec<Action>>, label: &str) -> bool {
 fn it_opens_on_the_book_being_read_with_its_chapters_beneath() {
     let harness = open();
     let area = area(&harness);
-    let edge = area.shrink(Theme::Light.palette().shadows.popover.ring_width);
+    let edge = area.shrink(Theme::LIGHT.palette().shadows.popover.ring_width);
     let rect = |label: &str| harness.get_by_label(label).rect();
     let (luke, john, acts) = (rect("Luke"), rect("John"), rect("Acts"));
     let (one, two, eight, twenty_one) = (rect("1"), rect("2"), rect("8"), rect("21"));

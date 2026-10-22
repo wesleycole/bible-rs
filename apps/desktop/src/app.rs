@@ -21,7 +21,7 @@ use crate::reader::layout::{Mode, Typography};
 use crate::reader::{Env, Reader};
 use crate::settings_ui::SettingsUi;
 use crate::sidebar::Sidebar;
-use crate::theme::{self, Theme};
+use crate::theme::{self, Scheme, Theme, ThemeName};
 use crate::widgets;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,19 +30,21 @@ pub struct Settings {
     pub translation: String,
     pub parallel: Vec<String>,
     pub parallel_on: bool,
+    /// The look showing now: the synced scheme and theme (`appearance`, mirrored from the study
+    /// store) with the system's light or dark. Not saved here.
+    #[serde(skip)]
     pub theme: Theme,
+    #[serde(skip)]
+    pub appearance: (Scheme, ThemeName),
     pub typo: Typography,
     pub sidebar_open: bool,
     pub sidebar_tab: SidebarTab,
-    /// Follow the system's light or dark appearance instead of `theme`.
-    pub theme_system: bool,
     pub chapter: u16,
     pub verse: u8,
     pub whole_words: bool,
-    /// Appearance: the accent colour, the translation picker in the toolbar, the sidebar
-    /// attached to the window's edge rather than floating, names for the highlight colours
-    /// (empty for the colour's own), less motion, and the flash on a verse jumped to.
-    pub accent: theme::Accent,
+    /// Appearance: the translation picker in the toolbar, the sidebar attached to the window's
+    /// edge rather than floating, names for the highlight colours (empty for the colour's own),
+    /// less motion, and the flash on a verse jumped to.
     pub toolbar_translation: bool,
     pub sidebar_attached: bool,
     pub highlight_names: Vec<String>,
@@ -88,11 +90,11 @@ impl Default for Settings {
             translation: linger_core::bundled::DEFAULT_ID.into(),
             parallel: vec!["web".into()],
             parallel_on: false,
-            theme: Theme::Light,
+            theme: Theme::default(),
+            appearance: Default::default(),
             typo: Typography::default(),
             sidebar_open: false,
             sidebar_tab: SidebarTab::Books,
-            theme_system: false,
             // John 1 is a friendlier first page than Genesis 1.
             chapter: ChapterIdx::new(BookId(42), 1).unwrap().0,
             verse: 1,
@@ -102,7 +104,6 @@ impl Default for Settings {
             ask_consent: false,
             library_consent: None,
             home_church: None,
-            accent: theme::Accent::Ink,
             toolbar_translation: true,
             sidebar_attached: false,
             highlight_names: Vec::new(),
@@ -136,6 +137,39 @@ impl Settings {
         study.setting("app").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
+    /// Settings saved before the appearance was synced chose it here: `theme` (Light, Sepia or
+    /// Dark), `theme_system` and `accent`. They become the synced scheme and theme once: Sepia
+    /// is Paper, an accent is its theme, Dark is the Dark scheme. The old keys go at once, so a
+    /// later choice, here or synced from another device, is never migrated over.
+    fn migrate_appearance(study: &mut StudyStore) -> Result<()> {
+        let Some(mut old) =
+            study.setting("app").and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        else {
+            return Ok(());
+        };
+        let Some(theme) = old["theme"].as_str() else { return Ok(()) };
+        let scheme = match (old["theme_system"].as_bool(), theme) {
+            (Some(true), _) => Scheme::System,
+            (_, "Dark") => Scheme::Dark,
+            _ => Scheme::Light,
+        };
+        let name = match (theme, old["accent"].as_str()) {
+            ("Sepia", _) => ThemeName::Paper,
+            (_, Some("Oxblood")) => ThemeName::Oxblood,
+            (_, Some("Forest")) => ThemeName::Forest,
+            (_, Some("Plum")) => ThemeName::Plum,
+            (_, Some("Graphite")) => ThemeName::Graphite,
+            _ => ThemeName::Linger,
+        };
+        study.set_appearance(scheme, name)?;
+        if let Some(o) = old.as_object_mut() {
+            for key in ["theme", "theme_system", "accent"] {
+                o.remove(key);
+            }
+        }
+        study.set_setting("app", &old.to_string())
+    }
+
     pub fn save(&self, study: &StudyStore) {
         if let Ok(s) = serde_json::to_string(self) {
             let _ = study.set_setting("app", &s);
@@ -154,8 +188,10 @@ pub struct Init {
 
 pub fn initialize(data_dir: PathBuf, notify: Arc<dyn Fn() + Send + Sync>) -> Result<Init> {
     let t = Instant::now();
-    let study = StudyStore::open(&data_dir.join("study.sqlite"))?;
+    let mut study = StudyStore::open(&data_dir.join("study.sqlite"))?;
+    Settings::migrate_appearance(&mut study)?;
     let mut settings = Settings::load(&study);
+    settings.appearance = study.appearance();
     let library = Library::open(&data_dir, notify);
     if !library.contains(&settings.translation) {
         settings.translation = linger_core::bundled::DEFAULT_ID.into();
@@ -163,6 +199,11 @@ pub fn initialize(data_dir: PathBuf, notify: Arc<dyn Fn() + Send + Sync>) -> Res
     // Decode the translation being read now; the rest warm up after the first frame.
     let _ = library.load(&settings.translation);
     Ok(Init { data_dir, study, library, settings, elapsed: t.elapsed() })
+}
+
+/// The look a scheme and theme give, with the system as it is.
+fn resolve((scheme, name): (Scheme, ThemeName), ctx: &egui::Context) -> Theme {
+    Theme::new(name, scheme.is_dark(ctx.system_theme() == Some(egui::Theme::Dark)))
 }
 
 /// Back/forward navigation history.
@@ -395,7 +436,8 @@ impl BibleApp {
     ) -> Self {
         let Init { data_dir, study, library, settings, elapsed } = init;
         let account = crate::account::Account::new(&data_dir);
-        theme::set_accent(settings.accent);
+        let mut settings = settings;
+        settings.theme = resolve(settings.appearance, &cc.egui_ctx);
         theme::apply(&cc.egui_ctx, settings.theme);
         if settings.reduce_motion {
             cc.egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
@@ -686,6 +728,24 @@ impl BibleApp {
         }
     }
 
+    /// Chooses the scheme and theme (synced to the account's other devices) and shows them.
+    fn set_appearance(&mut self, ctx: &egui::Context, scheme: Scheme, name: ThemeName) {
+        if let Err(e) = self.study.set_appearance(scheme, name) {
+            self.toast(ctx, format!("Couldn't save the appearance: {e:#}"));
+        }
+        self.settings.appearance = self.study.appearance();
+        self.show_appearance(ctx);
+    }
+
+    /// Shows the chosen appearance, if it isn't showing already.
+    fn show_appearance(&mut self, ctx: &egui::Context) {
+        let t = resolve(self.settings.appearance, ctx);
+        if t != self.settings.theme {
+            self.settings.theme = t;
+            theme::apply(ctx, t);
+        }
+    }
+
     fn apply_one(&mut self, ctx: &egui::Context, a: Action) {
         match a {
             Action::Jump { chapter, verse, flash } => {
@@ -950,13 +1010,11 @@ impl BibleApp {
             Action::OpenSettings(tab) => self.settings_ui = Some(SettingsUi::new(tab, &self.library)),
             Action::FontSize(d) => self.settings.typo.size = (self.settings.typo.size + d).clamp(12.0, 34.0),
             Action::FontReset => self.settings.typo.size = Typography::default().size,
-            Action::SetTheme(t) => {
-                self.settings.theme = t;
-                theme::apply(ctx, t);
-            }
+            Action::SetScheme(scheme) => self.set_appearance(ctx, scheme, self.settings.appearance.1),
+            Action::SetTheme(name) => self.set_appearance(ctx, self.settings.appearance.0, name),
             Action::CycleTheme => {
-                let t = self.settings.theme.next();
-                self.apply_one(ctx, Action::SetTheme(t));
+                let scheme = if self.settings.theme.dark { Scheme::Light } else { Scheme::Dark };
+                self.set_appearance(ctx, scheme, self.settings.appearance.1);
             }
             Action::ToggleMode => {
                 self.settings.typo.mode = if self.settings.typo.mode == Mode::Paragraph {
@@ -1085,11 +1143,6 @@ impl BibleApp {
                 if !crate::offscreen() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.focus));
                 }
-            }
-            Action::SetAccent(a) => {
-                self.settings.accent = a;
-                theme::set_accent(a);
-                theme::apply(ctx, self.settings.theme);
             }
             Action::SetReduceMotion(on) => {
                 self.settings.reduce_motion = on;
@@ -2397,13 +2450,13 @@ impl BibleApp {
         let p = self.settings.theme.palette();
         let area = if self.main_area.is_positive() { self.main_area } else { ctx.content_rect() };
         // Ink on paper; in the dark a warm near-white, with the light theme's danger.
-        let dark = self.settings.theme == Theme::Dark;
+        let dark = self.settings.theme.dark;
         let [r, g, b, _] = if dark { [0xF2, 0xF0, 0xEB, 0xFF] } else { p.ink.to_array() };
         let fill = egui::Color32::from_rgba_unmultiplied(r, g, b, 0xF2);
         let ink = p.paper;
         let [r, g, b, _] = p.paper.to_array();
         let divider = egui::Color32::from_rgba_unmultiplied(r, g, b, 0x8C);
-        let danger = if dark { Theme::Light.palette().danger } else { Theme::Dark.palette().danger };
+        let danger = if dark { Theme::LIGHT.palette().danger } else { Theme::DARK.palette().danger };
 
         let mut msgs: Vec<(String, bool)> = Vec::new();
         if let Some(o) = self.offline.as_ref().filter(|o| !o.dismissed) {
@@ -2935,12 +2988,9 @@ impl eframe::App for BibleApp {
             self.demo_step(&ctx, &step, &mut actions);
             ctx.request_repaint();
         }
-        if self.settings.theme_system {
-            let t = if ctx.system_theme() == Some(egui::Theme::Dark) { Theme::Dark } else { Theme::Light };
-            if t != self.settings.theme {
-                actions.push(Action::SetTheme(t));
-            }
-        }
+        // The synced choice (another device may have changed it) with the system's light or dark.
+        self.settings.appearance = self.study.appearance();
+        self.show_appearance(&ctx);
         let p = self.settings.theme.palette();
 
         self.chrome = chrome(frame, &ctx);
@@ -3507,7 +3557,34 @@ pub fn bump(counter: &AtomicU64) {
 
 #[cfg(test)]
 mod tests {
-    use super::Leading;
+    use super::{Leading, Scheme, Settings, ThemeName};
+    use linger_core::study::StudyStore;
+
+    #[test]
+    fn the_old_theme_and_accent_become_the_synced_appearance_once() {
+        let cases = [
+            (r#"{"theme":"Dark","theme_system":false,"accent":"Forest"}"#, (Scheme::Dark, ThemeName::Forest)),
+            (r#"{"theme":"Sepia","theme_system":false,"accent":"Plum"}"#, (Scheme::Light, ThemeName::Paper)),
+            (r#"{"theme":"Light","theme_system":true,"accent":"Ink"}"#, (Scheme::System, ThemeName::Linger)),
+            (
+                r#"{"theme":"Light","theme_system":false,"accent":"Oxblood"}"#,
+                (Scheme::Light, ThemeName::Oxblood),
+            ),
+        ];
+        for (old, want) in cases {
+            let mut study = StudyStore::open_in_memory().unwrap();
+            study.set_setting("app", old).unwrap();
+            Settings::migrate_appearance(&mut study).unwrap();
+            assert_eq!(study.appearance(), want, "{old}");
+            // Queued for the other devices, unless it's the default, which there's nothing to say about.
+            let queued = usize::from(want != (Scheme::System, ThemeName::Linger));
+            assert_eq!(study.pending_changes(), queued, "{old}");
+            // The old keys are gone: a later choice isn't migrated over.
+            study.set_appearance(Scheme::Dark, ThemeName::Graphite).unwrap();
+            Settings::migrate_appearance(&mut study).unwrap();
+            assert_eq!(study.appearance(), (Scheme::Dark, ThemeName::Graphite));
+        }
+    }
 
     // The default window: a 264 pt floating sidebar, the toolbar starting at 96 pt after the
     // traffic lights.

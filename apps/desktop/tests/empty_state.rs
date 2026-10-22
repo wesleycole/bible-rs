@@ -25,7 +25,7 @@ fn paint(empty: &Empty<'_>, cx: f32, top: f32, room: f32) -> (Vec<Rect>, f32) {
     ctx.run_ui(input(), |_| {}).textures_delta.clear();
     let mut height = 0.0;
     let mut out = ctx.run_ui(input(), |ui| {
-        let p = Theme::Light.palette();
+        let p = Theme::LIGHT.palette();
         height = empty.height(ui.painter(), room);
         empty.show(ui, p, cx, top, room);
     });

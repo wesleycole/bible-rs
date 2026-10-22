@@ -13,7 +13,7 @@ use linger_core::study::{ReadingSession, StudyStore};
 use crate::actions::{Action, ExportKind, SettingsTab};
 use crate::app::Settings;
 use crate::icons;
-use crate::theme::{self, Palette, Theme, text};
+use crate::theme::{self, Palette, Scheme, ThemeName, text};
 use crate::widgets;
 
 const WIDTH: f32 = 600.0;
@@ -75,9 +75,15 @@ impl Item {
 fn command_list(settings: &Settings) -> Vec<(&'static str, IconFn, Vec<&'static str>, Action)> {
     vec![
         ("Toggle parallel translations", icons::columns, vec!["⇧", "⌘", "P"], Action::ToggleParallel),
-        ("Theme: Light", sun_icon, vec![], Action::SetTheme(Theme::Light)),
-        ("Theme: Sepia", sun_icon, vec![], Action::SetTheme(Theme::Sepia)),
-        ("Theme: Dark", sun_icon, vec![], Action::SetTheme(Theme::Dark)),
+        ("Appearance: Match System", sun_icon, vec![], Action::SetScheme(Scheme::System)),
+        ("Appearance: Light", sun_icon, vec![], Action::SetScheme(Scheme::Light)),
+        ("Appearance: Dark", sun_icon, vec![], Action::SetScheme(Scheme::Dark)),
+        ("Theme: Linger", sun_icon, vec![], Action::SetTheme(ThemeName::Linger)),
+        ("Theme: Paper", sun_icon, vec![], Action::SetTheme(ThemeName::Paper)),
+        ("Theme: Forest", sun_icon, vec![], Action::SetTheme(ThemeName::Forest)),
+        ("Theme: Oxblood", sun_icon, vec![], Action::SetTheme(ThemeName::Oxblood)),
+        ("Theme: Plum", sun_icon, vec![], Action::SetTheme(ThemeName::Plum)),
+        ("Theme: Graphite", sun_icon, vec![], Action::SetTheme(ThemeName::Graphite)),
         (
             if settings.typo.mode == crate::reader::layout::Mode::Paragraph {
                 "Layout: verse per line"

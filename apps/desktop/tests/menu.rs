@@ -15,7 +15,7 @@ struct Seen {
 
 #[test]
 fn rows_are_inset_from_the_edges_in_one_text_column() {
-    let p = Theme::Light.palette();
+    let p = Theme::LIGHT.palette();
     let mut harness = Harness::new_ui_state(
         |ui, seen: &mut Seen| {
             let open = ui.button("Open");
@@ -37,7 +37,7 @@ fn rows_are_inset_from_the_edges_in_one_text_column() {
     );
     // The app's fonts and styling, as at startup.
     harness.ctx.set_fonts(theme::font_definitions());
-    theme::apply(&harness.ctx, Theme::Light);
+    theme::apply(&harness.ctx, Theme::LIGHT);
     harness.run();
     harness.get_by_label("Open").click();
     harness.run();

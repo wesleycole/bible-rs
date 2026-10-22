@@ -9,7 +9,7 @@ use muda::accelerator::Accelerator;
 use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::actions::{Action, ExportKind, SettingsTab};
-use crate::theme::Theme;
+use crate::theme::Scheme;
 
 pub struct AppMenu {
     _menu: Menu,
@@ -58,10 +58,10 @@ impl AppMenu {
             "View",
             true,
             &[
-                &item("theme_light", "Light", None),
-                &item("theme_sepia", "Sepia", None),
-                &item("theme_dark", "Dark", None),
-                &item("theme_cycle", "Next Theme", Some("CmdOrCtrl+Shift+L")),
+                &item("scheme_system", "Match System", None),
+                &item("scheme_light", "Light", None),
+                &item("scheme_dark", "Dark", None),
+                &item("theme_cycle", "Toggle Light and Dark", Some("CmdOrCtrl+Shift+L")),
                 &PredefinedMenuItem::separator(),
                 &item("bigger", "Bigger Text", Some("CmdOrCtrl+Equal")),
                 &item("smaller", "Smaller Text", Some("CmdOrCtrl+Minus")),
@@ -117,9 +117,9 @@ impl AppMenu {
                 "export_md" => Action::Export(ExportKind::Markdown),
                 "export_json" => Action::Export(ExportKind::Json),
                 "import_notes" => Action::ImportStudy,
-                "theme_light" => Action::SetTheme(Theme::Light),
-                "theme_sepia" => Action::SetTheme(Theme::Sepia),
-                "theme_dark" => Action::SetTheme(Theme::Dark),
+                "scheme_system" => Action::SetScheme(Scheme::System),
+                "scheme_light" => Action::SetScheme(Scheme::Light),
+                "scheme_dark" => Action::SetScheme(Scheme::Dark),
                 "theme_cycle" => Action::CycleTheme,
                 "bigger" => Action::FontSize(1.0),
                 "smaller" => Action::FontSize(-1.0),

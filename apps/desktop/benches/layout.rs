@@ -39,7 +39,7 @@ fn bench(c: &mut Criterion) {
             b.iter_batched(
                 &mut fresh,
                 |w| {
-                    let cx = Ctx::new(&typo, Theme::Light, w, 0.0);
+                    let cx = Ctx::new(&typo, Theme::LIGHT, w, 0.0);
                     ctx.fonts_mut(|f| black_box(layout::layout_chapter(f, &cx, &kjv, c_idx)))
                 },
                 BatchSize::PerIteration,
@@ -51,7 +51,7 @@ fn bench(c: &mut Criterion) {
         b.iter_batched(
             &mut fresh,
             |w| {
-                let cx = Ctx::new(&per_line, Theme::Light, w, 0.0);
+                let cx = Ctx::new(&per_line, Theme::LIGHT, w, 0.0);
                 ctx.fonts_mut(|f| black_box(layout::layout_chapter(f, &cx, &kjv, john3)))
             },
             BatchSize::PerIteration,
@@ -61,7 +61,7 @@ fn bench(c: &mut Criterion) {
         b.iter_batched(
             &mut fresh,
             |w| {
-                let cx = Ctx::new(&typo, Theme::Light, w / 2.0, 34.0);
+                let cx = Ctx::new(&typo, Theme::LIGHT, w / 2.0, 34.0);
                 let cols = [
                     ("KJV".to_string(), ColumnText::Ready(&kjv)),
                     ("WEB".to_string(), ColumnText::Ready(&web)),

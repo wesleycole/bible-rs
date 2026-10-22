@@ -5,7 +5,7 @@ use linger_core::study::HighlightColor;
 use linger_core::{ChapterIdx, VerseRef};
 use serde::{Deserialize, Serialize};
 
-use crate::theme::Theme;
+use crate::theme::{Scheme, ThemeName};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -59,7 +59,6 @@ pub enum Action {
         read: bool,
     },
     SetPlanReminder(bool),
-    SetAccent(crate::theme::Accent),
     SetReduceMotion(bool),
     /// Erase every highlight, note, bookmark, plan and the history (after a backup).
     EraseStudy,
@@ -102,7 +101,11 @@ pub enum Action {
     OpenSettings(SettingsTab),
     FontSize(f32),
     FontReset,
-    SetTheme(Theme),
+    /// System, Light or Dark, synced.
+    SetScheme(Scheme),
+    /// One of the six themes, synced.
+    SetTheme(ThemeName),
+    /// Light to Dark or back, keeping the theme.
     CycleTheme,
     ToggleMode,
     ToggleRedLetters,

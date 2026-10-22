@@ -171,7 +171,7 @@ pub const ALL: [Shortcut; 19] = [
     fixed("size", "View", "Text size", &["⌘", "+", "⌘", "−"]),
     bindable("mode", "View", "Paragraphs / verse per line", Chord::cmd(Key::L)),
     bindable("red", "View", "Red letters", Chord::cmd(Key::R)),
-    bindable("theme", "View", "Theme", Chord::shift_cmd(Key::L)),
+    bindable("theme", "View", "Light or Dark", Chord::shift_cmd(Key::L)),
     bindable("focus", "View", "Focus mode", Chord::ctrl_cmd(Key::F)),
     bindable("ask", "View", "Ask", Chord::cmd(Key::J)),
 ];

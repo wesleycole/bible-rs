@@ -16,7 +16,7 @@ use linger_core::{BookId, VerseRef, bundled};
 use crate::actions::Action;
 use crate::app::Settings;
 use crate::icons;
-use crate::theme::{self, Palette, Theme, text};
+use crate::theme::{self, Palette, Scheme, Theme, text};
 use crate::widgets::{self, css_baseline, flow, line, paint_on_baseline, paint_runs};
 
 /// The onboarding window's size.
@@ -261,7 +261,7 @@ impl Onboarding {
             0.0,
         );
 
-        let themes = [(Theme::Light, "Light"), (Theme::Sepia, "Sepia"), (Theme::Dark, "Dark")];
+        let themes = [(Theme::LIGHT, "Light"), (Theme::SEPIA, "Paper"), (Theme::DARK, "Dark")];
         let left = cx - (3.0 * 244.0 + 2.0 * 24.0) / 2.0;
         for (i, (t, label)) in themes.into_iter().enumerate() {
             let card =
@@ -295,8 +295,8 @@ impl Onboarding {
             widgets::radio(&painter, p, pos2(x + 8.0, radio_row.center().y), on, resp.hovered());
             paint_on_baseline(&painter, x + 24.0, css_baseline(radio_row.top(), 16.0, 13.0, false), g, color);
             if resp.clicked() {
-                settings.theme_system = false;
-                actions.push(Action::SetTheme(t));
+                actions.push(Action::SetTheme(t.name));
+                actions.push(Action::SetScheme(if t.dark { Scheme::Dark } else { Scheme::Light }));
             }
         }
 
@@ -347,15 +347,17 @@ impl Onboarding {
         painter.rect_filled(Rect::from_min_size(pos2(x, cy - 10.0), vec2(1.0, 20.0)), 0.0, p.separator);
         x += 1.0 + 16.0;
         let b = Rect::from_min_size(pos2(x, cy - 8.0), vec2(16.0, 16.0));
-        if widgets::checkbox(ui, p, b, settings.theme_system, "Match system appearance").clicked() {
-            settings.theme_system = !settings.theme_system;
+        let system = settings.appearance.0 == Scheme::System;
+        if widgets::checkbox(ui, p, b, system, "Match system appearance").clicked() {
+            let fixed = if settings.theme.dark { Scheme::Dark } else { Scheme::Light };
+            actions.push(Action::SetScheme(if system { fixed } else { Scheme::System }));
         }
     }
 }
 
 /// The palette the onboarding window itself uses.
 pub fn palette(ctx: &egui::Context) -> &'static Palette {
-    if ctx.system_theme() == Some(egui::Theme::Dark) { &theme::DARK } else { &theme::LIGHT }
+    if ctx.system_theme() == Some(egui::Theme::Dark) { Theme::DARK.palette() } else { Theme::LIGHT.palette() }
 }
 
 pub fn display(size: f32) -> FontId {

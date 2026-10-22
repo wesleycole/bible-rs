@@ -1,9 +1,9 @@
-//! Reading themes (light, sepia, dark), fonts and egui styling.
+//! Themes, fonts and egui styling.
 //!
-//! Every colour and metric comes from the design's token file, `assets/design-tokens.json`, which
-//! `build.rs` turns into Rust constants at compile time: one [`Palette`] per theme, the
-//! highlight swatches, the type scale ([`text`]) and the metric groups ([`space`], [`radius`],
-//! [`size`], [`titlebar`], [`icon`], [`motion`]).
+//! Every colour and metric comes from the design's token file, `assets/design-tokens.json`: the
+//! themes' colours through `linger_core::appearance`, which the iPhone shares, and the shadows,
+//! the type scale ([`text`]) and the metric groups ([`space`], [`radius`], [`size`],
+//! [`titlebar`], [`icon`], [`motion`]) through `build.rs`, as constants made at compile time.
 
 use std::sync::Arc;
 
@@ -14,146 +14,56 @@ use eframe::egui::{
 use eframe::epaint::RectShape;
 use eframe::epaint::text::{FontTweak, VariationCoords};
 use linger_core::study::HighlightColor;
-use serde::{Deserialize, Serialize};
 
 include!(concat!(env!("OUT_DIR"), "/tokens.rs"));
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum Theme {
-    #[default]
-    Light,
-    Sepia,
-    Dark,
+pub use linger_core::appearance::{Scheme, Theme as ThemeName};
+
+/// What shows: a theme, and whether its dark palette does. Settings › Appearance chooses the
+/// theme and the scheme (synced, in the study store); the scheme and the system's appearance
+/// decide `dark`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Theme {
+    pub name: ThemeName,
+    pub dark: bool,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 3] = [Theme::Light, Theme::Sepia, Theme::Dark];
+    /// The design's own three: Linger's light and dark, and Paper's light (the design's sepia).
+    pub const LIGHT: Theme = Theme::new(ThemeName::Linger, false);
+    pub const DARK: Theme = Theme::new(ThemeName::Linger, true);
+    pub const SEPIA: Theme = Theme::new(ThemeName::Paper, false);
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Theme::Light => "Light",
-            Theme::Sepia => "Sepia",
-            Theme::Dark => "Dark",
-        }
-    }
-
-    pub fn next(self) -> Theme {
-        match self {
-            Theme::Light => Theme::Sepia,
-            Theme::Sepia => Theme::Dark,
-            Theme::Dark => Theme::Light,
-        }
+    pub const fn new(name: ThemeName, dark: bool) -> Self {
+        Self { name, dark }
     }
 
     pub fn is_dark(self) -> bool {
-        self == Theme::Dark
+        self.dark
     }
 
-    /// The theme's colours, with the accent colour chosen in Settings.
+    /// The colours, from `linger_core::appearance`, with this app's shadows.
     pub fn palette(self) -> &'static Palette {
-        let base = match self {
-            Theme::Light => &LIGHT,
-            Theme::Sepia => &SEPIA,
-            Theme::Dark => &DARK,
-        };
-        match accent() {
-            Accent::Ink => base,
-            a => &accented()[self as usize * 4 + (a as usize - 1)],
-        }
+        static PALETTES: std::sync::OnceLock<Vec<Palette>> = std::sync::OnceLock::new();
+        let all = PALETTES.get_or_init(|| {
+            ThemeName::ALL
+                .into_iter()
+                .flat_map(|name| {
+                    [false, true].map(|dark| Palette::new(name.palette(dark), shadows(name, dark)))
+                })
+                .collect()
+        });
+        &all[self.name as usize * 2 + self.dark as usize]
     }
 }
 
-/// Accent colours (Settings › Appearance): Ink is the design's own; the others replace the accent
-/// roles (accent, its soft tint, selection and focus) in every theme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum Accent {
-    #[default]
-    Ink,
-    Oxblood,
-    Forest,
-    Plum,
-    Graphite,
-}
-
-impl Accent {
-    pub const ALL: [Accent; 5] =
-        [Accent::Ink, Accent::Oxblood, Accent::Forest, Accent::Plum, Accent::Graphite];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Accent::Ink => "Ink",
-            Accent::Oxblood => "Oxblood",
-            Accent::Forest => "Forest",
-            Accent::Plum => "Plum",
-            Accent::Graphite => "Graphite",
-        }
+/// Shadows follow the base the palette is built on: Paper's light is the design's sepia.
+fn shadows(name: ThemeName, dark: bool) -> &'static Shadows {
+    match (name, dark) {
+        (_, true) => &SHADOWS_DARK,
+        (ThemeName::Paper, false) => &SHADOWS_SEPIA,
+        (_, false) => &SHADOWS_LIGHT,
     }
-
-    /// The swatch (the light theme's accent).
-    pub fn swatch(self) -> Color32 {
-        match self {
-            Accent::Ink => LIGHT.accent,
-            Accent::Oxblood => Color32::from_rgb(0x8E, 0x2B, 0x2B),
-            Accent::Forest => Color32::from_rgb(0x2F, 0x6B, 0x4F),
-            Accent::Plum => Color32::from_rgb(0x6B, 0x3F, 0x7A),
-            Accent::Graphite => Color32::from_rgb(0x4A, 0x4D, 0x55),
-        }
-    }
-}
-
-static ACCENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-
-pub fn accent() -> Accent {
-    Accent::ALL[ACCENT.load(std::sync::atomic::Ordering::Relaxed) as usize % Accent::ALL.len()]
-}
-
-pub fn set_accent(a: Accent) {
-    ACCENT.store(a as u8, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
-    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
-}
-
-/// Each theme with each non-Ink accent, derived as the design's Ink is: in light and sepia the
-/// swatch itself with a tint 88 % toward the paper; in dark a lighter accent (half way to white)
-/// with a tint 80 % toward the paper; selection and focus are the accent at 14 % / 40 % (20 % /
-/// 50 % in dark).
-fn accented() -> &'static [Palette] {
-    static PALETTES: std::sync::OnceLock<Vec<Palette>> = std::sync::OnceLock::new();
-    PALETTES.get_or_init(|| {
-        let mut out = Vec::new();
-        for theme in Theme::ALL {
-            let base = match theme {
-                Theme::Light => &LIGHT,
-                Theme::Sepia => &SEPIA,
-                Theme::Dark => &DARK,
-            };
-            for a in &Accent::ALL[1..] {
-                let mut p = base.clone();
-                let swatch = a.swatch();
-                let (accent, soft, sel, focus) = if theme.is_dark() {
-                    let accent = mix(swatch, Color32::WHITE, 0.5);
-                    (accent, mix(accent, base.paper, 0.8), 0.20, 0.50)
-                } else {
-                    (swatch, mix(swatch, base.paper, 0.88), 0.14, 0.40)
-                };
-                p.accent = accent;
-                p.accent_soft = soft;
-                p.selection =
-                    Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (sel * 255.0) as u8);
-                p.focus = Color32::from_rgba_unmultiplied(
-                    accent.r(),
-                    accent.g(),
-                    accent.b(),
-                    (focus * 255.0) as u8,
-                );
-                out.push(p);
-            }
-        }
-        out
-    })
 }
 
 /// One theme's colours. Field names are the design's colour roles.
@@ -210,6 +120,39 @@ pub struct Palette {
 }
 
 impl Palette {
+    fn new(p: &linger_core::appearance::Palette, shadows: &Shadows) -> Self {
+        let c = |c: linger_core::appearance::Rgba| Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
+        Self {
+            paper: c(p.paper),
+            sidebar: c(p.sidebar),
+            surface: c(p.surface),
+            toolbar: c(p.toolbar),
+            glass: c(p.glass),
+            field: c(p.field),
+            raised: c(p.raised),
+            fill: c(p.fill),
+            fill_strong: c(p.fill_strong),
+            separator: c(p.separator),
+            border: c(p.border),
+            scrim: c(p.scrim),
+            ink: c(p.ink),
+            ink_2: c(p.ink_2),
+            ink_3: c(p.ink_3),
+            verse: c(p.verse),
+            rubric: c(p.rubric),
+            accent: c(p.accent),
+            on_accent: c(p.on_accent),
+            accent_soft: c(p.accent_soft),
+            selection: c(p.selection),
+            focus: c(p.focus),
+            danger: c(p.danger),
+            success: c(p.success),
+            highlights: p.highlights.map(c),
+            swatches: p.swatches.map(c),
+            shadows: shadows.clone(),
+        }
+    }
+
     pub fn highlight(&self, c: HighlightColor) -> Color32 {
         self.highlights[HighlightColor::ALL.iter().position(|x| *x == c).unwrap_or(0)]
     }
@@ -510,12 +453,14 @@ mod tests {
     #[test]
     fn tokens_match_the_design() {
         // Spot checks against assets/design-tokens.json.
-        assert_eq!(LIGHT.accent, Color32::from_rgb(0x2D, 0x4A, 0x9E));
-        assert_eq!(DARK.paper, Color32::from_rgb(0x16, 0x16, 0x18));
-        assert_eq!(SEPIA.ink, Color32::from_rgb(0x3A, 0x2E, 0x22));
-        assert_eq!(LIGHT.glass, Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xE0));
-        assert_eq!(LIGHT.highlight(HighlightColor::Orange), Color32::from_rgb(0xFA, 0xDD, 0xC2));
-        assert_eq!(SWATCHES[0], Color32::from_rgb(0xEB, 0xC2, 0x4A));
+        let (light, dark) =
+            (Theme::new(ThemeName::Linger, false).palette(), Theme::new(ThemeName::Linger, true).palette());
+        assert_eq!(light.accent, Color32::from_rgb(0x2D, 0x4A, 0x9E));
+        assert_eq!(dark.paper, Color32::from_rgb(0x16, 0x16, 0x18));
+        assert_eq!(Theme::new(ThemeName::Paper, false).palette().ink, Color32::from_rgb(0x3A, 0x2E, 0x22));
+        assert_eq!(light.glass, Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xE0));
+        assert_eq!(light.highlight(HighlightColor::Orange), Color32::from_rgb(0xFA, 0xDD, 0xC2));
+        assert_eq!(light.swatches[0], Color32::from_rgb(0xEB, 0xC2, 0x4A));
         assert_eq!(traffic_lights::CLOSE, Color32::from_rgb(0xFF, 0x5F, 0x57));
         assert_eq!(text::BODY.size, 20.0);
         assert_eq!(text::BODY.line_height, 32.0);
@@ -524,7 +469,7 @@ mod tests {
         assert_eq!(radius::LG, 16.0);
         assert_eq!(titlebar::HEIGHT, 52.0);
         assert_eq!(icon::STROKE_16, 1.75);
-        assert_eq!(LIGHT.shadows.panel.blur, 16.0);
-        assert_eq!(DARK.shadows.modal.ring, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
+        assert_eq!(light.shadows.panel.blur, 16.0);
+        assert_eq!(dark.shadows.modal.ring, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
     }
 }

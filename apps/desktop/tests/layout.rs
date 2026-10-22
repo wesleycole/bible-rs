@@ -17,7 +17,7 @@ fn with_fonts<R>(f: impl FnOnce(&egui::Context) -> R) -> R {
 
 fn chapter(t: &linger_core::Translation, typo: &Typography, c: ChapterIdx) -> ChapterLayout {
     with_fonts(|ctx| {
-        let cx = Ctx::new(typo, Theme::Light, 640.0, 0.0);
+        let cx = Ctx::new(typo, Theme::LIGHT, 640.0, 0.0);
         ctx.fonts_mut(|f| layout::layout_chapter(f, &cx, t, c))
     })
 }
@@ -89,7 +89,7 @@ fn poetry_wraps_with_a_hanging_indent() {
     let c = ChapterIdx::new(BookId::PSALMS, 23).unwrap();
     let narrow = Typography { size: 22.0, ..Typography::default() };
     let l = with_fonts(|ctx| {
-        let cx = Ctx::new(&narrow, Theme::Light, 360.0, 0.0);
+        let cx = Ctx::new(&narrow, Theme::LIGHT, 360.0, 0.0);
         ctx.fonts_mut(|f| layout::layout_chapter(f, &cx, &kjv, c))
     });
     let wrapped = l.blocks.iter().find(|b| b.galley.rows.len() > 1).expect("a wrapped poetry line");
@@ -115,7 +115,7 @@ fn parallel_rows_align_across_translations() {
     let c = ChapterIdx::new(BookId::PSALMS, 1).unwrap();
     let typo = Typography::default();
     let l = with_fonts(|ctx| {
-        let cx = Ctx::new(&typo, Theme::Light, 420.0, 30.0);
+        let cx = Ctx::new(&typo, Theme::LIGHT, 420.0, 30.0);
         let cols =
             [("KJV".to_string(), ColumnText::Ready(&kjv)), ("WEB".to_string(), ColumnText::Ready(&web))];
         ctx.fonts_mut(|f| layout::layout_parallel(f, &cx, &cols, c))
@@ -141,7 +141,7 @@ fn every_chapter_of_every_bundled_translation_lays_out() {
     with_fonts(|ctx| {
         for id in ["kjv", "bsb"] {
             let t = linger_core::bundled::load(id).unwrap();
-            let cx = Ctx::new(&typo, Theme::Light, 600.0, 0.0);
+            let cx = Ctx::new(&typo, Theme::LIGHT, 600.0, 0.0);
             for c in ChapterIdx::all().step_by(7) {
                 let l = ctx.fonts_mut(|f| layout::layout_chapter(f, &cx, &t, c));
                 assert!(l.height > 100.0, "{id} {}", c.display());
@@ -159,7 +159,7 @@ fn parallel_cells_flow_poetry_as_prose() {
     let c = ChapterIdx::new(BookId::PSALMS, 1).unwrap();
     let typo = Typography::default();
     let l = with_fonts(|ctx| {
-        let cx = Ctx::new(&typo, Theme::Light, 420.0, 30.0);
+        let cx = Ctx::new(&typo, Theme::LIGHT, 420.0, 30.0);
         let cols = [("BSB".to_string(), ColumnText::Ready(&bsb))];
         ctx.fonts_mut(|f| layout::layout_parallel(f, &cx, &cols, c))
     });
@@ -182,7 +182,7 @@ fn publisher_notices_follow_the_text_as_links() {
         url: "https://example.org",
     };
     with_fonts(|ctx| {
-        let cx = Ctx::new(&typo, Theme::Light, 420.0, 30.0);
+        let cx = Ctx::new(&typo, Theme::LIGHT, 420.0, 30.0);
         let mut single = ctx.fonts_mut(|f| layout::layout_chapter(f, &cx, &kjv, c));
         let (height, last) = (single.height, single.anchors.last().unwrap().bottom);
         ctx.fonts_mut(|f| layout::add_notices(f, &cx, &mut single, &[notice("ESV")], 1));

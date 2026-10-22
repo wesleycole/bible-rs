@@ -20,7 +20,7 @@ use crate::actions::{Action, ExportKind, SettingsTab};
 use crate::app::{Settings, TaskResult};
 use crate::icons;
 use crate::reader::layout::{Mode, Typography};
-use crate::theme::{self, Palette, Theme, text};
+use crate::theme::{self, Palette, Scheme, Theme, ThemeName, text};
 use crate::widgets::{self, Button, Kind};
 
 /// The window's width, its title bar and its tab strip (icon tabs 76 × 52, 12 pt below).
@@ -979,7 +979,7 @@ impl SettingsUi {
                         ui.set_width(body.width() - 2.0 * MARGIN);
                         ui.spacing_mut().item_spacing.y = 0.0;
                         match self.tab {
-                            SettingsTab::Reading => reading(ui, library, settings, actions),
+                            SettingsTab::Reading => reading(ui, library, settings),
                             SettingsTab::Appearance => appearance(ui, settings, actions),
                             SettingsTab::Translations => {
                                 self.translations(ui, library, settings, actions, tx, import)
@@ -1667,7 +1667,7 @@ fn row_label(ui: &Ui, p: &Palette, r: Rect, label: &str, detail: Option<&str>) {
 /// Line length shown in characters; stored as the measure in ems (66 characters ≈ 32 em).
 const CHARS_PER_EM: f32 = 66.0 / 32.0;
 
-fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mut Vec<Action>) {
+fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings) {
     let p = settings.theme.palette();
 
     // Preview: John 1:1–2 as the reader would set it.
@@ -1743,11 +1743,6 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
         text::SMALL.font(),
         p.ink_3,
     );
-    ui.add_space(24.0);
-
-    // Theme cards.
-    group_title(ui, p, "Theme");
-    theme_cards(ui, settings, actions);
     ui.add_space(24.0);
 
     // Text.
@@ -1902,155 +1897,164 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
     }
 }
 
-/// The four theme cards: Light, Sepia, Dark, Match System (`ds-14` theme picker).
-fn theme_cards(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
+/// The colour scheme cards: System (split light and dark), Light and Dark, each a small drawing
+/// of the reader in the chosen theme.
+fn scheme_cards(ui: &mut Ui, settings: &Settings, actions: &mut Vec<Action>) {
     let p = settings.theme.palette();
+    let (scheme, name) = settings.appearance;
     let width = ui.available_width();
-    let (row, _) = ui.allocate_exact_size(vec2(width, 108.0), Sense::hover());
-    let gap = (width - 4.0 * 136.0) / 3.0;
-    let options: [(Option<Theme>, &str); 4] = [
-        (Some(Theme::Light), "Light"),
-        (Some(Theme::Sepia), "Sepia"),
-        (Some(Theme::Dark), "Dark"),
-        (None, "Match System"),
-    ];
-    for (i, (t, label)) in options.into_iter().enumerate() {
-        let card =
-            Rect::from_min_size(pos2(row.left() + i as f32 * (136.0 + gap), row.top()), vec2(136.0, 84.0));
+    let (w, gap) = ((width - 2.0 * 16.0) / 3.0, 16.0);
+    let (row, _) = ui.allocate_exact_size(vec2(width, 104.0 + 28.0), Sense::hover());
+    for (i, s) in Scheme::ALL.into_iter().enumerate() {
+        let card = Rect::from_min_size(pos2(row.left() + i as f32 * (w + gap), row.top()), vec2(w, 104.0));
         let resp = ui.interact(
-            card.union(Rect::from_min_size(card.left_bottom(), vec2(136.0, 24.0))),
-            ui.id().with(("theme", i)),
+            card.union(Rect::from_min_size(card.left_bottom(), vec2(w, 28.0))),
+            ui.id().with(("scheme", i)),
             Sense::click(),
         );
-        let on = match t {
-            Some(t) => !settings.theme_system && settings.theme == t,
-            None => settings.theme_system,
-        };
+        let on = scheme == s;
         if on {
             ui.painter().rect_filled(card.expand(5.0), 15.0, p.focus);
             ui.painter().rect_filled(card.expand(2.0), 12.0, p.accent);
         } else if resp.hovered() {
             ui.painter().rect_filled(card.expand(3.0), 13.0, p.fill_strong);
         }
-        match t {
-            Some(t) => {
-                let tp = t.palette();
-                ui.painter().rect_filled(card, 10.0, tp.paper);
-                let strip = Rect::from_min_size(card.min, vec2(28.0, card.height()));
-                ui.painter().rect_filled(
-                    strip,
-                    egui::CornerRadius { nw: 10, sw: 10, ne: 0, se: 0 },
-                    tp.sidebar,
-                );
-                let x = strip.right() + 12.0;
-                ui.painter().text(
-                    pos2(x, card.top() + 10.0 + 10.0),
-                    Align2::LEFT_CENTER,
-                    "Aa",
-                    FontId::new(15.0, theme::family(theme::SERIF)),
-                    tp.ink,
-                );
-                for (k, w) in [64.0, 72.0, 56.0].into_iter().enumerate() {
-                    let y = card.top() + 10.0 + 20.0 + 6.0 + k as f32 * 10.0;
-                    ui.painter().rect_filled(
-                        Rect::from_min_size(pos2(x, y), vec2(w, 4.0)),
-                        2.0,
-                        tp.ink.gamma_multiply(0.55),
-                    );
-                }
-            }
-            None => {
+        let light = Theme::new(name, false).palette();
+        let dark = Theme::new(name, true).palette();
+        match s {
+            Scheme::Light => mini_reader(ui.painter(), card, light),
+            Scheme::Dark => mini_reader(ui.painter(), card, dark),
+            Scheme::System => {
                 let half = card.width() / 2.0;
-                ui.painter().rect_filled(
-                    Rect::from_min_size(card.min, vec2(half, card.height())),
-                    egui::CornerRadius { nw: 10, sw: 10, ne: 0, se: 0 },
-                    crate::theme::LIGHT.paper,
-                );
-                ui.painter().rect_filled(
-                    Rect::from_min_size(pos2(card.left() + half, card.top()), vec2(half, card.height())),
-                    egui::CornerRadius { nw: 0, sw: 0, ne: 10, se: 10 },
-                    crate::theme::DARK.paper,
-                );
+                let left = Rect::from_min_size(card.min, vec2(half, card.height()));
+                mini_reader(&ui.painter().with_clip_rect(left), card, light);
+                mini_reader(&ui.painter().with_clip_rect(card.with_min_x(card.left() + half)), card, dark);
             }
         }
         ui.painter().rect_stroke(card, 10.0, Stroke::new(0.5, p.border), egui::StrokeKind::Outside);
         let (font, color) =
             if on { (theme::ui_semibold(text::SMALL.size), p.accent) } else { (text::SMALL.font(), p.ink_2) };
         ui.painter().text(
-            pos2(card.center().x, card.bottom() + 8.0 + 8.0),
+            pos2(card.center().x, card.bottom() + 10.0 + 8.0),
             Align2::CENTER_CENTER,
-            label,
+            s.label(),
             font,
             color,
         );
-        if resp.clicked() {
-            match t {
-                Some(t) => {
-                    settings.theme_system = false;
-                    actions.push(Action::SetTheme(t));
-                }
-                None => settings.theme_system = true,
-            }
+        if resp.clicked() && !on {
+            actions.push(Action::SetScheme(s));
         }
     }
 }
-/// Appearance (frame 24): theme, accent colour, the toolbar's translation, the sidebar; names
-/// for the highlight colours; motion.
+
+/// A small drawing of the reader in `tp`: a chapter number, verse lines with their numbers, one
+/// highlighted, and an accent button.
+fn mini_reader(painter: &egui::Painter, card: Rect, tp: &Palette) {
+    painter.rect_filled(card, 10.0, tp.paper);
+    let top = Rect::from_min_size(card.min, vec2(card.width(), 18.0));
+    painter.rect_filled(top, egui::CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, tp.sidebar);
+    let x = card.left() + 14.0;
+    painter.text(
+        pos2(x, card.top() + 18.0 + 14.0),
+        Align2::LEFT_CENTER,
+        "8",
+        FontId::new(17.0, theme::family(theme::SERIF)),
+        tp.ink,
+    );
+    for (k, w) in [0.72, 0.6, 0.68, 0.44].into_iter().enumerate() {
+        let y = card.top() + 18.0 + 30.0 + k as f32 * 12.0;
+        let line = Rect::from_min_size(pos2(x + 9.0, y), vec2((card.width() - 37.0) * w, 4.0));
+        if k == 1 {
+            painter.rect_filled(
+                line.expand2(vec2(2.0, 3.0)),
+                2.0,
+                tp.highlight(linger_core::study::HighlightColor::Pink),
+            );
+        }
+        painter.rect_filled(Rect::from_min_size(pos2(x, y), vec2(5.0, 4.0)), 1.0, tp.verse);
+        painter.rect_filled(line, 2.0, tp.ink.gamma_multiply(0.55));
+    }
+    let button =
+        Rect::from_min_size(pos2(card.right() - 14.0 - 30.0, card.top() + 18.0 + 8.0), vec2(30.0, 10.0));
+    painter.rect_filled(button, 5.0, tp.accent);
+}
+
+/// The six themes, three to a row: each a light and a dark swatch, the one showing ringed with a
+/// sun or a moon.
+fn theme_grid(ui: &mut Ui, settings: &Settings, actions: &mut Vec<Action>) {
+    let p = settings.theme.palette();
+    let chosen = settings.appearance.1;
+    let width = ui.available_width();
+    let (w, h, gap) = ((width - 2.0 * 12.0) / 3.0, 60.0, 12.0);
+    let (grid, _) = ui.allocate_exact_size(vec2(width, 2.0 * h + gap), Sense::hover());
+    for (i, name) in ThemeName::ALL.into_iter().enumerate() {
+        let (col, row) = ((i % 3) as f32, (i / 3) as f32);
+        let card = Rect::from_min_size(
+            pos2(grid.left() + col * (w + gap), grid.top() + row * (h + gap)),
+            vec2(w, h),
+        );
+        let resp = ui.interact(card, ui.id().with(("theme", i)), Sense::click());
+        let on = chosen == name;
+        let fill = if resp.hovered() && !on { p.fill } else { p.surface };
+        ui.painter().rect_filled(card, 12.0, fill);
+        let ring = if on { Stroke::new(1.5, p.accent) } else { Stroke::new(0.5, p.border) };
+        ui.painter().rect_stroke(card, 12.0, ring, egui::StrokeKind::Outside);
+        for (k, dark) in [false, true].into_iter().enumerate() {
+            let tp = Theme::new(name, dark).palette();
+            let c = pos2(card.left() + 16.0 + 14.0 + k as f32 * 34.0, card.center().y);
+            let showing = on && settings.theme.dark == dark;
+            if showing {
+                ui.painter().circle_stroke(c, 17.0, Stroke::new(2.0, p.accent));
+            }
+            ui.painter().circle_filled(c, 14.0, tp.paper);
+            ui.painter().circle_stroke(c, 14.0, Stroke::new(0.5, p.border));
+            ui.painter().circle_filled(c, 6.0, tp.accent);
+            if showing {
+                let badge = c + vec2(11.0, 11.0);
+                ui.painter().circle_filled(badge, 8.0, p.accent);
+                let icon = Rect::from_center_size(badge, vec2(11.0, 11.0));
+                if dark {
+                    icons::moon(ui.painter(), icon, p.on_accent);
+                } else {
+                    icons::sun(ui.painter(), icon, p.on_accent);
+                }
+            }
+        }
+        let (font, color) =
+            if on { (theme::ui_semibold(13.0), p.accent) } else { (theme::ui_medium(13.0), p.ink) };
+        ui.painter().text(
+            pos2(card.left() + 16.0 + 28.0 + 34.0 + 18.0, card.center().y),
+            Align2::LEFT_CENTER,
+            name.label(),
+            font,
+            color,
+        );
+        if resp.clicked() && !on {
+            actions.push(Action::SetTheme(name));
+        }
+    }
+}
+
+/// Appearance: the colour scheme and theme (synced, shared with the iPhone), the toolbar's
+/// translation, the sidebar; names for the highlight colours; motion.
 fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
     let p = settings.theme.palette();
-    group_title(ui, p, "Appearance");
-    rows_card(ui, p, &[44.0, 64.0, 44.0, 44.0], |ui, i, r| match i {
+    group_title(ui, p, "Colour scheme");
+    scheme_cards(ui, settings, actions);
+    ui.add_space(16.0);
+    group_title(ui, p, "Theme");
+    theme_grid(ui, settings, actions);
+    ui.add_space(8.0);
+    footnote(
+        ui,
+        p,
+        "The scheme and theme are the same on your iPhone and your other Macs while your library syncs.",
+    );
+    ui.add_space(24.0);
+
+    group_title(ui, p, "Window");
+    rows_card(ui, p, &[44.0, 44.0], |ui, i, r| match i {
         0 => {
-            row_label(ui, p, r, "Theme", None);
-            let items: [(IconFn, &str); 4] =
-                [(icons::sun, "Light"), (icons::page, "Sepia"), (icons::moon, "Dark"), (icons::auto, "Auto")];
-            let selected = if settings.theme_system { 3 } else { settings.theme as usize };
-            let right = pos2(r.right() - 16.0, r.center().y);
-            if let Some(k) = icon_segmented(ui, p, right, ui.id().with("theme-seg"), &items, selected) {
-                if k == 3 {
-                    settings.theme_system = true;
-                } else {
-                    settings.theme_system = false;
-                    actions.push(Action::SetTheme(Theme::ALL[k]));
-                }
-            }
-        }
-        1 => {
-            row_label(ui, p, r, "Accent colour", Some("Tints selection, links and primary buttons"));
-            let x0 = r.right() - 16.0 - (5.0 * 52.0 + 4.0 * 4.0);
-            for (k, a) in theme::Accent::ALL.into_iter().enumerate() {
-                let col = Rect::from_min_size(pos2(x0 + 56.0 * k as f32, r.top() + 10.0), vec2(52.0, 44.0));
-                let resp = ui.interact(col, ui.id().with(("accent", k)), Sense::click());
-                let c = pos2(col.center().x, col.top() + 11.0);
-                let on = settings.accent == a;
-                let painter = ui.painter();
-                if on {
-                    painter.circle_filled(c, 14.5, p.ink);
-                    painter.circle_filled(c, 13.0, p.surface);
-                } else if resp.hovered() {
-                    painter.circle_filled(c, 14.0, p.fill_strong);
-                }
-                painter.circle_filled(c, 11.0, a.swatch());
-                if on {
-                    icons::check(painter, Rect::from_center_size(c, vec2(12.0, 12.0)), Color32::WHITE);
-                } else {
-                    painter.circle_stroke(c, 10.75, Stroke::new(0.5, Color32::from_white_alpha(51)));
-                }
-                let (font, ink) =
-                    if on { (theme::ui_semibold(11.0), p.ink) } else { (theme::ui_medium(11.0), p.ink_3) };
-                painter.text(
-                    pos2(col.center().x, col.top() + 28.0 + 8.0),
-                    Align2::CENTER_CENTER,
-                    a.label(),
-                    font,
-                    ink,
-                );
-                if resp.clicked() && !on {
-                    actions.push(Action::SetAccent(a));
-                }
-            }
-        }
-        2 => {
             row_label(ui, p, r, "Show translation in toolbar", None);
             let right = pos2(r.right() - 16.0, r.center().y);
             widgets::toggle(
@@ -2150,55 +2154,6 @@ fn footnote(ui: &mut Ui, p: &Palette, note: &str) {
     let g = ui.painter().layout_job(job);
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), g.size().y), Sense::hover());
     ui.painter().galley(pos2(r.left() + 4.0, r.top()), g, p.ink_3);
-}
-
-/// A segmented control of icon-and-label segments, drawn with its right edge at `right_center`.
-fn icon_segmented(
-    ui: &mut Ui,
-    p: &Palette,
-    right_center: egui::Pos2,
-    id: egui::Id,
-    items: &[(IconFn, &str)],
-    selected: usize,
-) -> Option<usize> {
-    let widths: Vec<f32> = items
-        .iter()
-        .enumerate()
-        .map(|(i, (_, l))| {
-            let font = if i == selected { theme::ui_semibold(13.0) } else { theme::ui_medium(13.0) };
-            ui.painter().layout_no_wrap(l.to_string(), font, Color32::PLACEHOLDER).size().x
-                + 10.0
-                + 16.0
-                + 6.0
-                + 10.0
-        })
-        .collect();
-    let total = widths.iter().sum::<f32>() + 2.0 * (items.len() as f32 - 1.0) + 4.0;
-    let track = Rect::from_min_size(pos2(right_center.x - total, right_center.y - 16.0), vec2(total, 32.0));
-    ui.painter().rect_filled(track, 16.0, p.fill);
-    let mut x = track.left() + 2.0;
-    let mut out = None;
-    for (i, ((icon, label), w)) in items.iter().zip(widths).enumerate() {
-        let seg = Rect::from_min_size(pos2(x, track.top() + 2.0), vec2(w, 28.0));
-        let resp = ui.interact(seg, id.with(i), Sense::click());
-        let on = i == selected;
-        if on {
-            p.shadows.knob.paint(ui.painter(), seg, 14.0);
-            ui.painter().rect_filled(seg, 14.0, p.raised);
-        } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
-            ui.painter().rect_filled(seg, 14.0, fill);
-        }
-        let ink = if on { p.ink } else { p.ink_2 };
-        let r = Rect::from_min_size(pos2(seg.left() + 10.0, seg.center().y - 8.0), vec2(16.0, 16.0));
-        icons::heavy(|| icon(ui.painter(), r, ink));
-        let font = if on { theme::ui_semibold(13.0) } else { theme::ui_medium(13.0) };
-        ui.painter().text(pos2(r.right() + 6.0, seg.center().y), Align2::LEFT_CENTER, *label, font, ink);
-        if resp.clicked() && !on {
-            out = Some(i);
-        }
-        x += w + 2.0;
-    }
-    out
 }
 
 /// The project's releases, opened when asked (the app makes no network requests of its own).
@@ -2337,7 +2292,7 @@ fn about(ui: &mut Ui, p: &Palette) {
 /// The toolbar's "Aa" popover: the settings people change while reading.
 pub fn quick_text_settings(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        for t in Theme::ALL {
+        for (t, label) in [(Theme::LIGHT, "Light"), (Theme::SEPIA, "Paper"), (Theme::DARK, "Dark")] {
             let p = t.palette();
             let (r, resp) = ui.allocate_exact_size(vec2(72.0, 44.0), egui::Sense::click());
             ui.painter().rect_filled(r, egui::CornerRadius::same(8), p.paper);
@@ -2350,12 +2305,13 @@ pub fn quick_text_settings(ui: &mut Ui, settings: &mut Settings, actions: &mut V
             ui.painter().text(
                 r.center(),
                 Align2::CENTER_CENTER,
-                t.label(),
+                label,
                 egui::FontId::new(13.0, theme::family(theme::SERIF)),
                 p.ink,
             );
             if resp.clicked() {
-                actions.push(Action::SetTheme(t));
+                actions.push(Action::SetTheme(t.name));
+                actions.push(Action::SetScheme(if t.dark { Scheme::Dark } else { Scheme::Light }));
             }
         }
     });
