@@ -6,6 +6,7 @@
 
 #[cfg(feature = "native")]
 pub mod api;
+pub mod appearance;
 #[cfg(feature = "native")]
 pub mod assistant;
 #[cfg(feature = "native")]

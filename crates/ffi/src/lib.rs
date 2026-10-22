@@ -22,9 +22,11 @@ use linger_core::{reference, search};
 uniffi::setup_scaffolding!();
 
 mod account;
+mod appearance;
 mod study;
 
 pub use account::{Account, AccountError, AccountInfo};
+pub use appearance::{AppearanceScheme, ThemeName, ThemePalette, theme_label, theme_palette, themes};
 pub use study::{
     ChatMessage, ChatSummary, ConsentText, HighlightColor, LibrarySync, Note, Study, StudyObserver,
     SyncObserver, SyncState, TokenProvider, VerseMarks, VerseNote, VerseRef, highlight_colors,

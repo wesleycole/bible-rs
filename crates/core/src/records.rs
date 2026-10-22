@@ -64,6 +64,29 @@ impl HighlightColor {
     }
 }
 
+// The colour scheme and the theme are part of the synced `Preferences` record, so they live here
+// too; `appearance` holds what they look like. Not doc comments, as for `HighlightColor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Scheme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Linger,
+    Paper,
+    Forest,
+    Oxblood,
+    Plum,
+    Graphite,
+}
+
 /// A verse on the canonical 66-book grid as one integer, `book × 1,000,000 + chapter × 1,000 +
 /// verse`, with books numbered from 0 (Genesis): John 3:16 is `42_003_016`. Ids sort in canon
 /// order, so a range is two numbers, and they read as references in a database. This is the one
