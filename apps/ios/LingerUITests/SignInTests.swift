@@ -17,8 +17,8 @@ final class SignInTests: XCTestCase {
 }
 
 extension XCUIApplication {
-    /// The reader's place field, which shows once signed in.
-    var reader: XCUIElement { searchFields["Go to a reference"] }
+    /// The jump field, which shows once signed in.
+    var reader: XCUIElement { descendants(matching: .any)["jump-field"].firstMatch }
 
     /// Leaves the app signed in on the reader, signing in as Clerk's test user if it isn't.
     func signIn() {
