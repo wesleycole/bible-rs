@@ -3,11 +3,10 @@ import LingerCore
 import StoreKit
 import SwiftUI
 
-/// Settings: the library's sync, and the account.
+/// The Settings tab: the library's sync, and the account.
 struct SettingsView: View {
     let library: Library
     @Environment(Clerk.self) private var clerk
-    @Environment(\.dismiss) private var dismiss
     @State private var confirmingDelete = false
     @State private var showingPro = false
     @State private var managing = false
@@ -18,11 +17,7 @@ struct SettingsView: View {
                 Section("Library") {
                     if library.consent == false {
                         LabeledContent("Sync", value: "Only on this iPhone")
-                        Button("Turn On Sync") {
-                            // The consent sheet shows over the reader, not over this sheet.
-                            dismiss()
-                            library.answerConsent(nil)
-                        }
+                        Button("Turn On Sync") { library.answerConsent(nil) }
                     } else {
                         LabeledContent("Sync", value: library.syncState.label)
                         if case .error = library.syncState {
@@ -65,10 +60,6 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button("Done") { dismiss() }
-            }
             .task { await library.loadAccount() }
             .sheet(isPresented: $showingPro) { ProSheet(library: library) }
             .manageSubscriptionsSheet(isPresented: $managing)
