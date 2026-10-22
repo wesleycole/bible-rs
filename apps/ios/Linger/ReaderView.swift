@@ -5,8 +5,12 @@ import SwiftUI
 struct ReaderView: View {
     @Bindable var model: ReaderModel
     let library: Library
-    @State private var selected: Set<UInt8> = []
+    /// Opens Ask with the selection.
+    let ask: () -> Void
     @State private var noteVerse: VerseRef?
+    @State private var addOpen = false
+    /// The verse the + menu adds to.
+    @State private var anchor: UInt8 = 1
 
     var body: some View {
         NavigationStack {
@@ -20,24 +24,56 @@ struct ReaderView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .background(Theme.page)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.readerFrame = $0 }
                 .task(id: "\(model.translation) \(model.book) \(model.chapter)") {
-                    selected = []
                     await model.load()
                     scroll(proxy)
                 }
                 .onChange(of: model.scrollTarget) { if model.isShowingCurrent { scroll(proxy) } }
+                .onChange(of: model.selection) { old, new in
+                    addOpen = false
+                    // Lift a newly tapped verse when the row would cover it.
+                    guard old == nil, let n = new?.lowerBound,
+                          (model.verseFrames[n]?.maxY ?? 0) > model.readerFrame.maxY - 110 else { return }
+                    withAnimation(.smooth(duration: 0.35)) { proxy.scrollTo(n, anchor: UnitPoint(x: 0.5, y: 0.35)) }
+                }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) { JumpField(model: model) }
                     .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .topBarTrailing) { addButton }
             }
-            .safeAreaInset(edge: .bottom) {
-                if !selected.isEmpty { actions }
+            // The row takes the tab bar's place while verses are selected.
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                if model.selection != nil {
+                    VerseActionRow(model: model, library: library, ask: ask)
+                        .padding(.bottom, 2)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
             }
-            .toolbarVisibility(model.jumpOpen ? .hidden : .automatic, for: .tabBar)
+            .toolbarVisibility(model.jumpOpen || model.selection != nil ? .hidden : .automatic, for: .tabBar)
             .sheet(item: $noteVerse) { verse in
-                NoteSheet(library: library, verse: verse)
+                NoteSheet(library: library, verse: verse, quote: quote(verse.verse)) {
+                    model.selection = nil
+                }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if addOpen {
+                ZStack(alignment: .topTrailing) {
+                    Color.black.opacity(0.001)
+                        .ignoresSafeArea()
+                        .onTapGesture { withAnimation(.smooth(duration: 0.3)) { addOpen = false } }
+                        .accessibilityHidden(true)
+                    CaptureMenu(model: model, anchor: $anchor) {
+                        addOpen = false
+                        noteVerse = VerseRef(book: model.book, chapter: model.chapter, verse: anchor)
+                    }
+                    .padding(.trailing, 14)
+                    .padding(.top, 58)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topTrailing)))
+                }
             }
         }
         .overlay {
@@ -45,50 +81,29 @@ struct ReaderView: View {
         }
     }
 
+    /// The round glass +. Its menu follows the selection (its first verse; a note is on one verse),
+    /// or the verse a jump landed on, or the chapter's first verse.
+    private var addButton: some View {
+        Button("Add", systemImage: "plus") {
+            anchor = model.selection?.lowerBound ?? model.tinted ?? 1
+            withAnimation(.smooth(duration: 0.3)) { addOpen.toggle() }
+        }
+        .labelStyle(.iconOnly)
+        .tint(Theme.ink)
+        .rotationEffect(.degrees(addOpen ? 45 : 0))
+        .accessibilityIdentifier("plus")
+    }
+
+    private func quote(_ n: UInt8) -> String {
+        guard case let .ready(verses, _) = model.content else { return "" }
+        return verses.first { ($0.number...$0.numberEnd).contains(n) }?.text ?? ""
+    }
+
     /// Brings the target verse (or the chapter's top) into view once its chapter shows.
     private func scroll(_ proxy: ScrollViewProxy) {
         guard let target = model.scrollTarget else { return }
         model.scrollTarget = nil
         Task { proxy.scrollTo(target, anchor: target == 0 ? .top : UnitPoint(x: 0.5, y: 0.18)) }
-    }
-
-    private var selection: [VerseRef] {
-        selected.sorted().map { VerseRef(book: model.book, chapter: model.chapter, verse: $0) }
-    }
-
-    /// What the selected verses can have: a colour, a bookmark, a note (one verse at a time).
-    private var actions: some View {
-        HStack(spacing: 14) {
-            ForEach(highlightColors(), id: \.self) { color in
-                Button { act { try $0.setHighlight(verses: selection, color: color) } } label: {
-                    Circle().fill(color.swatch).frame(width: 28, height: 28)
-                }
-                .accessibilityLabel("Highlight \(String(describing: color))")
-            }
-            Button("Clear highlight", systemImage: "circle.slash") {
-                act { try $0.setHighlight(verses: selection, color: nil) }
-            }
-            Button("Bookmark", systemImage: "bookmark") {
-                act { study in try selection.forEach { _ = try study.toggleBookmark(verse: $0) } }
-            }
-            if selection.count == 1 {
-                Button("Note", systemImage: "square.and.pencil") {
-                    noteVerse = selection.first
-                    selected = []
-                }
-            }
-        }
-        .labelStyle(.iconOnly)
-        .font(.title3)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(.regularMaterial, in: Capsule())
-        .padding(.bottom, 8)
-    }
-
-    private func act(_ change: (Study) throws -> Void) {
-        library.write(change)
-        selected = []
     }
 
     /// Swaps the chapter in one frame, without cross-fading two chapters' text.
@@ -119,13 +134,16 @@ struct ReaderView: View {
                     }
                     .id(UInt8(0))
                     ForEach(verses, id: \.number) { verse in
-                        VerseRow(verse: verse, marks: marks[verse.number], selected: selected.contains(verse.number),
+                        VerseRow(verse: verse, marks: marks[verse.number],
+                                 selected: model.selection?.overlaps(verse.number...verse.numberEnd) == true,
                                  tinted: model.tinted == verse.number)
                             .id(verse.number)
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                                model.verseFrames[verse.number] = $0
+                            }
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                model.tinted = nil
-                                if selected.remove(verse.number) == nil { selected.insert(verse.number) }
+                                withAnimation(.smooth(duration: 0.3)) { model.tap(verse: verse.number) }
                             }
                             .accessibilityIdentifier("verse-\(verse.number)")
                             .accessibilityAddTraits(.isButton)

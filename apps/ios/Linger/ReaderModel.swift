@@ -75,8 +75,60 @@ final class ReaderModel {
         }
         self.book = book
         self.chapter = chapter
+        selection = nil
         tinted = verse
         scrollTarget = verse ?? 0
+    }
+
+    /// The selected verses: tapping a verse selects it, tapping another extends the range to it,
+    /// and tapping an end of the range takes it off.
+    var selection: ClosedRange<UInt8>?
+    /// Where each verse and the reader sit on screen, so the verse row can avoid covering a verse.
+    @ObservationIgnored var verseFrames: [UInt8: CGRect] = [:]
+    @ObservationIgnored var readerFrame: CGRect = .zero
+
+    func tap(verse n: UInt8) {
+        tinted = nil
+        guard let s = selection else { selection = n...n; return }
+        if s.contains(n) {
+            if s.count == 1 { selection = nil }
+            else if n == s.lowerBound { selection = (n + 1)...s.upperBound }
+            else if n == s.upperBound { selection = s.lowerBound...(n - 1) }
+            else { selection = n...n }
+        } else {
+            selection = min(s.lowerBound, n)...max(s.upperBound, n)
+        }
+    }
+
+    var selectedVerses: [VerseRef] {
+        selection.map { $0.map { VerseRef(book: book, chapter: chapter, verse: $0) } } ?? []
+    }
+
+    /// "Romans 8:28" or "Romans 8:26–28".
+    var selectionTitle: String? {
+        selection.map {
+            Reference(book: book, chapter: chapter, verse: $0.lowerBound,
+                      verseEnd: $0.count > 1 ? $0.upperBound : nil).display
+        }
+    }
+
+    /// The selected verses' text, one after another.
+    var selectedText: String {
+        guard let selection, case let .ready(verses, _) = content else { return "" }
+        return verses.filter { selection.overlaps($0.number...$0.numberEnd) }.map(\.text).joined(separator: " ")
+    }
+
+    /// The selected verses in every local translation, for Compare.
+    func compare() async -> [(TranslationInfo, String)] {
+        guard let library, let selection else { return [] }
+        let (book, chapter, translations) = (self.book, self.chapter, self.translations.filter { $0.kind != .online })
+        return await Task.detached(priority: .userInitiated) {
+            translations.compactMap { t in
+                guard case let .ready(verses, _) = try? library.chapter(translation: t.id, book: book, chapter: chapter) else { return nil }
+                let text = verses.filter { selection.overlaps($0.number...$0.numberEnd) }.map(\.text).joined(separator: " ")
+                return text.isEmpty ? nil : (t, text)
+            }
+        }.value
     }
 
     func openJump() {

@@ -62,7 +62,7 @@ private struct Tabs: View {
     var body: some View {
         TabView(selection: $tab) {
             Tab("Bible", systemImage: "book", value: .bible) {
-                ReaderView(model: model, library: library)
+                ReaderView(model: model, library: library) { tab = .ask }
             }
             Tab("Library", systemImage: "books.vertical", value: .library) {
                 NotesList(library: library) { open(book: $0.book, chapter: $0.chapter) }

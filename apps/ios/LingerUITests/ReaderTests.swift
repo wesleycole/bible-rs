@@ -83,6 +83,64 @@ final class ReaderTests: XCTestCase {
         XCTAssertTrue(place.hasPrefix("John 13 ·"), "the first match for love one another is \(place)")
     }
 
+    /// Romans 8:28: a colour, the + anchored to it, a cancelled note keeping the selection, a saved
+    /// note, ··· with Bookmark, and Ask. Leaves the verse as it found it: no colour, bookmark or note.
+    func testTheVerseRow() {
+        tap("jump-field")
+        app.typeText("rom 8:28\n")
+        waitForPlace("Romans 8")
+        tap("verse-28")
+        XCTAssertFalse(app.tabBars.buttons["Bible"].isHittable, "the tab bar didn't make way for the row")
+        // Start clean if an earlier run left a colour.
+        let yellow = el("row-dot-yellow")
+        XCTAssertTrue(yellow.waitForExistence(timeout: 5), "no verse row")
+        for dot in ["yellow", "green", "blue", "pink", "purple"] where el("row-dot-\(dot)").label.hasPrefix("Remove") {
+            tap("row-dot-\(dot)")
+        }
+        tap("row-dot-yellow")
+        XCTAssertEqual(yellow.label, "Remove yellow highlight")
+
+        // The + follows the selection; cancelling a note keeps it.
+        tap("plus")
+        XCTAssertEqual(el("capture-anchor").label, "Anchored to Romans 8:28")
+        tap("capture-note")
+        tap("note-cancel")
+        XCTAssertTrue(el("row-more").waitForExistence(timeout: 3), "cancelling the note dropped the selection")
+
+        // A saved note is there when the + opens it again; an emptied one is deleted.
+        tap("plus")
+        tap("capture-note")
+        let field = el("note-field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let old = (field.value as? String) ?? ""
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + "God is good in all things.")
+        tap("note-save")
+        XCTAssertFalse(el("row-more").waitForExistence(timeout: 2), "saving the note kept the selection")
+        tap("verse-28")
+        tap("plus")
+        tap("capture-note")
+        XCTAssertEqual(el("note-field").value as? String, "God is good in all things.")
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 26))
+        tap("note-save")
+        tap("verse-28")
+
+        // ···: Study this verse waits for the verse page; Bookmark turns into Remove bookmark.
+        tap("row-more")
+        XCTAssertFalse(app.buttons["Study this verse"].isEnabled)
+        XCTAssertTrue(app.buttons["Compare"].exists && app.buttons["Share"].exists)
+        let bookmark = app.buttons["Bookmark"]
+        if bookmark.exists { bookmark.tap() } else { app.buttons["Remove bookmark"].tap(); tap("row-more"); app.buttons["Bookmark"].tap() }
+        tap("row-more")
+        XCTAssertTrue(app.buttons["Remove bookmark"].waitForExistence(timeout: 3))
+        app.buttons["Remove bookmark"].tap()
+        tap("row-dot-yellow")
+        XCTAssertEqual(yellow.label, "Highlight yellow")
+
+        // Ask opens the Ask tab, Recents until Ask comes to the iPhone.
+        tap("row-ask")
+        XCTAssertTrue(app.navigationBars["Recents"].waitForExistence(timeout: 5))
+    }
+
     /// × closes the field without moving.
     func testClosingTheFieldStays() {
         let before = place
