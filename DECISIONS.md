@@ -287,11 +287,13 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   `bundled.rs`.
 - **Settings is a place in the window, not a window.** Frame 09 draws Settings as a 720 pt
   window with icon tabs. It takes the main window instead, as T3 Code's settings do: the sidebar
-  slides out (whatever its own setting) and lists the sections, with Back at its foot (Escape
-  too), and the main area shows "Settings / Section" on the toolbar's line over the section in a
-  656 pt column, the old window's content width. Narrower windows scroll it sideways rather
-  than squeezing rows laid out for that width. A gear at the left of the sidebar footer opens it,
-  beside the sync status.
+  slides out (whatever its own setting) with "Settings" in its header line and the sections
+  just below, Back at its foot (Escape too). The main area has no breadcrumb: the section's name
+  heads a column 48 pt from the left that grows from 656 pt (the old window's content width) to
+  800 pt with the window. Narrower windows scroll it sideways rather than squeezing rows laid
+  out for that width. A breadcrumb over a centred column and a fixed page header were tried;
+  the breadcrumb never lined up with the column and the header left the sidebar's top empty.
+  A gear at the left of the sidebar footer opens Settings, beside the sync status.
 - **The reader's top stays at the reader screens' 40 pt.** Frames 01–03 pad the page 40 pt above
   the chapter heading; the later Flows frames (22, 23, 32, 34) draw the same reader with 24. The
   reader keeps 40 so the reader screens match, and those frames sit 16 pt lower than drawn.

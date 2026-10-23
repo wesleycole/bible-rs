@@ -3060,7 +3060,13 @@ impl eframe::App for BibleApp {
                     );
                     content.max.y = footer.top();
                     if let Some(s) = &mut self.settings_ui {
-                        s.nav(ui, p, content, footer, &mut actions);
+                        let header = egui::Rect::from_min_max(
+                            panel.min,
+                            egui::pos2(panel.right(), panel.top() + SIDEBAR_HEADER),
+                        );
+                        // After the traffic lights, where the toolbar's first control goes.
+                        let title_x = self.chrome.leading.max(panel.left() + 16.0);
+                        s.nav(ui, p, header, title_x, content, footer, &mut actions);
                         return;
                     }
                     let status = self.sync.as_ref().map(|s| s.status()).or(self.demo_sync.clone());

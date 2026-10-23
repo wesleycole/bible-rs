@@ -23,10 +23,13 @@ use crate::reader::layout::{Mode, Typography};
 use crate::theme::{self, Palette, Scheme, Theme, ThemeName, text};
 use crate::widgets::{self, Button, Kind};
 
-/// The settings column's width (the design's 720 pt window less its margins), and the least
-/// space each side of it.
+/// The settings column's least width (the design's 720 pt window less its margins), and the
+/// least space to its right.
 const COLUMN: f32 = 656.0;
 const MARGIN: f32 = 32.0;
+/// The widest the column grows, and its margin from the main area's left edge.
+const COLUMN_MAX: f32 = 800.0;
+const WIDE_MARGIN: f32 = 48.0;
 
 type IconFn = fn(&Painter, Rect, Color32);
 
@@ -847,11 +850,30 @@ impl SettingsUi {
     }
 
     /// The sidebar while Settings is open: its sections over `list`, and Back in `footer`.
-    pub fn nav(&mut self, ui: &mut Ui, p: &Palette, list: Rect, footer: Rect, actions: &mut Vec<Action>) {
+    /// `header` is the sidebar's header line (the traffic lights'), `title_x` where text can start
+    /// after them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn nav(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        header: Rect,
+        title_x: f32,
+        list: Rect,
+        footer: Rect,
+        actions: &mut Vec<Action>,
+    ) {
         use crate::sidebar::{Row, row};
+        ui.painter().text(
+            pos2(title_x, header.center().y),
+            Align2::LEFT_CENTER,
+            "Settings",
+            text::UI_STRONG.font(),
+            p.ink,
+        );
         let mut child = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(Rect::from_min_max(list.min + vec2(8.0, 12.0), list.max - vec2(8.0, 0.0)))
+                .max_rect(Rect::from_min_max(list.min + vec2(8.0, 4.0), list.max - vec2(8.0, 0.0)))
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         child.set_clip_rect(list);
@@ -885,8 +907,8 @@ impl SettingsUi {
         }
     }
 
-    /// The open section in the main area (`rect`): "Settings / Section" on the toolbar's line
-    /// (`bar` tall), then the section's settings in a centred column that scrolls below it.
+    /// The open section in the main area (`rect`), below the toolbar's line (`bar` tall): its
+    /// name over its settings, in a left-aligned column that scrolls.
     #[allow(clippy::too_many_arguments)]
     pub fn page(
         &mut self,
@@ -903,39 +925,36 @@ impl SettingsUi {
     ) {
         let p = settings.theme.palette();
         ui.painter().rect_filled(rect, 0.0, p.paper);
-        let crumb = pos2(rect.left() + MARGIN - 8.0, rect.top() + bar / 2.0);
-        let r = ui.painter().text(crumb, Align2::LEFT_CENTER, "Settings", text::UI.font(), p.ink_3);
-        let r = ui.painter().text(
-            r.right_center() + vec2(8.0, 0.0),
-            Align2::LEFT_CENTER,
-            "/",
-            text::UI.font(),
-            p.ink_3,
-        );
-        ui.painter().text(
-            r.right_center() + vec2(8.0, 0.0),
-            Align2::LEFT_CENTER,
-            self.title(),
-            text::UI_STRONG.font(),
-            p.ink,
-        );
-
         let body = Rect::from_min_max(pos2(rect.left(), rect.top() + bar), rect.max);
+        // The column starts a fixed margin from the left and grows with the window up to a
+        // comfortable measure.
+        let width = (body.width() - 2.0 * WIDE_MARGIN).clamp(COLUMN, COLUMN_MAX);
+        let left = body.left() + WIDE_MARGIN;
+
         let mut child = ui.new_child(
             egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)),
         );
         child.set_clip_rect(body);
-        // The rows are laid out for the column's width, so a narrower window scrolls sideways.
+        // The rows are laid out for at least the column's width, so a narrower window scrolls
+        // sideways.
         ScrollArea::both().auto_shrink(false).id_salt(("settings", self.title())).show(&mut child, |ui| {
-            let width = COLUMN;
             let mut column = ui.available_rect_before_wrap();
-            column.min.x = (body.center().x - width / 2.0).max(body.left() + MARGIN);
+            column.min.x = left;
             column.max.x = column.min.x + width;
-            column.min.y += 24.0;
             ui.expand_to_include_x(column.max.x + MARGIN);
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(column).layout(egui::Layout::top_down(egui::Align::Min)),
                 |ui| {
+                    // The section's name heads the column and scrolls with it.
+                    let (r, _) = ui.allocate_exact_size(vec2(width, 40.0), Sense::hover());
+                    ui.painter().text(
+                        r.left_center(),
+                        Align2::LEFT_CENTER,
+                        self.title(),
+                        theme::ui_bold(22.0),
+                        p.ink,
+                    );
+                    ui.add_space(20.0);
                     ui.set_width(width);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     match self.tab {
