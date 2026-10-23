@@ -34,11 +34,10 @@ const RECENT_ITEMS: usize = 5;
 enum StudyKind {
     Bookmarks,
     Highlights,
-    Notes,
 }
 
 impl StudyKind {
-    const ALL: [StudyKind; 3] = [StudyKind::Bookmarks, StudyKind::Highlights, StudyKind::Notes];
+    const ALL: [StudyKind; 2] = [StudyKind::Bookmarks, StudyKind::Highlights];
 }
 
 /// What the sidebar needs from the rest of the app each frame.
@@ -62,10 +61,10 @@ pub struct Sidebar {
     recents_open: bool,
     chats: (u64, Vec<linger_core::study::ChatSummary>),
     /// Which study collections are expanded, and the one last opened (drawn selected).
-    study_open: [bool; 3],
+    study_open: [bool; 2],
     study_selected: Option<StudyKind>,
     /// Collections showing every item rather than the most recent few.
-    study_all: [bool; 3],
+    study_all: [bool; 2],
     /// Highlights shown: all, or one colour.
     highlight_filter: Option<HighlightColor>,
     pub query: String,
@@ -94,9 +93,9 @@ impl Sidebar {
         Self {
             recents_open: true,
             chats: (0, Vec::new()),
-            study_open: [false; 3],
+            study_open: [false; 2],
             study_selected: None,
-            study_all: [false; 3],
+            study_all: [false; 2],
             highlight_filter: None,
             query: String::new(),
             field_focused: false,
@@ -223,12 +222,11 @@ impl Sidebar {
         };
     }
 
-    /// Expands a study collection by name (`bookmarks`, `highlights`, `notes`).
+    /// Expands a study collection by name (`bookmarks`, `highlights`).
     pub fn open_study(&mut self, name: &str) {
         let kind = match name {
             "bookmarks" => StudyKind::Bookmarks,
             "highlights" => StudyKind::Highlights,
-            "notes" => StudyKind::Notes,
             _ => return,
         };
         self.toggle_study(kind);
@@ -285,7 +283,7 @@ impl Sidebar {
     fn source_list(&mut self, ui: &mut Ui, env: &SidebarEnv<'_>, actions: &mut Vec<Action>) {
         let p = env.theme.palette();
         let study = env.study;
-        let (nh, nn, nb) = study.counts();
+        let (nh, _, nb) = study.counts();
         ScrollArea::vertical().auto_shrink(false).id_salt("source-list").show(ui, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 8 }).show(
                 ui,
@@ -308,7 +306,6 @@ impl Sidebar {
                             crate::icons::highlighter,
                             Some(Page::Highlights),
                         ),
-                        (StudyKind::Notes, "Notes", nn, crate::icons::note, Some(Page::Notes)),
                     ]
                     .into_iter()
                     .enumerate()
@@ -420,17 +417,11 @@ impl Sidebar {
                     .map(|(v, c)| (v, Some(p.swatch(c)), None))
                     .collect()
             }
-            StudyKind::Notes => {
-                let mut n = study.notes();
-                n.sort_by_key(|(v, n)| (std::cmp::Reverse(n.updated), *v));
-                n.into_iter().map(|(v, n)| (v, None, Some(n.body.replace('\n', " ")))).collect()
-            }
         };
         if items.is_empty() {
             let hint = match kind {
                 StudyKind::Bookmarks => "No bookmarks yet. Select a verse and press B (or ⌘D).",
                 StudyKind::Highlights => "No highlights yet. Select a verse and press 1–6.",
-                StudyKind::Notes => "No notes yet. Select a verse and press N.",
             };
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
                 ui.label(egui::RichText::new(hint).font(text::SMALL.font()).color(p.ink_2));
@@ -462,7 +453,6 @@ impl Sidebar {
                 let (label, a) = match kind {
                     StudyKind::Bookmarks => ("Remove bookmark", Action::RemoveBookmark(v)),
                     StudyKind::Highlights => ("Remove highlight", Action::RemoveHighlight(v)),
-                    StudyKind::Notes => ("Delete note", Action::RemoveNote(v)),
                 };
                 if ui.button(label).clicked() {
                     actions.push(a);

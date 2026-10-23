@@ -25,7 +25,6 @@ pub enum Page {
     Reader,
     Bookmarks,
     Highlights,
-    Notes,
     History,
     Plans,
     Library,
@@ -38,7 +37,6 @@ impl Page {
             Page::Reader => "Search",
             Page::Bookmarks => "Search bookmarks",
             Page::Highlights => "Search highlights",
-            Page::Notes => "Search notes",
             Page::History => "Search history",
             Page::Plans => "Search plans",
             Page::Library => "Search your library",
@@ -50,7 +48,6 @@ impl Page {
             "reader" => Page::Reader,
             "bookmarks" => Page::Bookmarks,
             "highlights" => Page::Highlights,
-            "notes" => Page::Notes,
             "history" => Page::History,
             "plans" => Page::Plans,
             "library" => Page::Library,
@@ -108,8 +105,13 @@ impl Pages {
         ui.painter().rect_filled(rect, 0.0, p.paper);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         child.set_clip_rect(rect);
-        if self.page.has_panes() && !self.notes.is_empty(env) {
-            self.notes.show(&mut child, rect, env, actions);
+        // A verse's own note opens in its editor, which scrolls on its own.
+        if self.page == Page::Library
+            && let Some(v) = self.library.open_note(env.study)
+        {
+            if self.notes.show_note(&mut child, rect, env, v, actions) {
+                self.library.back();
+            }
             self.scrolled = false;
             return;
         }
@@ -126,7 +128,6 @@ impl Pages {
                     Page::History => self.history.show(ui, content, env, actions),
                     Page::Plans => self.plans.show(ui, content, env, actions),
                     Page::Library => self.library.show(ui, content, env, actions),
-                    Page::Notes => self.notes.show_empty(ui, content, env, actions),
                     Page::Reader => content.top(),
                 };
                 ui.allocate_rect(

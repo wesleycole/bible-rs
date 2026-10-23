@@ -37,6 +37,19 @@ struct Open {
     shown: bool,
 }
 
+/// The verse a note is that verse's own note on (one user anchor, one verse), if it is.
+pub fn own_verse(study: &linger_core::study::StudyStore, item: &Item) -> Option<VerseRef> {
+    if item.kind != ItemKind::Note || item.deleted_at.is_some() {
+        return None;
+    }
+    let mut user = item.anchors.iter().filter(|a| a.origin == linger_core::records::AnchorOrigin::User);
+    let v = match (user.next(), user.next()) {
+        (Some(a), None) if a.from == a.to => a.from.verse_ref()?,
+        _ => return None,
+    };
+    study.note(v).is_some_and(|n| n.uid == item.uid).then_some(v)
+}
+
 /// An item's title as the list and chips show it: its own, or what kind of item it is.
 pub fn title(item: &Item) -> String {
     let own = [Some(&item.title), item.details.as_ref().and_then(|d| d.title.as_ref())]
@@ -136,6 +149,12 @@ impl State {
 
     pub fn back(&mut self) {
         self.open = None;
+    }
+
+    /// The verse whose own note is open, when it is one: Library shows it in the note editor.
+    pub fn open_note(&self, study: &linger_core::study::StudyStore) -> Option<VerseRef> {
+        let item = study.item(&self.open.as_ref()?.uid).ok()??;
+        own_verse(study, &item)
     }
 
     pub fn show(&mut self, ui: &mut Ui, content: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) -> f32 {

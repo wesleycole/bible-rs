@@ -1040,32 +1040,12 @@ impl BibleApp {
                 Err(e) => self.toast(ctx, format!("{e:#}")),
             },
             Action::OpenPage(page) => self.pages.open(page),
-            // A library item from a citation chip or a margin mark: a note on one verse opens in
-            // Notes, where it is edited; anything else on the library page.
+            // A library item from a citation chip or a margin mark, on the library page (a
+            // verse's own note in its editor there).
             Action::OpenItem { uid, at_ms } => match self.study.item(&uid) {
                 Ok(Some(item)) if item.deleted_at.is_none() => {
-                    let own_verse = (item.kind == linger_core::records::ItemKind::Note)
-                        .then(|| {
-                            let mut user = item
-                                .anchors
-                                .iter()
-                                .filter(|a| a.origin == linger_core::records::AnchorOrigin::User);
-                            match (user.next(), user.next()) {
-                                (Some(a), None) if a.from == a.to => a.from.verse_ref(),
-                                _ => None,
-                            }
-                        })
-                        .flatten();
-                    match own_verse {
-                        Some(v) if self.study.note(v).is_some_and(|n| n.uid == item.uid) => {
-                            self.pages.notes.select(v);
-                            self.pages.open(crate::pages::Page::Notes);
-                        }
-                        _ => {
-                            self.pages.open(crate::pages::Page::Library);
-                            self.pages.library.open(&item.uid, at_ms);
-                        }
-                    }
+                    self.pages.open(crate::pages::Page::Library);
+                    self.pages.library.open(&item.uid, at_ms);
                 }
                 Ok(_) => self.toast(ctx, "That item is no longer in your library"),
                 Err(e) => self.toast(ctx, format!("{e:#}")),
@@ -1351,8 +1331,11 @@ impl BibleApp {
                 self.pages.plans.open = Some((id.to_string(), day.parse().unwrap_or(1)));
             }
             "note-select" => {
-                if let Some(r) = linger_core::reference::parse(arg) {
-                    self.pages.notes.select(r.verse_ref());
+                if let Some(n) =
+                    linger_core::reference::parse(arg).and_then(|r| self.study.note(r.verse_ref()))
+                {
+                    self.pages.open(crate::pages::Page::Library);
+                    self.pages.library.open(&n.uid, None);
                 }
             }
             // `import`, `import:<path>`, then `import-progress:<books>` or

@@ -159,20 +159,20 @@ fn optical_top_sits_a_little_above_the_middle() {
     assert_eq!(optical_top(area, 700.0, 154.0), 154.0);
 }
 
-/// In a 620 × 420 window with the sidebar open the empty Notes page is taller than the window;
+/// In a 620 × 300 window with the sidebar open the empty Library page is taller than the window;
 /// it scrolls like the other pages, so its last hint row can be brought into view.
 #[test]
-fn the_empty_notes_page_scrolls_to_its_last_row_in_a_short_window() {
+fn the_empty_library_page_scrolls_to_its_last_row_in_a_short_window() {
     use linger::pages::{Page, PageEnv, Pages};
-    let dir = std::env::temp_dir().join(format!("linger-empty-notes-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("linger-empty-library-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let library = linger_core::library::Library::open(&dir, std::sync::Arc::new(|| {}));
     let study = linger_core::study::StudyStore::open_in_memory().unwrap();
     let settings = linger::app::Settings::default();
     let env = PageEnv { library: &library, study: &study, settings: &settings, query: "", toolbar: 52.0 };
     let mut pages = Pages::default();
-    pages.open(Page::Notes);
-    let window = Rect::from_min_size(Pos2::ZERO, vec2(620.0, 420.0));
+    pages.open(Page::Library);
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(620.0, 300.0));
     let main = Rect::from_min_max(egui::pos2(264.0, 0.0), window.max);
 
     let ctx = egui::Context::default();
@@ -189,7 +189,7 @@ fn the_empty_notes_page_scrolls_to_its_last_row_in_a_short_window() {
         out.shapes
             .iter()
             .find_map(|s| match &s.shape {
-                Shape::Text(t) if t.galley.job.text == "Export as Markdown" => {
+                Shape::Text(t) if t.galley.job.text == "Ask about what you're reading" => {
                     Some(t.galley.rect.translate(t.pos.to_vec2()).bottom())
                 }
                 _ => None,

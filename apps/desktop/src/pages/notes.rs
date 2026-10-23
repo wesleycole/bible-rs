@@ -1,5 +1,4 @@
-//! Study › Notes (frames 16 and 31): the notes in a list beside an editor for the selected one —
-//! the verse quoted on its highlight, a format bar, the note as styled Markdown, and the verses
+//! A verse's own note in Library: the editor — the verse quoted on its highlight, a format bar, the note as styled Markdown, and the verses
 //! it mentions as links.
 //!
 //! The editor is a text field whose layouter styles Markdown as it's typed: `#` headings, `**bold**`,
@@ -11,32 +10,22 @@ use eframe::egui::{self, Align, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, 
 
 use linger_core::VerseRef;
 
-use super::{Empty, Page, PageEnv, Tone, text};
+use super::{PageEnv, text};
 use crate::actions::Action;
 use crate::icons;
-use crate::sidebar::{ListItem, list_item};
 use crate::theme::{self, Palette};
 use crate::widgets::{self, Button, Kind, css_baseline, flow_indented, paint_runs};
 
-const LIST_W: f32 = 336.0;
 /// The note text's measure (the design's paragraphs are 560 wide).
 const MEASURE: f32 = 560.0;
 const BODY: f32 = 15.0;
 const LINE: f32 = 24.0;
 
+#[derive(Default)]
 pub struct State {
-    recent: bool,
-    selected: Option<VerseRef>,
     editor: Option<Editor>,
-    /// The new-note and link-verse popups' reference fields.
-    adding: String,
+    /// The link-verse popup's reference field.
     linking: String,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self { recent: true, selected: None, editor: None, adding: String::new(), linking: String::new() }
-    }
 }
 
 /// The note being edited, as shown (bullets as "•") and as last saved (Markdown).
@@ -148,59 +137,24 @@ fn conflict_card(
 }
 
 impl State {
-    /// No notes and none being written: the page is its empty state, which scrolls like the
-    /// other pages rather than splitting into panes.
-    pub fn is_empty(&self, env: &PageEnv<'_>) -> bool {
-        self.editor.is_none() && env.study.notes().is_empty()
-    }
-
-    /// The empty page under the header; returns its bottom.
-    pub fn show_empty(
+    /// Library's page for a verse's own note: a way back to the list above the editor, which
+    /// saves after a pause in typing. Returns whether the way back was taken (or the note deleted).
+    pub fn show_note(
         &mut self,
         ui: &mut Ui,
-        content: Rect,
+        area: Rect,
         env: &PageEnv<'_>,
+        v: VerseRef,
         actions: &mut Vec<Action>,
-    ) -> f32 {
-        let p = env.settings.theme.palette();
-        super::title(ui.painter(), p, content.left(), content.top(), "Notes", "Nothing written yet");
-        let empty = Empty {
-            glyph: icons::note,
-            tone: Tone::Accent,
-            title: "Your notes will live here",
-            body: "Select a verse and press N, or right-click it and choose Add Note. Notes stay on this \
-                       Mac and export to Markdown.",
-            buttons: &[
-                Button::new(Kind::Primary, "Open John 1"),
-                Button::new(Kind::Ghost, "Import a backup"),
-            ],
-            hints: &[(&["N"], "New note on the selected verse"), (&["⌘", "E"], "Export as Markdown")],
-            width: 344.0,
-        };
-        super::bookmarks::empty_page(ui, p, content, &empty, actions)
-    }
-
-    /// Draws the page over the main area `area` (list and editor side by side, each scrolling).
-    pub fn show(&mut self, ui: &mut Ui, area: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) {
+    ) -> bool {
         let p = env.settings.theme.palette();
         let t = super::reading_text(env);
-        let notes = env.study.notes();
-
-        // Keep the editor on the selected note (the newest when none is).
-        let selected = self.selected.or_else(|| {
-            let mut n = notes.clone();
-            n.sort_by_key(|(_, n)| std::cmp::Reverse(n.updated));
-            n.first().map(|(v, _)| *v)
-        });
-        self.selected = selected;
-        if let Some(v) = selected
-            && self.editor.as_ref().is_none_or(|e| e.verse != v)
-        {
+        if self.editor.as_ref().is_none_or(|e| e.verse != v) {
             self.flush(actions);
             let body = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
             self.editor = Some(Editor::new(v, &body));
         }
-        // The open note changed under the editor (another device's edit, or a kept copy): show it,
+        // The note changed under the editor (another device's edit, or a kept copy): show it,
         // unless there's typing here not yet saved.
         if let Some(e) = &mut self.editor
             && e.changed.is_none()
@@ -211,14 +165,18 @@ impl State {
             *e = Editor::new(e.verse, &n.body);
         }
 
-        let list = Rect::from_min_max(area.min, pos2(area.left() + LIST_W, area.bottom()));
-        let editor = Rect::from_min_max(pos2(list.right(), area.top()), area.max);
-        self.list(ui, p, list, env, t.as_deref(), actions);
-        ui.painter().vline(
-            list.right() - 0.5,
-            (area.top() + env.toolbar)..=area.bottom(),
-            Stroke::new(1.0, p.separator),
+        // One column, as wide as an item's page in Library.
+        let width = area.width().min(MEASURE + 2.0 * 40.0 + 80.0);
+        let left = area.center().x - width / 2.0;
+        let column = Rect::from_min_max(pos2(left, area.top()), pos2(left + width, area.bottom()));
+        let (_, back) = Button::new(Kind::Plain, "Library").small().icon(icons::chevron_left).show_left(
+            ui,
+            p,
+            column.left() + 30.0,
+            area.top() + env.toolbar + 12.0,
+            ui.id().with("note-back"),
         );
+        let editor = Rect::from_min_max(pos2(column.left(), column.top() + 28.0), column.max);
         self.editor(ui, p, editor, env, t.as_deref(), actions);
 
         // Save after a pause in typing.
@@ -232,6 +190,12 @@ impl State {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(650));
             }
         }
+        let back = back.clicked() || self.editor.is_none();
+        if back {
+            self.flush(actions);
+            self.editor = None;
+        }
+        back
     }
 
     /// Saves the open note if it changed.
@@ -244,115 +208,6 @@ impl State {
             }
             e.changed = None;
         }
-    }
-
-    fn list(
-        &mut self,
-        ui: &mut Ui,
-        p: &Palette,
-        r: Rect,
-        env: &PageEnv<'_>,
-        t: Option<&linger_core::Translation>,
-        actions: &mut Vec<Action>,
-    ) {
-        let painter = ui.painter().clone();
-        let x = r.left() + 32.0;
-        let w = LIST_W - 32.0 - 16.0;
-        let top = r.top() + env.toolbar + 20.0;
-        // Head: the title and a new-note button.
-        let g = widgets::line(
-            &painter,
-            "Notes",
-            FontId::new(28.0, theme::family(theme::SERIF_HEADING)),
-            p.ink,
-            -0.01,
-        );
-        widgets::paint_on_baseline(&painter, x, css_baseline(top, 36.0, 28.0, true), g, p.ink);
-        let plus = Rect::from_min_size(pos2(x + w - 28.0, top + 4.0), vec2(28.0, 28.0));
-        let resp = widgets::round_button(ui, p, plus, icons::plus, ui.id().with("new-note"));
-        egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            ui.set_min_width(220.0);
-            ui.label(egui::RichText::new("New note on…").color(p.ink_2));
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut self.adding).hint_text("John 3:16").desired_width(200.0),
-            );
-            field.request_focus();
-            if field.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                && let Some(r) = linger_core::reference::parse(&self.adding).filter(|r| r.verse.is_some())
-            {
-                self.flush(actions);
-                let v = r.verse_ref();
-                self.selected = Some(v);
-                let body = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
-                self.editor = Some(Editor::new(v, &body));
-                self.adding.clear();
-                ui.close();
-            }
-        });
-        // Sub row: count and order.
-        let notes = env.study.notes();
-        let count = match notes.len() {
-            1 => "1 note".to_string(),
-            n => format!("{n} notes"),
-        };
-        text(&painter, x, top + 48.0, 16.0, &count, theme::ui_font(12.0), p.ink_2, false);
-        let (_, pick) = widgets::segmented_tight(
-            ui,
-            p,
-            pos2(x + w, top + 40.0 + 16.0),
-            ui.id().with("notes-order"),
-            &["Recent", "Canonical"],
-            usize::from(!self.recent),
-        );
-        if let Some(i) = pick {
-            self.recent = i == 0;
-        }
-
-        // The notes, then any new one not yet saved.
-        let q = env.query.trim().to_lowercase();
-        let verse_text = |v: VerseRef| t.and_then(|t| t.find(v)).map(|v| v.plain_text()).unwrap_or_default();
-        let mut items: Vec<(VerseRef, String, i64)> =
-            notes.iter().map(|(v, n)| (*v, n.body.clone(), n.updated)).collect();
-        if let Some(e) = &self.editor
-            && !items.iter().any(|(v, _, _)| *v == e.verse)
-        {
-            items.push((e.verse, to_markdown(&e.text), linger_core::study::now()));
-        }
-        if self.recent {
-            items.sort_by_key(|(v, _, updated)| (std::cmp::Reverse(*updated), *v));
-        } else {
-            items.sort_by_key(|(v, _, _)| *v);
-        }
-        let list = Rect::from_min_max(pos2(x, top + 40.0 + 44.0), pos2(x + w, r.bottom()));
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list));
-        child.set_clip_rect(list.intersect(ui.clip_rect()));
-        egui::ScrollArea::vertical().id_salt("notes-list").auto_shrink(false).show(&mut child, |ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            for (v, body, updated) in items {
-                let snippet = verse_text(v);
-                let note = plain(&body);
-                if !q.is_empty()
-                    && !v.display().to_lowercase().contains(&q)
-                    && !note.to_lowercase().contains(&q)
-                    && !snippet.to_lowercase().contains(&q)
-                {
-                    continue;
-                }
-                let item = ListItem {
-                    reference: v.display(),
-                    trailing: crate::time::short_date(updated),
-                    bar: env.study.highlight(v).map(|c| p.swatch(c)),
-                    note: Some(if note.is_empty() { "New note".into() } else { note }),
-                    snippet,
-                    selected: self.selected == Some(v),
-                };
-                if list_item(ui, p, &item).clicked() {
-                    self.flush(actions);
-                    self.selected = Some(v);
-                }
-            }
-        });
     }
 
     fn editor(
@@ -713,13 +568,7 @@ impl State {
         if remove {
             actions.push(Action::RemoveNote(v));
             self.editor = None;
-            self.selected = None;
         }
-    }
-
-    /// Opens a note (demo steps, links from elsewhere).
-    pub fn select(&mut self, v: VerseRef) {
-        self.selected = Some(v);
     }
 }
 
@@ -931,13 +780,6 @@ fn markdown_job(ui: &egui::Ui, text: &str, caret_line: Option<usize>, p: &Palett
         }
     }
     job
-}
-
-impl Page {
-    /// Whether the page draws its own panes rather than one scrolling column.
-    pub fn has_panes(self) -> bool {
-        self == Page::Notes
-    }
 }
 
 #[cfg(test)]
