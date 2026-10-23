@@ -1,6 +1,6 @@
-//! The Settings window (frame 09 in the design): Reading, Appearance, Translations, Shortcuts,
-//! Data, Account and About, as icon tabs under a 52 pt title bar. It is a window of its own; when the app
-//! renders offscreen (screenshots) it fills the main window instead.
+//! Settings (frame 09 in the design): Reading, Appearance, Translations, Shortcuts, Data, Account
+//! and About. It takes over the main window rather than opening one of its own: the sidebar lists
+//! the sections with Back at its foot, and the main area shows the open one.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -23,10 +23,9 @@ use crate::reader::layout::{Mode, Typography};
 use crate::theme::{self, Palette, Scheme, Theme, ThemeName, text};
 use crate::widgets::{self, Button, Kind};
 
-/// The window's width, its title bar and its tab strip (icon tabs 76 × 52, 12 pt below).
-const WIDTH: f32 = 720.0;
-const TITLE_BAR: f32 = 52.0;
-const HEADER: f32 = TITLE_BAR + 52.0 + 12.0;
+/// The settings column's width (the design's 720 pt window less its margins), and the least
+/// space each side of it.
+const COLUMN: f32 = 656.0;
 const MARGIN: f32 = 32.0;
 
 type IconFn = fn(&Painter, Rect, Color32);
@@ -842,65 +841,58 @@ impl SettingsUi {
         TABS.iter().find(|(t, _, _)| *t == self.tab).map_or("Settings", |(_, l, _)| l)
     }
 
-    /// Shows the window; returns `false` once it is closed.
-    #[allow(clippy::too_many_arguments)]
-    pub fn show(
-        &mut self,
-        ctx: &egui::Context,
-        library: &mut Library,
-        settings: &mut Settings,
-        study: &StudyStore,
-        account: &Account,
-        actions: &mut Vec<Action>,
-        tx: &Sender<TaskResult>,
-        import: &mut Option<(PathBuf, Option<String>)>,
-    ) -> bool {
-        if crate::offscreen() {
-            // A screenshot of the window: fill the main window with it.
-            let screen = ctx.content_rect();
-            egui::Area::new(egui::Id::new("settings-offscreen"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(screen.min)
-                .show(ctx, |ui| {
-                    ui.set_min_size(screen.size());
-                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(screen));
-                    self.window(&mut child, library, settings, study, account, actions, tx, import);
-                });
-            return true;
-        }
-        let mut open = true;
-        let mut builder = egui::ViewportBuilder::default()
-            .with_title("Settings")
-            .with_inner_size([WIDTH, 860.0])
-            .with_min_inner_size([WIDTH, 420.0])
-            .with_max_inner_size([WIDTH, 4000.0]);
-        if cfg!(target_os = "macos") {
-            builder =
-                builder.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
-        }
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("settings"), builder, |ui, _class| {
-            #[cfg(target_os = "macos")]
-            crate::macos_window::unify_window_titled("Settings");
-            if ui.ctx().input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
-                && !ui.ctx().egui_wants_keyboard_input()
-            {
-                open = false;
-            }
-            if ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
-                open = false;
-            }
-            let rect = ui.max_rect();
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-            self.window(&mut child, library, settings, study, account, actions, tx, import);
-        });
-        open
+    /// Whether a shortcut row is waiting for a chord (it takes Escape).
+    pub fn recording(&self) -> bool {
+        self.recording.is_some()
     }
 
-    /// The window's content: title bar, tabs, then the tab's settings.
+    /// The sidebar while Settings is open: its sections over `list`, and Back in `footer`.
+    pub fn nav(&mut self, ui: &mut Ui, p: &Palette, list: Rect, footer: Rect, actions: &mut Vec<Action>) {
+        use crate::sidebar::{Row, row};
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(list.min + vec2(8.0, 12.0), list.max - vec2(8.0, 0.0)))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(list);
+        child.spacing_mut().item_spacing.y = 0.0;
+        for (tab, label, icon) in TABS {
+            let r = row(
+                &mut child,
+                p,
+                &Row { icon: Some(icon), label, selected: self.tab == tab, ..Row::default() },
+            );
+            if r.clicked() {
+                self.tab = tab;
+            }
+        }
+
+        ui.painter().hline(footer.x_range().shrink(8.0), footer.top() + 0.5, Stroke::new(1.0, p.separator));
+        let back = Rect::from_center_size(footer.center(), vec2(footer.width() - 16.0, 32.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(back));
+        let r = row(
+            &mut child,
+            p,
+            &Row {
+                icon: Some(icons::chevron_left),
+                icon_color: Some(p.ink_2),
+                label: "Back",
+                ..Row::default()
+            },
+        );
+        if r.on_hover_text("Back (Esc)").clicked() {
+            actions.push(Action::CloseSettings);
+        }
+    }
+
+    /// The open section in the main area (`rect`): "Settings / Section" on the toolbar's line
+    /// (`bar` tall), then the section's settings in a centred column that scrolls below it.
     #[allow(clippy::too_many_arguments)]
-    fn window(
+    pub fn page(
         &mut self,
         ui: &mut Ui,
+        rect: Rect,
+        bar: f32,
         library: &mut Library,
         settings: &mut Settings,
         study: &StudyStore,
@@ -910,88 +902,57 @@ impl SettingsUi {
         import: &mut Option<(PathBuf, Option<String>)>,
     ) {
         let p = settings.theme.palette();
-        let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0.0, p.sidebar);
-        // Header: the title over the tabs, in the toolbar material with a hairline.
-        let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER));
-        ui.painter().rect_filled(header, 0.0, p.paper);
-        ui.painter().rect_filled(header, 0.0, p.toolbar);
-        ui.painter().hline(header.x_range(), header.bottom() - 0.5, Stroke::new(1.0, p.separator));
+        ui.painter().rect_filled(rect, 0.0, p.paper);
+        let crumb = pos2(rect.left() + MARGIN - 8.0, rect.top() + bar / 2.0);
+        let r = ui.painter().text(crumb, Align2::LEFT_CENTER, "Settings", text::UI.font(), p.ink_3);
+        let r = ui.painter().text(
+            r.right_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            "/",
+            text::UI.font(),
+            p.ink_3,
+        );
         ui.painter().text(
-            pos2(header.center().x, rect.top() + TITLE_BAR / 2.0),
-            Align2::CENTER_CENTER,
+            r.right_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
             self.title(),
             text::UI_STRONG.font(),
             p.ink,
         );
-        let tabs_w = TABS.len() as f32 * 76.0 + (TABS.len() - 1) as f32 * 4.0;
-        let mut x = header.center().x - tabs_w / 2.0;
-        for (tab, label, icon) in TABS {
-            let r = Rect::from_min_size(pos2(x, rect.top() + TITLE_BAR), vec2(76.0, 52.0));
-            let resp = ui.interact(r, ui.id().with(("settings-tab", label)), Sense::click());
-            let on = self.tab == tab;
-            if on {
-                ui.painter().rect_filled(r, 10.0, p.accent_soft);
-            } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
-                ui.painter().rect_filled(r, 10.0, fill);
-            }
-            let top = r.top() + (52.0 - 38.0) / 2.0;
-            icon(
-                ui.painter(),
-                Rect::from_min_size(pos2(r.center().x - 10.0, top), vec2(20.0, 20.0)),
-                if on { p.accent } else { p.ink_2 },
-            );
-            let (font, color) =
-                if on { (theme::ui_semibold(11.0), p.accent) } else { (theme::ui_medium(11.0), p.ink_2) };
-            ui.painter().text(
-                pos2(r.center().x, top + 20.0 + 2.0 + 8.0),
-                Align2::CENTER_CENTER,
-                label,
-                font,
-                color,
-            );
-            if resp.clicked() {
-                self.tab = tab;
-            }
-            x += 76.0 + 4.0;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            // The title bar moves the window; the tabs don't (see `macos_window::NoDragAreas`).
-        }
 
-        let body = Rect::from_min_max(pos2(rect.left(), header.bottom()), rect.max);
+        let body = Rect::from_min_max(pos2(rect.left(), rect.top() + bar), rect.max);
         let mut child = ui.new_child(
             egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)),
         );
         child.set_clip_rect(body);
-        ScrollArea::vertical().auto_shrink(false).id_salt(("settings", self.title())).show(
-            &mut child,
-            |ui| {
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin {
-                        left: MARGIN as i8,
-                        right: MARGIN as i8,
-                        top: 24,
-                        bottom: 32,
-                    })
-                    .show(ui, |ui| {
-                        ui.set_width(body.width() - 2.0 * MARGIN);
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        match self.tab {
-                            SettingsTab::Reading => reading(ui, library, settings),
-                            SettingsTab::Appearance => appearance(ui, settings, actions),
-                            SettingsTab::Translations => {
-                                self.translations(ui, library, settings, actions, tx, import)
-                            }
-                            SettingsTab::Shortcuts => self.shortcuts(ui, settings),
-                            SettingsTab::Data => self.data(ui, library, settings, study, actions),
-                            SettingsTab::Account => self.account(ui, p, account, actions),
-                            SettingsTab::About => about(ui, p),
+        // The rows are laid out for the column's width, so a narrower window scrolls sideways.
+        ScrollArea::both().auto_shrink(false).id_salt(("settings", self.title())).show(&mut child, |ui| {
+            let width = COLUMN;
+            let mut column = ui.available_rect_before_wrap();
+            column.min.x = (body.center().x - width / 2.0).max(body.left() + MARGIN);
+            column.max.x = column.min.x + width;
+            column.min.y += 24.0;
+            ui.expand_to_include_x(column.max.x + MARGIN);
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(column).layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    match self.tab {
+                        SettingsTab::Reading => reading(ui, library, settings),
+                        SettingsTab::Appearance => appearance(ui, settings, actions),
+                        SettingsTab::Translations => {
+                            self.translations(ui, library, settings, actions, tx, import)
                         }
-                    });
-            },
-        );
+                        SettingsTab::Shortcuts => self.shortcuts(ui, settings),
+                        SettingsTab::Data => self.data(ui, library, settings, study, actions),
+                        SettingsTab::Account => self.account(ui, p, account, actions),
+                        SettingsTab::About => about(ui, p),
+                    }
+                    ui.add_space(32.0);
+                },
+            );
+        });
     }
 
     /// Translations (frame 25): the default and parallel set, what's installed, importing a

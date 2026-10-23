@@ -285,6 +285,13 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   200 pt field that filters the page. Rows show the real data: sizes are each text's decoded
   size from its file header, descriptions and years of the bundled texts are a small table in
   `bundled.rs`.
+- **Settings is a place in the window, not a window.** Frame 09 draws Settings as a 720 pt
+  window with icon tabs. It takes the main window instead, as T3 Code's settings do: the sidebar
+  slides out (whatever its own setting) and lists the sections, with Back at its foot (Escape
+  too), and the main area shows "Settings / Section" on the toolbar's line over the section in a
+  656 pt column, the old window's content width. Narrower windows scroll it sideways rather
+  than squeezing rows laid out for that width. A gear at the left of the sidebar footer opens it,
+  beside the sync status.
 - **The reader's top stays at the reader screens' 40 pt.** Frames 01–03 pad the page 40 pt above
   the chapter heading; the later Flows frames (22, 23, 32, 34) draw the same reader with 24. The
   reader keeps 40 so the reader screens match, and those frames sit 16 pt lower than drawn.

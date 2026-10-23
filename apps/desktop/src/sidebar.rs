@@ -884,30 +884,30 @@ impl Sidebar {
     }
 }
 
-type IconFn = fn(&Painter, Rect, Color32);
+pub(crate) type IconFn = fn(&Painter, Rect, Color32);
 
 fn icon_bookmark(p: &Painter, r: Rect, c: Color32) {
     crate::icons::bookmark(p, r, c, false);
 }
 
-/// A source-list row.
+/// A source-list row (also Settings' sections).
 #[derive(Default)]
-struct Row<'a> {
-    icon: Option<IconFn>,
+pub(crate) struct Row<'a> {
+    pub icon: Option<IconFn>,
     /// The icon's colour when not the accent (recent places use tertiary ink).
-    icon_color: Option<Color32>,
-    label: &'a str,
+    pub icon_color: Option<Color32>,
+    pub label: &'a str,
     /// A small label at the end (a translation's abbreviation).
-    trailing: Option<String>,
+    pub trailing: Option<String>,
     /// Extra space before the label (book rows have no icon but line up with icon rows).
-    indent: f32,
-    count: Option<String>,
+    pub indent: f32,
+    pub count: Option<String>,
     /// A disclosure chevron: `Some(open)`.
-    disclosure: Option<bool>,
-    selected: bool,
+    pub disclosure: Option<bool>,
+    pub selected: bool,
 }
 
-fn row(ui: &mut Ui, p: &Palette, r: &Row<'_>) -> Response {
+pub(crate) fn row(ui: &mut Ui, p: &Palette, r: &Row<'_>) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
     if r.selected {
         ui.painter().rect_filled(rect, theme::radius::SM, p.accent_soft);
@@ -1086,8 +1086,8 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
 
 /// A section header: 11 pt semibold tertiary text, 8 pt below the previous row (16 for later
 /// sections).
-/// The sidebar footer's height, when the library syncs.
-pub const FOOTER: f32 = 32.0;
+/// The sidebar footer's height.
+pub const FOOTER: f32 = 44.0;
 
 /// What the sidebar footer shows.
 pub enum Footer<'a> {
@@ -1098,29 +1098,44 @@ pub enum Footer<'a> {
     Off,
 }
 
-/// The sidebar footer: the library's sync status. Quiet when synced, the count waiting when
-/// offline, the error with Retry when something was refused, and Turn On when sync is off.
-pub fn sync_footer(ui: &mut Ui, p: &Palette, rect: Rect, status: Footer<'_>, actions: &mut Vec<Action>) {
+/// The sidebar footer: the Settings gear, then the library's sync status when it syncs. Quiet
+/// when synced, the count waiting when offline, the error with Retry when something was refused,
+/// and Turn On when sync is off.
+pub fn footer(ui: &mut Ui, p: &Palette, rect: Rect, status: Option<Footer<'_>>, actions: &mut Vec<Action>) {
+    let painter = ui.painter_at(rect);
+    painter.hline(rect.x_range().shrink(LIST_INSET), rect.top() + 0.5, egui::Stroke::new(1.0, p.separator));
+    let cy = rect.center().y;
+    // The gear's glyph lines up with the rows' icons above it.
+    let gear = Rect::from_center_size(
+        pos2(rect.left() + LIST_INSET + ROW_PAD + ICON_LANE / 2.0, cy),
+        vec2(28.0, 28.0),
+    );
+    if widgets::round_button(ui, p, gear, crate::icons::gear, ui.id().with("open-settings"))
+        .on_hover_text("Settings (⌘,)")
+        .clicked()
+    {
+        actions.push(Action::OpenSettings(Default::default()));
+    }
+
     let waiting = |n: usize| format!("{n} change{} waiting", if n == 1 { "" } else { "s" });
     let (label, color, button) = match status {
-        Footer::Status(SyncStatus::Synced) => ("Synced".to_string(), p.ink_3, None),
-        Footer::Status(SyncStatus::Syncing(0)) => ("Syncing…".to_string(), p.ink_3, None),
-        Footer::Status(SyncStatus::Syncing(n)) => (format!("Syncing · {}", waiting(*n)), p.ink_3, None),
-        Footer::Status(SyncStatus::Offline(0)) => ("Offline".to_string(), p.ink_3, None),
-        Footer::Status(SyncStatus::Offline(n)) => (format!("Offline · {}", waiting(*n)), p.ink_2, None),
-        Footer::Status(SyncStatus::SignedOut) => return,
-        Footer::Status(SyncStatus::Error(e)) => (e.clone(), p.danger, Some(("Retry", Action::RetrySync))),
-        Footer::Error(e) => (e.to_string(), p.danger, Some(("Retry", Action::RetrySync))),
-        Footer::Off => (
+        None | Some(Footer::Status(SyncStatus::SignedOut)) => return,
+        Some(Footer::Status(SyncStatus::Synced)) => ("Synced".to_string(), p.ink_3, None),
+        Some(Footer::Status(SyncStatus::Syncing(0))) => ("Syncing…".to_string(), p.ink_3, None),
+        Some(Footer::Status(SyncStatus::Syncing(n))) => (format!("Syncing · {}", waiting(*n)), p.ink_3, None),
+        Some(Footer::Status(SyncStatus::Offline(0))) => ("Offline".to_string(), p.ink_3, None),
+        Some(Footer::Status(SyncStatus::Offline(n))) => (format!("Offline · {}", waiting(*n)), p.ink_2, None),
+        Some(Footer::Status(SyncStatus::Error(e))) => {
+            (e.clone(), p.danger, Some(("Retry", Action::RetrySync)))
+        }
+        Some(Footer::Error(e)) => (e.to_string(), p.danger, Some(("Retry", Action::RetrySync))),
+        Some(Footer::Off) => (
             if cfg!(target_os = "macos") { "Only on this Mac" } else { "Only on this computer" }.to_string(),
             p.ink_3,
             Some(("Turn On Sync", Action::TurnOnSync)),
         ),
     };
-    let painter = ui.painter_at(rect);
-    painter.hline(rect.x_range().shrink(LIST_INSET), rect.top() + 0.5, egui::Stroke::new(1.0, p.separator));
-    let (left, mut right, cy) =
-        (rect.left() + LIST_INSET + ROW_PAD, rect.right() - LIST_INSET - ROW_PAD, rect.center().y);
+    let (left, mut right) = (gear.right() + 4.0, rect.right() - LIST_INSET - ROW_PAD);
     // Both laid out the same way, so they share a baseline.
     let line = |text: &str, color, width: f32| {
         painter.layout_job(wrapped(text, text::CAPTION.font(), 16.0, color, width, 1))

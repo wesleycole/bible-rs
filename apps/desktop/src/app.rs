@@ -1008,6 +1008,7 @@ impl BibleApp {
                 self.settings.sidebar_tab = t;
             }
             Action::OpenSettings(tab) => self.settings_ui = Some(SettingsUi::new(tab, &self.library)),
+            Action::CloseSettings => self.settings_ui = None,
             Action::FontSize(d) => self.settings.typo.size = (self.settings.typo.size + d).clamp(12.0, 34.0),
             Action::FontReset => self.settings.typo.size = Typography::default().size,
             Action::SetScheme(scheme) => self.set_appearance(ctx, scheme, self.settings.appearance.1),
@@ -1612,10 +1613,12 @@ impl BibleApp {
     /// hide them at once, as does the inspector taking the Ask card's place.
     fn slide_fractions(&mut self, ctx: &egui::Context, frame: &eframe::Frame) -> (f32, f32) {
         use theme::metrics::{SIDEBAR_INSET, SIDEBAR_WIDTH};
-        let width = if self.sidebar.searching() { SEARCH_SIDEBAR_WIDTH } else { SIDEBAR_WIDTH };
+        let settings = self.settings_ui.is_some();
+        let width = if self.sidebar.searching() && !settings { SEARCH_SIDEBAR_WIDTH } else { SIDEBAR_WIDTH };
         let inset = if self.settings.sidebar_attached { 0.0 } else { SIDEBAR_INSET };
         self.sidebar_extent = inset + width;
-        let target = if self.settings.sidebar_open && !self.focus { 1.0 } else { 0.0 };
+        // Settings lists its sections in the sidebar, so it's out while Settings is open.
+        let target = if (self.settings.sidebar_open && !self.focus) || settings { 1.0 } else { 0.0 };
         let ask_target = if self.ask.is_some() && self.panel.is_none() { 1.0 } else { 0.0 };
         if self.ask.is_some() {
             self.ask_leaving = None;
@@ -3051,6 +3054,15 @@ impl eframe::App for BibleApp {
                     // the panel's edge.
                     let mut content =
                         egui::Rect::from_min_max(panel.min + vec2(0.0, SIDEBAR_HEADER), panel.max);
+                    let footer = egui::Rect::from_min_max(
+                        egui::pos2(content.left(), content.bottom() - crate::sidebar::FOOTER),
+                        content.max,
+                    );
+                    content.max.y = footer.top();
+                    if let Some(s) = &mut self.settings_ui {
+                        s.nav(ui, p, content, footer, &mut actions);
+                        return;
+                    }
                     let status = self.sync.as_ref().map(|s| s.status()).or(self.demo_sync.clone());
                     let declined = self.settings.library_consent == Some(false)
                         && ((self.account.signed_in() && !crate::offscreen()) || self.demo_consent);
@@ -3061,14 +3073,7 @@ impl eframe::App for BibleApp {
                         (None, None) if declined => Some(Footer::Off),
                         (None, None) => None,
                     };
-                    if let Some(status) = status {
-                        let footer = egui::Rect::from_min_max(
-                            egui::pos2(content.left(), content.bottom() - crate::sidebar::FOOTER),
-                            content.max,
-                        );
-                        content.max.y = footer.top();
-                        crate::sidebar::sync_footer(ui, p, footer, status, &mut actions);
-                    }
+                    crate::sidebar::footer(ui, p, footer, status, &mut actions);
                     let mut child = ui.new_child(
                         egui::UiBuilder::new()
                             .max_rect(content)
@@ -3092,6 +3097,37 @@ impl eframe::App for BibleApp {
         egui::CentralPanel::default().frame(Frame::NONE.fill(p.paper)).show(ui, |ui| {
             let full = ui.max_rect();
             self.main_area = full;
+            // Settings in the reader's place, below the sidebar's header line.
+            if let Some(s) = &mut self.settings_ui {
+                let tx = self.task_tx.clone();
+                let mut import: Option<(PathBuf, Option<String>)> = None;
+                s.page(
+                    ui,
+                    full,
+                    self.chrome.height,
+                    &mut self.library,
+                    &mut self.settings,
+                    &self.study,
+                    &self.account,
+                    &mut actions,
+                    &tx,
+                    &mut import,
+                );
+                if let Some((path, key)) = import {
+                    let mut sheet = crate::import_sheet::ImportSheet::with_path(path);
+                    sheet.set_key(key.unwrap_or_default());
+                    self.import_sheet = Some(sheet);
+                }
+                // Escape leaves, unless a field or a shortcut being recorded has it.
+                if !s.recording()
+                    && !ctx.egui_wants_keyboard_input()
+                    && ctx.input(|i| i.key_pressed(Key::Escape))
+                {
+                    actions.push(Action::CloseSettings);
+                }
+                self.sidebar_shadow(ui);
+                return;
+            }
             // A page in the reader's place, under the same toolbar.
             if !self.pages.reader() {
                 let query = self.pages.query.clone();
@@ -3299,7 +3335,7 @@ impl eframe::App for BibleApp {
         }
         if let Some(c) = &mut self.compare {
             let selected = self.reader.selected_refs();
-            if !selected.contains(&c.verse) || !self.pages.reader() {
+            if !selected.contains(&c.verse) || !self.pages.reader() || self.settings_ui.is_some() {
                 self.compare = None;
             } else {
                 let anchor = self
@@ -3321,28 +3357,6 @@ impl eframe::App for BibleApp {
             let close = pal.show(&ctx, &self.library, &self.study, &self.settings, &mut actions);
             if close {
                 self.palette = None;
-            }
-        }
-        if let Some(s) = &mut self.settings_ui {
-            let tx = self.task_tx.clone();
-            let mut import: Option<(PathBuf, Option<String>)> = None;
-            let open = s.show(
-                &ctx,
-                &mut self.library,
-                &mut self.settings,
-                &self.study,
-                &self.account,
-                &mut actions,
-                &tx,
-                &mut import,
-            );
-            if let Some((path, key)) = import {
-                let mut sheet = crate::import_sheet::ImportSheet::with_path(path);
-                sheet.set_key(key.unwrap_or_default());
-                self.import_sheet = Some(sheet);
-            }
-            if !open {
-                self.settings_ui = None;
             }
         }
         // A file dragged onto the window opens the import sheet, whose drop zone takes it.

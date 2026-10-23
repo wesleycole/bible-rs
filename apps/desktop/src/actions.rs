@@ -99,6 +99,8 @@ pub enum Action {
     ToggleSidebar,
     SidebarTab(SidebarTab),
     OpenSettings(SettingsTab),
+    /// Leaves Settings for the page it was opened from.
+    CloseSettings,
     FontSize(f32),
     FontReset,
     /// System, Light or Dark, synced.

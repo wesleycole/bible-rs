@@ -172,7 +172,8 @@ scene_books() {
 }
 
 scene_translations() {
-  SIZE=1280x960 prepare Light kjv
+  # Sync declined, so the library consent sheet doesn't cover Settings.
+  SIZE=1280x960 prepare Light kjv '"sidebar_open":false,"library_consent":false'
   # Import a real SWORD module (the public-domain Geneva Bible from CrossWire) to show imports.
   local mod="$ROOT/.sources/Geneva1599.zip"
   if [[ ! -f "$mod" ]]; then
@@ -183,7 +184,8 @@ scene_translations() {
   SIZE=1280x960 launch
   goto "jn 1"
   key ctrl+comma
-  click 640 234 0.6
+  # Translations, the third section in the sidebar.
+  click 100 136 0.6
   park 1250 840
   shot settings-translations
 }

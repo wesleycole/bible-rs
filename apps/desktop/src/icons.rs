@@ -431,6 +431,20 @@ pub fn sun(p: &Painter, r: Rect, c: Color32) {
     }
 }
 
+/// A gear (settings): eight teeth around a hub.
+pub fn gear(p: &Painter, r: Rect, c: Color32) {
+    let g = Grid::new(p, r, c);
+    let mut pts = Vec::with_capacity(32);
+    for k in 0..8 {
+        let a = k as f32 * FRAC_PI_4;
+        for (da, radius) in [(-0.24, 7.5), (0.24, 7.5), (0.38, 5.6), (FRAC_PI_4 - 0.38, 5.6)] {
+            pts.push((10.0 + radius * (a + da).cos(), 10.0 + radius * (a + da).sin()));
+        }
+    }
+    g.closed(&pts);
+    g.circle(10.0, 10.0, 2.5);
+}
+
 /// A keyboard (shortcuts).
 pub fn keyboard(p: &Painter, r: Rect, c: Color32) {
     let g = Grid::new(p, r, c);
