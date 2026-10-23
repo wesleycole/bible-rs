@@ -62,15 +62,8 @@ final class ReaderTests: XCTestCase {
         waitForPlace("Genesis 1")
     }
 
-    /// Drags the text from one height to another and lets go, slowly enough not to fling.
-    func pull(from start: CGFloat, to end: CGFloat) {
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: start))
-            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: end)),
-                   withVelocity: .slow, thenHoldForDuration: 0.3)
-    }
-
-    /// A typed reference goes on Return; pulling past the chapter's ends turns it, across books;
-    /// words find verses.
+    /// A typed reference goes on Return; swiping sideways turns the chapter, and the line under the
+    /// last verse does too, across books; scrolling to the end doesn't; words find verses.
     func testTypingAReferenceAndPaging() {
         tap("jump-field")
         app.typeText("jn 3")
@@ -78,15 +71,18 @@ final class ReaderTests: XCTestCase {
         app.typeText("\n")
         waitForPlace("John 3")
 
-        // Past the last verse, then pulled up and let go.
+        app.swipeLeft()
+        waitForPlace("John 4")
+        app.swipeRight()
+        waitForPlace("John 3")
+
+        // Flinging past the last verse stays in the chapter.
         let next = el("next-chapter")
         for _ in 0..<12 where !next.isHittable { app.swipeUp(velocity: .fast) }
         XCTAssertEqual(next.label, "Next chapter, John 4")
-        pull(from: 0.75, to: 0.2)
-        waitForPlace("John 4")
-        // John 4 opens at its top, so pulling down goes back.
-        pull(from: 0.3, to: 0.85)
-        waitForPlace("John 3")
+        app.swipeUp(velocity: .fast)
+        app.swipeUp(velocity: .fast)
+        XCTAssertTrue(place.hasPrefix("John 3 ·"), "flinging up turned to \(place)")
 
         // The hint under the last verse turns on a tap too, here across books.
         tap("jump-field")

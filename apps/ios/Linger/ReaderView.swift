@@ -1,7 +1,7 @@
 import LingerCore
 import SwiftUI
 
-/// The Bible tab: the chapter, with the jump field on top and quiet links to the chapters either side.
+/// The Bible tab: the chapter, with the jump field on top; swiping sideways turns the chapter.
 struct ReaderView: View {
     @Bindable var model: ReaderModel
     let library: Library
@@ -15,11 +15,10 @@ struct ReaderView: View {
     @State private var studying: ClosedRange<UInt8>?
     /// The verse whose margin popover is open.
     @State private var margin: UInt8?
-    /// How far the text is pulled past an end: positive past the last verse, toward the next
-    /// chapter; negative above the heading, toward the previous one.
-    @State private var overscroll: CGFloat = 0
-    /// A finger is on the text, so letting go past `turnDistance` turns the chapter.
-    @State private var dragging = false
+    /// How far the text is swiped sideways: negative to the left, toward the next chapter;
+    /// positive to the right, toward the previous one.
+    @State private var swipe: CGFloat = 0
+    /// Letting go this far over, or flicking, turns the chapter.
     private let turnDistance: CGFloat = 80
 
     var body: some View {
@@ -32,35 +31,26 @@ struct ReaderView: View {
                         .padding(.top, 4)
                         .padding(.bottom, 24)
                         .frame(maxWidth: .infinity)
+                        .offset(x: swipe)
                 }
                 .background(Theme.page)
-                // Pulling past either end turns the chapter, even when it fits on one screen.
-                .scrollBounceBehavior(.always, axes: .vertical)
-                .onScrollGeometryChange(for: CGFloat.self) { g in
-                    // The container's size already leaves out the insets the bars take.
-                    let top = -g.contentInsets.top
-                    let bottom = top + max(0, g.contentSize.height - g.containerSize.height)
-                    let y = g.contentOffset.y
-                    return y < top ? y - top : y > bottom ? y - bottom : 0
-                } action: { _, pulled in
-                    overscroll = pulled
-                }
-                .onScrollPhaseChange { old, new in
-                    // Only a finger lifted far enough turns: a fling that bounces past the end doesn't.
-                    if old == .interacting, abs(overscroll) >= turnDistance, let target = pullTarget { go(target) }
-                    dragging = new == .interacting
-                }
-                .overlay(alignment: overscroll < 0 ? .top : .bottom) {
-                    ZStack {
-                        if dragging, abs(overscroll) > 12, let target = pullTarget {
-                            PullCapsule(target: target, progress: min(abs(overscroll) / turnDistance, 1))
-                                .padding(.vertical, 12)
-                                .transition(.opacity)
+                // Where the swipe goes, in the gap the text leaves.
+                .overlay(alignment: swipe < 0 ? .trailing : .leading) {
+                    if let target = swipeTarget {
+                        HStack(spacing: 4) {
+                            if swipe > 0 { Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)) }
+                            Text(target.display).font(Fonts.ui(14, weight: .medium))
+                            if swipe < 0 { Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)) }
                         }
+                        .foregroundStyle(abs(swipe) >= turnDistance ? Theme.accent : Theme.ink2)
+                        .fixedSize()
+                        .frame(width: max(abs(swipe), 0))
+                        .opacity(min(abs(swipe) / turnDistance, 1))
+                        .accessibilityHidden(true)
                     }
-                    .animation(.smooth(duration: 0.2), value: dragging && abs(overscroll) > 12)
                 }
-                .sensoryFeedback(.impact(weight: .light), trigger: dragging && abs(overscroll) >= turnDistance) { _, ready in ready }
+                .gesture(ChapterSwipe(changed: swiped, ended: endSwipe))
+                .sensoryFeedback(.impact(weight: .light), trigger: swipeTarget != nil && abs(swipe) >= turnDistance) { _, ready in ready }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.readerFrame = $0 }
                 .task(id: "\(model.translation) \(model.book) \(model.chapter)") {
                     await model.load()
@@ -179,9 +169,36 @@ struct ReaderView: View {
         Task { proxy.scrollTo(target, anchor: target == 0 ? .top : UnitPoint(x: 0.5, y: 0.18)) }
     }
 
-    /// The chapter the text is pulled toward, if any.
-    private var pullTarget: Reference? {
-        overscroll > 0 ? model.next : overscroll < 0 ? model.previous : nil
+    /// The chapter the text is swiped toward, if any.
+    private var swipeTarget: Reference? {
+        swipe < 0 ? model.next : swipe > 0 ? model.previous : nil
+    }
+
+    /// The text follows the finger, stiffly where there's no chapter that way.
+    private func swiped(_ x: CGFloat) {
+        swipe = (x < 0 ? model.next : model.previous) == nil ? x / 4 : x
+    }
+
+    /// Far enough over, or a flick that way, slides the chapter out and its neighbour in from the
+    /// other side; anything else springs back.
+    private func endSwipe(_ x: CGFloat, velocity: CGFloat) {
+        let forward = x < 0
+        let width = max(model.readerFrame.width, 320)
+        guard let target = forward ? model.next : model.previous,
+              abs(x) >= turnDistance || (abs(velocity) > 500 && (velocity < 0) == forward && abs(x) > 16) else {
+            withAnimation(.smooth(duration: 0.25)) { swipe = 0 }
+            return
+        }
+        withAnimation(.easeIn(duration: 0.14)) { swipe = forward ? -width : width } completion: {
+            var swap = Transaction()
+            swap.disablesAnimations = true
+            withTransaction(swap) {
+                go(target)
+                swipe = forward ? width : -width
+            }
+            // After the new chapter's first frame, so it slides from the far side.
+            DispatchQueue.main.async { withAnimation(.smooth(duration: 0.24)) { swipe = 0 } }
+        }
     }
 
     /// Swaps the chapter in one frame, without cross-fading two chapters' text.
@@ -228,9 +245,9 @@ struct ReaderView: View {
                         Text(notice).font(Fonts.ui(13)).foregroundStyle(Theme.ink2).padding(.top, 16)
                     }
                     if let next = model.next {
-                        // Teaches the pull; a tap works too.
+                        // Teaches the swipe; a tap works too.
                         Button { go(next) } label: {
-                            Text("Pull up for \(next.display)")
+                            Text("Swipe left for \(next.display)")
                                 .font(Fonts.ui(13))
                                 .foregroundStyle(Theme.ink3)
                                 .frame(maxWidth: .infinity, minHeight: 44)
@@ -269,7 +286,7 @@ struct ReaderView: View {
         .padding(.bottom, 10)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.title)
-        // The pull is a gesture VoiceOver can't make.
+        // The swipe is a gesture VoiceOver can't make.
         .accessibilityActions {
             if let previous = model.previous { Button("Previous chapter, \(previous.display)") { go(previous) } }
             if let next = model.next { Button("Next chapter, \(next.display)") { go(next) } }
@@ -277,31 +294,40 @@ struct ReaderView: View {
     }
 }
 
-/// Where a pull past the chapter's end is going: a ring that fills, then "Release for Philemon 1".
-private struct PullCapsule: View {
-    let target: Reference
-    /// 0 to 1; at 1, letting go turns the chapter.
-    let progress: CGFloat
+/// A sideways pan on the reader that leaves vertical drags to the scroll view: it only starts
+/// when the finger moves mostly sideways.
+private struct ChapterSwipe: UIGestureRecognizerRepresentable {
+    let changed: (CGFloat) -> Void
+    let ended: (CGFloat, _ velocity: CGFloat) -> Void
 
-    var body: some View {
-        HStack(spacing: 8) {
-            ZStack {
-                Circle().stroke(Theme.separator, lineWidth: 2)
-                Circle().trim(from: 0, to: progress)
-                    .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            .frame(width: 16, height: 16)
-            Text(progress >= 1 ? "Release for \(target.display)" : target.display)
-                .font(Fonts.ui(14, weight: .medium))
-                .foregroundStyle(Theme.ink)
-                .contentTransition(.opacity)
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) {
+        let x = pan.translation(in: pan.view).x
+        switch pan.state {
+        case .changed: changed(x)
+        case .ended: ended(x, pan.velocity(in: pan.view).x)
+        case .cancelled, .failed: ended(0, 0)
+        default: break
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 14)
-        .frame(height: 36)
-        .glassEffect(Theme.glass, in: .capsule)
-        .accessibilityHidden(true)
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer else { return false }
+            let v = pan.velocity(in: pan.view)
+            return abs(v.x) > abs(v.y) * 1.5
+        }
+
+        /// Alongside the scroll view's own pan, which this can't make wait.
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     }
 }
 
