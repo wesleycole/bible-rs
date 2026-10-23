@@ -46,6 +46,12 @@ final class Library {
         return Dictionary(uniqueKeysWithValues: marks.map { ($0.verse, $0) })
     }
 
+    /// The library items anchored in a chapter, each with the verses it covers there.
+    func items(book: UInt8, chapter: UInt8) -> [ChapterItem] {
+        _ = generation
+        return (try? study?.chapterItems(book: book, chapter: chapter)) ?? []
+    }
+
     /// Changes the study; what it refuses is shown.
     func write(_ change: (Study) throws -> Void) {
         guard let study else { return }

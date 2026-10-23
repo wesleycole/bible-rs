@@ -13,6 +13,8 @@ struct ReaderView: View {
     @State private var anchor: UInt8 = 1
     /// The verses whose page is open.
     @State private var studying: ClosedRange<UInt8>?
+    /// The verse whose margin popover is open.
+    @State private var margin: UInt8?
 
     var body: some View {
         NavigationStack {
@@ -100,6 +102,33 @@ struct ReaderView: View {
         .accessibilityIdentifier("plus")
     }
 
+    /// The quiet library glyph beside a verse, which opens its popover.
+    private func marginGlyph(_ n: UInt8, _ items: [ChapterItem]) -> some View {
+        Button { margin = n } label: {
+            Image(systemName: "books.vertical")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.ink3)
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: Binding(get: { margin == n }, set: { if !$0 { margin = nil } }), arrowEdge: .leading) {
+            MarginPopover(verse: VerseRef(book: model.book, chapter: model.chapter, verse: n),
+                          items: Self.unique(items.filter { ($0.first...$0.last).contains(n) }.map(\.item)),
+                          open: { margin = nil; studying = n...n },
+                          ask: { margin = nil; ask() })
+                .presentationCompactAdaptation(.popover)
+        }
+        .accessibilityLabel("In your library")
+        .accessibilityIdentifier("margin-\(n)")
+    }
+
+    /// Items once each: an item anchored twice in a chapter has two spans.
+    static func unique(_ items: [LingerCore.LibraryItem]) -> [LingerCore.LibraryItem] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.uid).inserted }
+    }
+
     private func openAdd(_ verse: UInt8) {
         anchor = verse
         withAnimation(.smooth(duration: 0.3)) { addOpen.toggle() }
@@ -135,6 +164,9 @@ struct ReaderView: View {
                 ProgressView().frame(maxWidth: .infinity)
             case let .ready(verses, notice):
                 let marks = library.marks(book: model.book, chapter: model.chapter)
+                let items = library.items(book: model.book, chapter: model.chapter)
+                // One glyph where each item's verses start, without counts.
+                let starts = Set(items.map(\.first))
                 VStack(alignment: .leading, spacing: 14) {
                     // The chapter's top, where a jump lands, includes the link back.
                     VStack(alignment: .leading, spacing: 14) {
@@ -147,17 +179,19 @@ struct ReaderView: View {
                     ForEach(verses, id: \.number) { verse in
                         VerseRow(verse: verse, marks: marks[verse.number],
                                  selected: model.selection?.overlaps(verse.number...verse.numberEnd) == true,
-                                 tinted: model.tinted == verse.number)
+                                 tinted: model.tinted == verse.number) {
+                            if starts.contains(verse.number) { marginGlyph(verse.number, items) }
+                        }
                             .id(verse.number)
                             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
                                 model.verseFrames[verse.number] = $0
                             }
-                            .contentShape(Rectangle())
                             .onTapGesture {
                                 withAnimation(.smooth(duration: 0.3)) { model.tap(verse: verse.number) }
                             }
+                            // A container, so the margin glyph is its own control.
+                            .accessibilityElement(children: .contain)
                             .accessibilityIdentifier("verse-\(verse.number)")
-                            .accessibilityAddTraits(.isButton)
                     }
                     if let notice {
                         Text(notice).font(Fonts.ui(13)).foregroundStyle(Theme.ink2).padding(.top, 16)
@@ -196,19 +230,24 @@ struct ReaderView: View {
     }
 }
 
-private struct VerseRow: View {
+private struct VerseRow<Margin: View>: View {
     let verse: Verse
     let marks: VerseMarks?
     let selected: Bool
     let tinted: Bool
+    /// The library glyph, in the left margin by the verse's first line.
+    @ViewBuilder let margin: Margin
     private let size: CGFloat = 18
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(verse.headings, id: \.self) { heading in
                 Text(heading).font(Fonts.serif(17, weight: .semibold)).foregroundStyle(Theme.ink).padding(.top, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            Text("\(Text(text))\(margin)")
+            Text(text)
+                .accessibilityAddTraits(.isButton)
                 .font(Fonts.serif(size))
                 .lineSpacing(size * 0.08)
                 .foregroundStyle(Theme.ink)
@@ -219,6 +258,22 @@ private struct VerseRow: View {
                     if tinted { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.accentSoft) }
                 }
                 .padding(.horizontal, -10)
+                // The whole line takes a tap. Set here, not on the row, so the margin glyph outside
+                // the text's frame still takes its own.
+                .contentShape(Rectangle())
+                .overlay(alignment: .topLeading) {
+                    margin.offset(x: -27, y: size * 0.7 - 13 + (tinted ? 8 : 0))
+                }
+                .overlay(alignment: .topTrailing) {
+                    // A bookmark: a small glyph in the accent, in the right margin.
+                    if marks?.bookmark == true {
+                        Image(systemName: "bookmark.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.accent.opacity(0.6))
+                            .offset(x: 17, y: size * 0.35 + (tinted ? 8 : 0))
+                            .accessibilityLabel("Bookmarked")
+                    }
+                }
         }
     }
 
@@ -232,13 +287,6 @@ private struct VerseRow: View {
         if let highlight = marks?.highlight { body.backgroundColor = highlight.background }
         if selected { body.underlineStyle = Text.LineStyle(pattern: .solid, color: Theme.accent.opacity(0.75)) }
         return number + body
-    }
-
-    /// The desktop's margin marks: a note, a bookmark in the accent.
-    private var margin: Text {
-        let note = marks?.note == true ? Text(" \(Image(systemName: "note.text"))").foregroundStyle(Theme.ink3) : Text("")
-        let bookmark = marks?.bookmark == true ? Text(" \(Image(systemName: "bookmark.fill"))").foregroundStyle(Theme.accent) : Text("")
-        return Text("\(note)\(bookmark)").font(.system(size: size * 0.6))
     }
 
     private var numberText: String {

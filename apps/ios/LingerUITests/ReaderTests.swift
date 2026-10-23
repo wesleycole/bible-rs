@@ -17,7 +17,8 @@ final class ReaderTests: XCTestCase {
     func tap(_ id: String, timeout: TimeInterval = 8) {
         let e = el(id)
         XCTAssertTrue(e.waitForExistence(timeout: timeout), "no \(id)")
-        e.tap()
+        // The margin glyph sits partly past the screen's edge, which XCUITest calls not hittable.
+        if e.isHittable { e.tap() } else { e.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
     }
 
     /// The field's text, "John 3 · KJV".
@@ -180,6 +181,36 @@ final class ReaderTests: XCTestCase {
 
         tap("page-ask")
         XCTAssertTrue(app.navigationBars["Recents"].waitForExistence(timeout: 5))
+    }
+
+    /// A note on Romans 8:28 puts the library glyph beside it; the glyph's popover lists the note
+    /// and its header opens the verse page. Empties the note again, which takes the glyph away.
+    func testTheMarginPopover() {
+        tap("jump-field")
+        app.typeText("rom 8:28\n")
+        waitForPlace("Romans 8")
+        tap("verse-28")
+        tap("plus")
+        tap("capture-note")
+        let field = el("note-field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let old = (field.value as? String) ?? ""
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + "Margin popover check.")
+        tap("note-save")
+
+        tap("margin-28")
+        XCTAssertTrue(el("popover-header").waitForExistence(timeout: 5), "no popover")
+        XCTAssertTrue(app.staticTexts["Margin popover check."].exists, "the note isn't in the popover")
+        tap("popover-header")
+        XCTAssertTrue(app.navigationBars["Romans 8:28"].waitForExistence(timeout: 5), "the header didn't open the verse page")
+
+        tap("page-note-28")
+        XCTAssertTrue(el("note-field").waitForExistence(timeout: 5))
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 21))
+        tap("note-save")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(el("verse-28").waitForExistence(timeout: 5))
+        XCTAssertFalse(el("margin-28").waitForExistence(timeout: 3), "the glyph stayed after the note went")
     }
 
     /// × closes the field without moving.

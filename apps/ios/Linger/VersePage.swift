@@ -28,6 +28,11 @@ struct VersePage: View {
             else { return nil }
             return (ref, body)
         }
+        // The verse's own note shows as Your note, so it isn't listed again.
+        let noteUids = Set(refs.compactMap { (try? library.study?.note(verse: $0))?.uid })
+        let items = ReaderView.unique(library.items(book: model.book, chapter: model.chapter)
+            .filter { verses.overlaps($0.first...$0.last) }.map(\.item))
+            .filter { !noteUids.contains($0.uid) }
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 Text(title.uppercased())
@@ -41,6 +46,10 @@ struct VersePage: View {
                     .padding(.top, 8)
                     .accessibilityIdentifier("page-text")
                 dots(marks).padding(.top, 16)
+                if !items.isEmpty {
+                    section("Your library")
+                    ForEach(items, id: \.uid) { ItemRow(item: $0).frame(minHeight: 46) }
+                }
                 if !notes.isEmpty {
                     section(notes.count == 1 ? "Your note" : "Your notes")
                     ForEach(notes, id: \.0.verse) { ref, body in
