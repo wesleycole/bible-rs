@@ -11,6 +11,8 @@ struct ReaderView: View {
     @State private var addOpen = false
     /// The verse the + menu adds to.
     @State private var anchor: UInt8 = 1
+    /// The verses whose page is open.
+    @State private var studying: ClosedRange<UInt8>?
 
     var body: some View {
         NavigationStack {
@@ -47,16 +49,23 @@ struct ReaderView: View {
             // The row takes the tab bar's place while verses are selected.
             .safeAreaBar(edge: .bottom, spacing: 0) {
                 if model.selection != nil {
-                    VerseActionRow(model: model, library: library, ask: ask)
+                    VerseActionRow(model: model, library: library, ask: ask) {
+                        studying = model.selection
+                        model.selection = nil
+                    }
                         .padding(.bottom, 2)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
             .toolbarVisibility(model.jumpOpen || model.selection != nil ? .hidden : .automatic, for: .tabBar)
-            .sheet(item: $noteVerse) { verse in
-                NoteSheet(library: library, verse: verse, quote: quote(verse.verse)) {
-                    model.selection = nil
-                }
+            .navigationDestination(item: $studying) { verses in
+                VersePage(model: model, library: library, verses: verses, add: openAdd,
+                          editNote: { noteVerse = $0 }, ask: ask)
+            }
+        }
+        .sheet(item: $noteVerse) { verse in
+            NoteSheet(library: library, verse: verse, quote: quote(verse.verse)) {
+                model.selection = nil
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -84,14 +93,16 @@ struct ReaderView: View {
     /// The round glass +. Its menu follows the selection (its first verse; a note is on one verse),
     /// or the verse a jump landed on, or the chapter's first verse.
     private var addButton: some View {
-        Button("Add", systemImage: "plus") {
-            anchor = model.selection?.lowerBound ?? model.tinted ?? 1
-            withAnimation(.smooth(duration: 0.3)) { addOpen.toggle() }
-        }
+        Button("Add", systemImage: "plus") { openAdd(model.selection?.lowerBound ?? model.tinted ?? 1) }
         .labelStyle(.iconOnly)
         .tint(Theme.ink)
         .rotationEffect(.degrees(addOpen ? 45 : 0))
         .accessibilityIdentifier("plus")
+    }
+
+    private func openAdd(_ verse: UInt8) {
+        anchor = verse
+        withAnimation(.smooth(duration: 0.3)) { addOpen.toggle() }
     }
 
     private func quote(_ n: UInt8) -> String {

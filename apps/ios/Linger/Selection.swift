@@ -8,6 +8,8 @@ struct VerseActionRow: View {
     let model: ReaderModel
     let library: Library
     let ask: () -> Void
+    /// Opens the verse page for the selection.
+    let study: () -> Void
     @State private var comparing = false
 
     var body: some View {
@@ -51,12 +53,11 @@ struct VerseActionRow: View {
         .sheet(isPresented: $comparing) { CompareSheet(model: model) }
     }
 
-    /// Study this verse (once the verse page exists), Compare, Bookmark and Share, in that order
+    /// Study this verse, Compare, Bookmark and Share, in that order
     /// even though the menu opens upward. Copy is in the share sheet.
     private func more(bookmarked: Bool, marks: [UInt8: VerseMarks]) -> some View {
         Menu {
-            Button("Study this verse", systemImage: "book") {}
-                .disabled(true)
+            Button("Study this verse", systemImage: "book", action: study)
             Divider()
             Button("Compare", systemImage: "rectangle.split.2x1") { comparing = true }
             Button(bookmarked ? "Remove bookmark" : "Bookmark", systemImage: bookmarked ? "bookmark.slash" : "bookmark") {

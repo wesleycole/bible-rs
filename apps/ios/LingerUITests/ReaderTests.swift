@@ -124,9 +124,8 @@ final class ReaderTests: XCTestCase {
         tap("note-save")
         tap("verse-28")
 
-        // ···: Study this verse waits for the verse page; Bookmark turns into Remove bookmark.
+        // ···: Bookmark turns into Remove bookmark.
         tap("row-more")
-        XCTAssertFalse(app.buttons["Study this verse"].isEnabled)
         XCTAssertTrue(app.buttons["Compare"].exists && app.buttons["Share"].exists)
         let bookmark = app.buttons["Bookmark"]
         if bookmark.exists { bookmark.tap() } else { app.buttons["Remove bookmark"].tap(); tap("row-more"); app.buttons["Bookmark"].tap() }
@@ -138,6 +137,48 @@ final class ReaderTests: XCTestCase {
 
         // Ask opens the Ask tab, Recents until Ask comes to the iPhone.
         tap("row-ask")
+        XCTAssertTrue(app.navigationBars["Recents"].waitForExistence(timeout: 5))
+    }
+
+    /// ··· › Study this verse opens Romans 8:28's page: its text, its colours, a note added
+    /// through the page's +, and its Ask bar. Leaves the verse without colour or note.
+    func testTheVersePage() {
+        tap("jump-field")
+        app.typeText("rom 8:28\n")
+        waitForPlace("Romans 8")
+        tap("verse-28")
+        tap("row-more")
+        app.buttons["Study this verse"].tap()
+        XCTAssertTrue(app.navigationBars["Romans 8:28"].waitForExistence(timeout: 5), "no verse page")
+        XCTAssertTrue((el("page-text").label).hasPrefix("And we know that all things work together for good"))
+        XCTAssertFalse(app.tabBars.buttons["Bible"].isHittable, "the tab bar shows on the verse page")
+        XCTAssertFalse(el("row-more").exists, "the verse row stayed up")
+
+        let green = el("page-dot-green")
+        if green.label.hasPrefix("Remove") { green.tap() }
+        green.tap()
+        XCTAssertEqual(green.label, "Remove green highlight")
+        green.tap()
+        XCTAssertEqual(green.label, "Highlight green")
+
+        // A note through the page's +, shown on the page, then emptied from there.
+        tap("plus")
+        XCTAssertEqual(el("capture-anchor").label, "Anchored to Romans 8:28")
+        tap("capture-note")
+        let field = el("note-field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let old = (field.value as? String) ?? ""
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + "Not that all things are good.")
+        tap("note-save")
+        XCTAssertTrue(el("page-note-28").waitForExistence(timeout: 5), "the note isn't on the page")
+        XCTAssertTrue(app.navigationBars["Romans 8:28"].exists, "saving the note left the page")
+        tap("page-note-28")
+        XCTAssertTrue(el("note-field").waitForExistence(timeout: 5))
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 29))
+        tap("note-save")
+        XCTAssertFalse(el("page-note-28").waitForExistence(timeout: 2), "an emptied note stayed")
+
+        tap("page-ask")
         XCTAssertTrue(app.navigationBars["Recents"].waitForExistence(timeout: 5))
     }
 
