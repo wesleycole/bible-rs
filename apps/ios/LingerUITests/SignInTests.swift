@@ -24,7 +24,11 @@ extension XCUIApplication {
     func signIn() {
         let start = buttons["Sign in"]
         waitForLaunch()
-        guard start.exists else { return }
+        guard start.exists else {
+            // Signed in on an earlier run that left the consent sheet unanswered.
+            if buttons["Turn On Sync"].waitForExistence(timeout: 2) { buttons["Turn On Sync"].tap() }
+            return
+        }
         start.tap()
 
         // Until it has focus, an empty field shows only as its label, so match the identifier on any

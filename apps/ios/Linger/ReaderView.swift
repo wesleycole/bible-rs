@@ -37,8 +37,9 @@ struct ReaderView: View {
                 // Pulling past either end turns the chapter, even when it fits on one screen.
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .onScrollGeometryChange(for: CGFloat.self) { g in
+                    // The container's size already leaves out the insets the bars take.
                     let top = -g.contentInsets.top
-                    let bottom = max(top, g.contentSize.height + g.contentInsets.bottom - g.containerSize.height)
+                    let bottom = top + max(0, g.contentSize.height - g.containerSize.height)
                     let y = g.contentOffset.y
                     return y < top ? y - top : y > bottom ? y - bottom : 0
                 } action: { _, pulled in
