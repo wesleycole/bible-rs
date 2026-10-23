@@ -39,7 +39,7 @@ fn main() {
         .unwrap_or((1280.0, 800.0));
     if std::env::var_os("LINGER_OFFSCREEN").is_none() {
         // Offscreen is what lays the app out as in a window, and what keeps a render from
-        // starting a real sync engine (against production, without LINGER_CONVEX_URL).
+        // starting a real sync engine (against dev Convex, unless LINGER_CONVEX_URL says otherwise).
         // Keep this ahead of any thread and of initialize(): the app reads offscreen() to decide
         // whether to start sync, so anything built above this line would start the real engine.
         // SAFETY: no other thread has started yet.

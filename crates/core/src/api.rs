@@ -164,15 +164,24 @@ pub struct Api {
     agent: ureq::Agent,
 }
 
-/// The production Convex deployment, which the library syncs with ([`convex_url`]).
+/// The production Convex deployment, which release builds sync with ([`convex_url`]).
 pub const CONVEX_URL: &str = "https://expert-rabbit-665.convex.cloud";
 
-/// The Convex deployment's URL: `LINGER_CONVEX_URL` (a developer's dev deployment), or production.
+/// The dev Convex deployment, which every other build syncs with: one run locally never touches
+/// production. It accepts the dev Clerk instance's tokens ([`auth::CLERK_URL`](crate::auth::CLERK_URL)),
+/// as the iOS app's `Config.convexURL` does.
+pub const DEV_CONVEX_URL: &str = "https://adorable-porcupine-835.convex.cloud";
+
+/// Whether this is a release build: `scripts/release-macos.sh` builds with `LINGER_RELEASE=1`.
+pub const RELEASE: bool = option_env!("LINGER_RELEASE").is_some();
+
+/// The Convex deployment's URL: `LINGER_CONVEX_URL`, else production in a release build and dev
+/// in any other.
 pub fn convex_url() -> String {
     std::env::var("LINGER_CONVEX_URL")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| CONVEX_URL.into())
+        .unwrap_or_else(|| (if RELEASE { CONVEX_URL } else { DEV_CONVEX_URL }).into())
         .trim_end_matches('/')
         .to_string()
 }

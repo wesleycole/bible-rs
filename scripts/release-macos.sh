@@ -73,6 +73,8 @@ cleanup() {
 trap cleanup EXIT
 
 export NOTARY_PROFILE
+# A release build syncs with production Convex; every other build uses dev (api::convex_url).
+export LINGER_RELEASE=1
 # Never empty: bash 3.2 treats "${empty[@]}" as unbound under set -u.
 NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
 if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then NOTARY_AUTH+=(--keychain "$NOTARY_KEYCHAIN"); fi
