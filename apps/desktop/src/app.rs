@@ -1615,7 +1615,7 @@ impl BibleApp {
         use theme::metrics::{SIDEBAR_INSET, SIDEBAR_WIDTH};
         let settings = self.settings_ui.is_some();
         let width = if self.sidebar.searching() && !settings { SEARCH_SIDEBAR_WIDTH } else { SIDEBAR_WIDTH };
-        let inset = if self.settings.sidebar_attached { 0.0 } else { SIDEBAR_INSET };
+        let inset = if self.sidebar_attached() { 0.0 } else { SIDEBAR_INSET };
         self.sidebar_extent = inset + width;
         // Settings lists its sections in the sidebar, so it's out while Settings is open.
         let target = if (self.settings.sidebar_open && !self.focus) || settings { 1.0 } else { 0.0 };
@@ -1655,6 +1655,12 @@ impl BibleApp {
         self.sidebar_shown = open;
         self.ask_shown = ask;
         (open, ask)
+    }
+
+    /// Whether the sidebar is attached to the window's edge: the setting, or always while it
+    /// lists Settings' sections.
+    fn sidebar_attached(&self) -> bool {
+        self.settings.sidebar_attached || self.settings_ui.is_some()
     }
 
     /// Whether the sidebar or the Ask card is on its way in or out.
@@ -3019,7 +3025,7 @@ impl eframe::App for BibleApp {
             // A floating source list, full height: the traffic lights and the sidebar toggle sit
             // in its header.
             let extent = self.sidebar_extent;
-            let attached = self.settings.sidebar_attached;
+            let attached = self.sidebar_attached();
             let inset = if attached { 0.0 } else { theme::metrics::SIDEBAR_INSET };
             egui::Panel::left("sidebar")
                 .resizable(false)
