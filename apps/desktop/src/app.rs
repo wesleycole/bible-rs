@@ -540,7 +540,7 @@ impl BibleApp {
             no_drag: Default::default(),
             settings,
             #[cfg(target_os = "macos")]
-            menu: if crate::offscreen() { None } else { crate::macos_menu::AppMenu::install() },
+            menu: if crate::offscreen() { None } else { crate::macos_menu::AppMenu::install(&cc.egui_ctx) },
         }
     }
 
@@ -1007,7 +1007,13 @@ impl BibleApp {
                 self.settings.sidebar_open = true;
                 self.settings.sidebar_tab = t;
             }
-            Action::OpenSettings(tab) => self.settings_ui = Some(SettingsUi::new(tab, &self.library)),
+            // Already open, the plain way in (⌘,, the menu, the gear: Reading) leaves the section
+            // as it is; a particular section (Translations, Account) is shown.
+            Action::OpenSettings(tab) => match &mut self.settings_ui {
+                Some(s) if tab != SettingsTab::Reading => s.show_tab(tab),
+                Some(_) => {}
+                None => self.settings_ui = Some(SettingsUi::new(tab, &self.library)),
+            },
             Action::CloseSettings => self.settings_ui = None,
             Action::FontSize(d) => self.settings.typo.size = (self.settings.typo.size + d).clamp(12.0, 34.0),
             Action::FontReset => self.settings.typo.size = Typography::default().size,
@@ -3060,13 +3066,21 @@ impl eframe::App for BibleApp {
                     );
                     content.max.y = footer.top();
                     if let Some(s) = &mut self.settings_ui {
-                        let header = egui::Rect::from_min_max(
-                            panel.min,
-                            egui::pos2(panel.right(), panel.top() + SIDEBAR_HEADER),
+                        // After the traffic lights, where the toolbar's first control goes, and on
+                        // their line (the title bar's middle, whether the sidebar floats or not).
+                        let title = egui::pos2(
+                            self.chrome.leading.max(panel.left() + 16.0),
+                            self.chrome.height / 2.0,
                         );
-                        // After the traffic lights, where the toolbar's first control goes.
-                        let title_x = self.chrome.leading.max(panel.left() + 16.0);
-                        s.nav(ui, p, header, title_x, content, footer, &mut actions);
+                        s.nav(ui, p, title, content, footer, &mut actions);
+                        // The title bar reaches into the first rows: they aren't drag handles.
+                        #[cfg(target_os = "macos")]
+                        if content.top() < self.chrome.height {
+                            self.toolbar_items.push(egui::Rect::from_min_max(
+                                content.min,
+                                egui::pos2(content.right(), self.chrome.height),
+                            ));
+                        }
                         return;
                     }
                     let status = self.sync.as_ref().map(|s| s.status()).or(self.demo_sync.clone());
@@ -3124,11 +3138,10 @@ impl eframe::App for BibleApp {
                     sheet.set_key(key.unwrap_or_default());
                     self.import_sheet = Some(sheet);
                 }
-                // Escape leaves, unless a field or a shortcut being recorded has it.
-                if !s.recording()
-                    && !ctx.egui_wants_keyboard_input()
-                    && ctx.input(|i| i.key_pressed(Key::Escape))
-                {
+                // Escape leaves, unless a field had it (it only leaves the field) or a shortcut is
+                // being recorded.
+                let typing = std::mem::replace(&mut s.typing, ctx.egui_wants_keyboard_input());
+                if !typing && !s.recording() && ctx.input(|i| i.key_pressed(Key::Escape)) {
                     actions.push(Action::CloseSettings);
                 }
                 self.sidebar_shadow(ui);

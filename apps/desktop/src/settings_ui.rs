@@ -66,6 +66,9 @@ pub struct SettingsUi {
     /// Account: Delete… was pressed and waits for the second click; the development token field.
     confirm_delete: bool,
     dev_token: String,
+    /// A field had the keyboard last frame. egui drops focus on Escape before the frame
+    /// starts, so this is how Escape that left a field is told apart from Escape that leaves.
+    pub typing: bool,
 }
 
 impl SettingsUi {
@@ -85,6 +88,7 @@ impl SettingsUi {
             confirm_erase: false,
             confirm_delete: false,
             dev_token: String::new(),
+            typing: false,
         }
     }
 
@@ -844,33 +848,30 @@ impl SettingsUi {
         TABS.iter().find(|(t, _, _)| *t == self.tab).map_or("Settings", |(_, l, _)| l)
     }
 
+    /// Shows `tab`, keeping what's typed in the other sections.
+    pub fn show_tab(&mut self, tab: SettingsTab) {
+        self.tab = tab;
+    }
+
     /// Whether a shortcut row is waiting for a chord (it takes Escape).
     pub fn recording(&self) -> bool {
         self.recording.is_some()
     }
 
     /// The sidebar while Settings is open: its sections over `list`, and Back in `footer`.
-    /// `header` is the sidebar's header line (the traffic lights'), `title_x` where text can start
-    /// after them.
+    /// `title` is where "Settings" starts: after the traffic lights, centred on their line.
     #[allow(clippy::too_many_arguments)]
     pub fn nav(
         &mut self,
         ui: &mut Ui,
         p: &Palette,
-        header: Rect,
-        title_x: f32,
+        title: egui::Pos2,
         list: Rect,
         footer: Rect,
         actions: &mut Vec<Action>,
     ) {
         use crate::sidebar::{Row, row};
-        ui.painter().text(
-            pos2(title_x, header.center().y),
-            Align2::LEFT_CENTER,
-            "Settings",
-            text::UI_STRONG.font(),
-            p.ink,
-        );
+        ui.painter().text(title, Align2::LEFT_CENTER, "Settings", text::UI_STRONG.font(), p.ink);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(list.min + vec2(8.0, 4.0), list.max - vec2(8.0, 0.0)))

@@ -13,6 +13,8 @@ use crate::theme::Scheme;
 
 pub struct AppMenu {
     _menu: Menu,
+    /// Menu clicks, as muda's handler forwards them.
+    events: std::sync::mpsc::Receiver<MenuEvent>,
 }
 
 fn item(id: &str, label: &str, accel: Option<&str>) -> MenuItem {
@@ -20,8 +22,9 @@ fn item(id: &str, label: &str, accel: Option<&str>) -> MenuItem {
 }
 
 impl AppMenu {
-    /// Builds the menu bar and installs it as the application menu.
-    pub fn install() -> Option<Self> {
+    /// Builds the menu bar and installs it as the application menu. A click wakes `ctx`, so it
+    /// takes effect at once even when the menu didn't cover the window (nothing else repaints).
+    pub fn install(ctx: &eframe::egui::Context) -> Option<Self> {
         let menu = Menu::new();
         let app = Submenu::with_items(
             "Linger",
@@ -104,12 +107,18 @@ impl AppMenu {
         menu.append_items(&[&app, &file, &view, &go, &window, &help]).ok()?;
         menu.init_for_nsapp();
         window.set_as_windows_menu_for_nsapp();
-        Some(Self { _menu: menu })
+        let (tx, events) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        MenuEvent::set_event_handler(Some(move |event| {
+            let _ = tx.send(event);
+            ctx.request_repaint();
+        }));
+        Some(Self { _menu: menu, events })
     }
 
     /// Drains menu clicks into this frame's actions.
     pub fn poll(&self, actions: &mut Vec<Action>) {
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
+        while let Ok(event) = self.events.try_recv() {
             let a = match event.id.0.as_str() {
                 "settings" => Action::OpenSettings(SettingsTab::Reading),
                 "import_translation" => Action::ImportTranslation,
