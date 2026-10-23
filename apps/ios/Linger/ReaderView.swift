@@ -15,6 +15,12 @@ struct ReaderView: View {
     @State private var studying: ClosedRange<UInt8>?
     /// The verse whose margin popover is open.
     @State private var margin: UInt8?
+    /// How far the text is pulled past an end: positive past the last verse, toward the next
+    /// chapter; negative above the heading, toward the previous one.
+    @State private var overscroll: CGFloat = 0
+    /// A finger is on the text, so letting go past `turnDistance` turns the chapter.
+    @State private var dragging = false
+    private let turnDistance: CGFloat = 80
 
     var body: some View {
         NavigationStack {
@@ -28,6 +34,32 @@ struct ReaderView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .background(Theme.page)
+                // Pulling past either end turns the chapter, even when it fits on one screen.
+                .scrollBounceBehavior(.always, axes: .vertical)
+                .onScrollGeometryChange(for: CGFloat.self) { g in
+                    let top = -g.contentInsets.top
+                    let bottom = max(top, g.contentSize.height + g.contentInsets.bottom - g.containerSize.height)
+                    let y = g.contentOffset.y
+                    return y < top ? y - top : y > bottom ? y - bottom : 0
+                } action: { _, pulled in
+                    overscroll = pulled
+                }
+                .onScrollPhaseChange { old, new in
+                    // Only a finger lifted far enough turns: a fling that bounces past the end doesn't.
+                    if old == .interacting, abs(overscroll) >= turnDistance, let target = pullTarget { go(target) }
+                    dragging = new == .interacting
+                }
+                .overlay(alignment: overscroll < 0 ? .top : .bottom) {
+                    ZStack {
+                        if dragging, abs(overscroll) > 12, let target = pullTarget {
+                            PullCapsule(target: target, progress: min(abs(overscroll) / turnDistance, 1))
+                                .padding(.vertical, 12)
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.smooth(duration: 0.2), value: dragging && abs(overscroll) > 12)
+                }
+                .sensoryFeedback(.impact(weight: .light), trigger: dragging && abs(overscroll) >= turnDistance) { _, ready in ready }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.readerFrame = $0 }
                 .task(id: "\(model.translation) \(model.book) \(model.chapter)") {
                     await model.load()
@@ -146,6 +178,11 @@ struct ReaderView: View {
         Task { proxy.scrollTo(target, anchor: target == 0 ? .top : UnitPoint(x: 0.5, y: 0.18)) }
     }
 
+    /// The chapter the text is pulled toward, if any.
+    private var pullTarget: Reference? {
+        overscroll > 0 ? model.next : overscroll < 0 ? model.previous : nil
+    }
+
     /// Swaps the chapter in one frame, without cross-fading two chapters' text.
     private func go(_ place: Reference) {
         var swap = Transaction()
@@ -168,14 +205,7 @@ struct ReaderView: View {
                 // One glyph where each item's verses start, without counts.
                 let starts = Set(items.map(\.first))
                 VStack(alignment: .leading, spacing: 14) {
-                    // The chapter's top, where a jump lands, includes the link back.
-                    VStack(alignment: .leading, spacing: 14) {
-                        if let previous = model.previous {
-                            ChapterLink(target: previous, forward: false) { go(previous) }
-                        }
-                        heading
-                    }
-                    .id(UInt8(0))
+                    heading.id(UInt8(0))
                     ForEach(verses, id: \.number) { verse in
                         VerseRow(verse: verse, marks: marks[verse.number],
                                  selected: model.selection?.overlaps(verse.number...verse.numberEnd) == true,
@@ -197,7 +227,18 @@ struct ReaderView: View {
                         Text(notice).font(Fonts.ui(13)).foregroundStyle(Theme.ink2).padding(.top, 16)
                     }
                     if let next = model.next {
-                        ChapterLink(target: next, forward: true) { go(next) }.padding(.top, 18)
+                        // Teaches the pull; a tap works too.
+                        Button { go(next) } label: {
+                            Text("Pull up for \(next.display)")
+                                .font(Fonts.ui(13))
+                                .foregroundStyle(Theme.ink3)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 18)
+                        .accessibilityLabel("Next chapter, \(next.display)")
+                        .accessibilityIdentifier("next-chapter")
                     }
                 }
             case let .failed(message):
@@ -227,6 +268,39 @@ struct ReaderView: View {
         .padding(.bottom, 10)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.title)
+        // The pull is a gesture VoiceOver can't make.
+        .accessibilityActions {
+            if let previous = model.previous { Button("Previous chapter, \(previous.display)") { go(previous) } }
+            if let next = model.next { Button("Next chapter, \(next.display)") { go(next) } }
+        }
+    }
+}
+
+/// Where a pull past the chapter's end is going: a ring that fills, then "Release for Philemon 1".
+private struct PullCapsule: View {
+    let target: Reference
+    /// 0 to 1; at 1, letting go turns the chapter.
+    let progress: CGFloat
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle().stroke(Theme.separator, lineWidth: 2)
+                Circle().trim(from: 0, to: progress)
+                    .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 16, height: 16)
+            Text(progress >= 1 ? "Release for \(target.display)" : target.display)
+                .font(Fonts.ui(14, weight: .medium))
+                .foregroundStyle(Theme.ink)
+                .contentTransition(.opacity)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 14)
+        .frame(height: 36)
+        .glassEffect(Theme.glass, in: .capsule)
+        .accessibilityHidden(true)
     }
 }
 

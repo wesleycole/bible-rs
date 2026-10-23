@@ -65,8 +65,12 @@ Tapping the field opens it with the keyboard up. The field and the list under it
 - Scrolling the list drops the keyboard. Opening and closing don't cross-fade over the text: the field
   grows in place and the list slides down on its own background.
 
-**Chapters** end with a quiet "Romans 9 ›" and start with "‹ Romans 7". That and the field are the only
-paging.
+**Chapters** turn by pulling past an end. Past the last verse, a glass capsule with a filling ring
+says "Romans 9", then "Release for Romans 9" with a light haptic; letting go turns the chapter.
+Pulling down above the heading goes back to the top of Romans 7 the same way. Only a lifted finger
+turns: a fling that bounces past the end doesn't. The chapter ends with a quiet grey "Pull up for
+Romans 9", which teaches the pull and also turns on a tap. There are no other links; VoiceOver gets
+Previous and Next chapter as actions on the heading. That and the field are the only paging.
 
 **Margin marks.** One small grey glyph beside each verse that has library items, with no counts; a
 bookmark adds a small bookmark glyph in the accent. Tapping the library glyph opens a glass popover anchored to

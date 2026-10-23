@@ -442,29 +442,6 @@ struct JumpPanel: View {
     }
 }
 
-/// The quiet paging at a chapter's ends: "‹ Romans 7" above it, "Romans 9 ›" below.
-struct ChapterLink: View {
-    let target: Reference
-    let forward: Bool
-    let go: () -> Void
-
-    var body: some View {
-        Button(action: go) {
-            HStack(spacing: 4) {
-                if !forward { Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)) }
-                Text(target.display).font(Fonts.ui(15))
-                if forward { Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)) }
-            }
-            .foregroundStyle(Theme.accent)
-            .frame(height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: forward ? .trailing : .leading)
-        .accessibilityIdentifier(forward ? "next-chapter" : "previous-chapter")
-    }
-}
-
 struct Hairline: View {
     var body: some View {
         Rectangle().fill(Theme.separator).frame(height: 1 / 3)
