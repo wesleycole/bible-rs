@@ -357,12 +357,15 @@ impl Study {
 }
 
 impl Study {
-    fn lock(&self) -> MutexGuard<'_, StudyStore> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, StudyStore> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Runs a change, then tells the observer (outside the lock) if the generation moved.
-    fn write(&self, f: impl FnOnce(&mut StudyStore) -> Result<(), BibleError>) -> Result<(), BibleError> {
+    pub(crate) fn write(
+        &self,
+        f: impl FnOnce(&mut StudyStore) -> Result<(), BibleError>,
+    ) -> Result<(), BibleError> {
         let (before, after, result) = {
             let mut s = self.lock();
             let before = s.generation();
@@ -467,7 +470,7 @@ pub(crate) fn failed(e: impl std::fmt::Display) -> BibleError {
     BibleError::Failed { message: format!("{e:#}") }
 }
 
-fn core_verse(v: VerseRef) -> Result<CoreVerse, BibleError> {
+pub(crate) fn core_verse(v: VerseRef) -> Result<CoreVerse, BibleError> {
     let c = chapter_idx(v.book, v.chapter)?;
     if v.verse == 0 {
         return Err(BibleError::InvalidChapter { book: v.book, chapter: v.chapter });

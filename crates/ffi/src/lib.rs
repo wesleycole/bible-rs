@@ -23,11 +23,16 @@ uniffi::setup_scaffolding!();
 
 mod account;
 mod appearance;
+mod items;
 mod study;
 
 pub use account::{Account, AccountError, AccountInfo};
 pub use appearance::{
     Appearance, AppearanceScheme, ThemeName, ThemePalette, theme_label, theme_palette, themes,
+};
+pub use items::{
+    AnchorOrigin, ChapterItem, ItemAnchor, ItemKind, ItemRange, ItemStatus, ItemText, LibraryItem,
+    TranscriptSegment,
 };
 pub use study::{
     ChatMessage, ChatSummary, ConsentText, HighlightColor, LibrarySync, Note, Study, StudyObserver,
