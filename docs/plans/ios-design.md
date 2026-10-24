@@ -41,10 +41,14 @@ pages and Settings are plain.
 - **Tabs:** Bible, Library and Settings, in the system iOS 26 `TabView`. The bar minimizes on scroll
   down (`tabBarMinimizeBehavior(.onScrollDown)`), so reading keeps the screen.
 - **Ask** is the separated round button at the trailing end of the tab bar, `Tab(role: .search)`.
-  Its accessibility label is "Ask", not "Search".
-- **Add** is a round glass + in the top toolbar on Bible, Library and item pages. It is not a tab:
-  tabs are places, and Add is an action.
+  Its accessibility label is "Ask", not "Search". It always starts a new question about what's on
+  screen; going back to the chat you left is the return bar's job, and past chats are the clock's.
+- **Add** is a round glass + in the Bible's top toolbar (and on the verse page), where there is a
+  verse to anchor to. It is not a tab: tabs are places, and Add is an action. Library adds through its
+  capture row instead (the owner's decision, October 24).
 - There is no drawer and no ☰.
+- **Every control has one job** (the owner's rule, October 24): no two controls on a screen do the
+  same thing, and a control whose target isn't obvious doesn't ship.
 
 ## Bible
 
@@ -76,10 +80,10 @@ VoiceOver gets Previous and Next chapter as actions on the heading. That and the
 paging.
 
 **Margin marks.** One small grey glyph beside each verse that has library items, with no counts; a
-bookmark adds a small bookmark glyph in the accent. Tapping the library glyph opens a glass popover anchored to
-the verse: "Romans 8:28 ›" (which opens the verse page), Your library, then Reference, each row with
-an Ask button. A quiet "3 in your library" under the chapter number opens Library filtered to the
-chapter.
+bookmark adds a small bookmark glyph in the accent, which is a mark, not a control. Tapping the
+library glyph opens a glass popover anchored to the verse: "Romans 8:28 ›" (which opens the verse
+page), Your library, then Reference, each row with an Ask button. A quiet "3 in your library" under
+the chapter number opens Library filtered to the chapter.
 
 **Selecting.** Tapping a verse underlines it; tapping more extends the range. The tab bar hides and a
 glass row takes its place:
@@ -103,14 +107,22 @@ own "Ask about this verse" bar opens the same Ask sheet, so the page's sections 
 ## Ask
 
 - A **full-height sheet** over the reader, from the Ask button, a verse row, the popover or a page.
-- **Context** at the top: the selection quoted with ×, or "Reading Romans 8" with nothing selected, or
-  the item being asked about. A scope control: "Bible + library" (the default) or "Bible only".
+- **Context** at the top: the selection quoted with a small × that removes it, or "Reading Romans 8"
+  with nothing selected, or the item being asked about. Under it, a plain grey scope control:
+  "Bible + library ⌄" (the default) or "Bible only". Context and scope are shown once, here, not
+  again in a row by the composer.
+- **The composer** is one glass field with a round button inside its trailing end: send (grey until
+  there is text), which becomes stop while an answer is written. No + and no mic: the keyboard has
+  dictation, and a mic would read as Record (the owner's decision, October 24).
 - **Empty:** three suggested questions as plain rows, drawn from the context and the library.
-- **Answering:** a grey user bubble, the answer in serif with inline citations in the accent, and one grey line
-  saying what it read ("Read 1 sermon and 1 note from your library"). A stop button while it writes.
-  The answer appears without cross-fading over the suggestions.
-- **Sources** come in three groups: From the Bible, From your library, From reference works. Small
-  actions under them: copy, save to library, share, thumbs.
+- **Answering:** a grey user bubble, the answer in serif with inline citations in the accent. Under it
+  one plain grey line with a small spinner says what it is reading ("Reading 1 sermon and 1 note from
+  your library…"); when the answer ends it becomes "Read 1 sermon and 1 note from your library ›".
+  It is text, not glass. The answer appears without cross-fading over the suggestions.
+- **Actions under each answer:** Save to library, Share, thumbs up, thumbs down. They belong to that
+  answer, not the chat, so they are not in a floating row. Copy is in the share sheet, as on Bible.
+- **Sources** are folded behind the "Read … ›" line, which opens them in three groups: From the Bible,
+  From your library, From reference works. There is no separate sources count or button.
 - **Tapping a source** opens a peek card in the chat with the verse text or the item's excerpt, and
   "Open in Bible" (or "Open"). Opening collapses the sheet and leaves a return bar above the tab bar,
   "‹ What does 8:28 really promise?" (`tabViewBottomAccessory`), which brings the chat back as it was.
@@ -122,19 +134,24 @@ own "Ask about this verse" bar opens the same Ask sheet, so the page's sections 
 ## Add
 
 The + opens a small glass menu: Note, Photo, Record, Import, and "Anchored to Romans 8:28 · Change".
-With nothing selected it anchors to the chapter on screen. Library's home also has a Record / Photo /
-Note / Import row. Cancelling a note keeps the verse selection, so another action can follow (the
-owner's decision, October 22).
+With nothing selected it anchors to the chapter on screen. Library's home has a Record / Photo /
+Note / Import row instead of the +, since a + there would repeat it. Cancelling a note keeps the
+verse selection, so another action can follow (the owner's decision, October 22).
 
 ## Library
 
 - A large serif title, "7 yours · 9 reference works", and "Search your library".
 - The capture row, then filters: All, Yours, Reference, and the kinds (Sermons, Notes, Photos, Marks).
   Highlights and bookmarks are the Marks filter; there is no separate Notes or Highlights screen.
+- No + in the toolbar: the capture row is how Library adds.
 - **On Romans 8:** items about the chapter being read, yours and reference together, each with a grey
   origin label ("Your sermon", "Your photo", "Reference"). Then Recent by day, then the reference works.
-- **Item pages:** a sermon has its title, speaker line, Ask about this, summary, passage links and a
-  timed transcript; times are text, not play buttons. A photo has the image, its anchor with Change,
+  Work in progress is an ordinary row in Recent, with a progress ring for its icon and "Transcribing,
+  62%" in its label, not a floating status that would compete with the return bar.
+- **Item pages:** a back button and Share in the top bar, no +. A floating glass "Ask about this
+  sermon" bar at the bottom opens Ask with the item as context; it has no ⌄, since the Ask sheet
+  has the suggestions and the scope. A sermon has its title, speaker line, summary, passage links and
+  a timed transcript; times are text, not play buttons. A photo has the image, its anchor with Change,
   Ask about this, the text read from it and its passages. A reference entry has the work's name, the
   passage, the text and a public-domain credit line.
 
