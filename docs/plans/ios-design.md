@@ -101,6 +101,29 @@ glass row takes its place:
 - The toolbar + follows the selection: its menu reads "Anchored to Romans 8:28".
 - If the row would cover the tapped verse, the text scrolls it up.
 
+**Margins** (the owner's decision, October 24: build it and see how it reads). Your notes can sit
+beside their verses, like the notes in a study Bible:
+
+- **On:** the text column narrows and a right margin holds each note beside the verse it starts on,
+  in a small italic serif in the accent. A note longer than three lines fades into "more", which opens
+  the note sheet. Notes that would overlap stack down the margin in verse order.
+- **Off:** the text has its full width, as now. A verse with a note keeps the one library glyph, in
+  the accent when one of the items is your note, and the glyph opens the popover as before. There is
+  no second mark.
+- **Turning them on and off:** pinch out opens the margins, pinch in closes them, like opening the
+  book wider. Sideways swipes stay the chapter turn. The first chapter with a note you read with
+  margins off shows a small glass hint once, "Pinch out to see your notes in the margin", and the
+  first time margins open, "Pinch in to close the margins". The choice is remembered on the device.
+  On iPad and in landscape, where there's room, they start on.
+- **Writing:** with margins on, selecting a verse shows a faint "Write in the margin" box beside it.
+  Tapping it writes there, with the keyboard up and a bar above it holding Cancel and Done. With
+  margins off, the + menu's Note opens the note sheet as now.
+- **Every note is a library item.** A margin note is the same note item, anchored to its verse,
+  that the note sheet writes: it syncs, appears in Library and the popover, and Ask can cite it.
+  There is no separate margin-note record.
+- Not now: naming the highlight colours (the PRAYER and PROMISE labels in the mockups), which needs
+  a new synced preference.
+
 **The verse page** (Study this verse, or the popover's header): the verse in large serif, the colour
 dots, then Your library, Reference, Cross references and notes on that verse. The tab bar hides. Its
 own "Ask about this verse" bar opens the same Ask sheet, so the page's sections stay in place.
