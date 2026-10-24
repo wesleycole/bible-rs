@@ -48,7 +48,8 @@ pages and Settings are plain.
   capture row instead (the owner's decision, October 24).
 - There is no drawer and no ☰.
 - **Every control has one job** (the owner's rule, October 24): no two controls on a screen do the
-  same thing, and a control whose target isn't obvious doesn't ship.
+  same thing, and a control whose target isn't obvious doesn't ship. Nor does one that doesn't work
+  yet: it appears when what it needs lands, not as a placeholder.
 
 ## Bible
 
@@ -119,8 +120,10 @@ own "Ask about this verse" bar opens the same Ask sheet, so the page's sections 
   one plain grey line with a small spinner says what it is reading ("Reading 1 sermon and 1 note from
   your library…"); when the answer ends it becomes "Read 1 sermon and 1 note from your library ›".
   It is text, not glass. The answer appears without cross-fading over the suggestions.
-- **Actions under each answer:** Save to library, Share, thumbs up, thumbs down. They belong to that
-  answer, not the chat, so they are not in a floating row. Copy is in the share sheet, as on Bible.
+- **Actions under each answer:** Save to library and Share. They belong to that answer, not the chat,
+  so they are not in a floating row. Copy is in the share sheet, as on Bible. Thumbs up and down
+  join when the proxy has somewhere to send them: only working controls ship (the owner's rule,
+  October 24).
 - **Sources** are folded behind the "Read … ›" line, which opens them in three groups: From the Bible,
   From your library, From reference works. There is no separate sources count or button.
 - **Tapping a source** opens a peek card in the chat with the verse text or the item's excerpt, and
@@ -142,6 +145,7 @@ verse selection, so another action can follow (the owner's decision, October 22)
 
 - A large serif title, "7 yours · 9 reference works", and "Search your library".
 - The capture row, then filters: All, Yours, Reference, and the kinds (Sermons, Notes, Photos, Marks).
+  Yours and Reference appear with the reference works (M7); until then Yours would repeat All.
   Highlights and bookmarks are the Marks filter; there is no separate Notes or Highlights screen.
 - No + in the toolbar: the capture row is how Library adds.
 - **On Romans 8:** items about the chapter being read, yours and reference together, each with a grey
