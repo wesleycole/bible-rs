@@ -11,7 +11,7 @@ use linger_core::chat::{self, Message, Role, Segment};
 use linger_core::records;
 use serde_json::json;
 
-use crate::items::{ItemKind, ItemRange};
+use crate::items::{ItemKind, ItemRange, title_of};
 use crate::study::{ChatMessage, LibrarySync, Study, TokenProvider, Tokens, core_verse, failed};
 use crate::{BibleError, BibleLibrary, Reference, chapter_idx};
 
@@ -66,7 +66,21 @@ impl LibrarySync {
         let library = self.handle().user_library().map_err(failed)?;
         let (hits, offline) =
             library.search(json!({ "query": query, "limit": limit.clamp(1, 50) })).map_err(failed)?;
-        Ok(LibrarySearch { hits: hits.into_iter().map(Into::into).collect(), offline })
+        let study = self.study().lock();
+        let hits = hits
+            .into_iter()
+            .map(|h| {
+                let mut hit = LibraryHit::from(h);
+                // Offline, an untitled note comes back untitled: name it as lists do.
+                if hit.title.trim().is_empty()
+                    && let Ok(Some(item)) = study.item(&hit.uid)
+                {
+                    hit.title = title_of(&item);
+                }
+                hit
+            })
+            .collect();
+        Ok(LibrarySearch { hits, offline })
     }
 }
 
@@ -209,16 +223,19 @@ impl Conversation {
         Arc::new(Self::with(base_url, tokens, assistant::Conversation::new(), Vec::new(), None))
     }
 
-    /// A saved conversation from Recents, to carry on; `None` when it isn't on this device yet.
+    /// A saved conversation from Recents, to carry on. Fails for one that is listed but isn't on
+    /// this device yet.
     #[uniffi::constructor]
     pub fn open(
         study: Arc<Study>,
         id: i64,
         base_url: Option<String>,
         tokens: Arc<dyn TokenProvider>,
-    ) -> Option<Arc<Self>> {
-        let saved = study.lock().chat(id)?;
-        Some(Arc::new(Self::with(
+    ) -> Result<Arc<Self>, BibleError> {
+        let saved = study.lock().chat(id).ok_or_else(|| BibleError::Failed {
+            message: "This conversation isn't on this iPhone yet.".into(),
+        })?;
+        Ok(Arc::new(Self::with(
             base_url,
             tokens,
             assistant::Conversation::from_json(&saved.api),
@@ -342,7 +359,10 @@ impl Conversation {
             Some(uid) => {
                 let item =
                     study.lock().item(&uid).map_err(|e| AskError::Failed { message: format!("{e:#}") })?;
-                item.map(|i| (i.uid, i.title))
+                item.map(|i| {
+                    let title = title_of(&i);
+                    (i.uid, title)
+                })
             }
             None => None,
         };

@@ -52,29 +52,10 @@ pub fn own_verse(study: &linger_core::study::StudyStore, item: &Item) -> Option<
 
 /// An item's title as the list and chips show it: its own, or what kind of item it is.
 pub fn title(item: &Item) -> String {
-    let own = [Some(&item.title), item.details.as_ref().and_then(|d| d.title.as_ref())]
-        .into_iter()
-        .flatten()
-        .map(|t| t.trim())
-        .find(|t| !t.is_empty());
-    if let Some(t) = own {
-        return t.to_string();
-    }
-    match item.kind {
-        ItemKind::Note => item
-            .text
-            .as_deref()
-            .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
-            .map(|l| {
-                let l = l.trim_start_matches(['#', '>', '-', '*', ' ']);
-                if l.chars().count() > 60 {
-                    format!("{}…", l.chars().take(59).collect::<String>().trim_end())
-                } else {
-                    l.to_string()
-                }
-            })
-            .unwrap_or_else(|| "Note".into()),
-        kind => format!("{}, {}", kind_name(kind), time::short_date(captured(item))),
+    match item.display_title() {
+        Some(t) => t,
+        None if item.kind == ItemKind::Note => "Note".into(),
+        None => format!("{}, {}", kind_name(item.kind), time::short_date(captured(item))),
     }
 }
 

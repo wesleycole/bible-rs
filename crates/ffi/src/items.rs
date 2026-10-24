@@ -129,8 +129,22 @@ fn range(from: records::VerseId, to: records::VerseId) -> String {
     }
 }
 
+/// An item's title as lists show it: its own, an untitled note's first line, or its kind.
+pub(crate) fn title_of(i: &records::Item) -> String {
+    i.display_title().unwrap_or_else(|| {
+        match i.kind {
+            CoreKind::Sermon => "Sermon",
+            CoreKind::Note => "Note",
+            CoreKind::Handwritten | CoreKind::Page => "Photo",
+            CoreKind::Slide => "Slide",
+        }
+        .into()
+    })
+}
+
 impl From<records::Item> for LibraryItem {
     fn from(i: records::Item) -> Self {
+        let title = title_of(&i);
         let mut anchors: Vec<ItemAnchor> = i
             .anchors
             .iter()
@@ -150,7 +164,7 @@ impl From<records::Item> for LibraryItem {
         Self {
             uid: i.uid,
             kind: i.kind.into(),
-            title: i.title,
+            title,
             status: i.status.into(),
             excerpt: i.excerpt,
             summary: i.summary,
@@ -268,6 +282,8 @@ mod tests {
 
         let item = study.library_item(uid[..8].into()).unwrap().unwrap();
         assert_eq!(item.kind, ItemKind::Note);
+        // Untitled, a note is listed by its first line.
+        assert_eq!(item.title, "All things for good. See Genesis 50:20.");
         assert_eq!(item.anchors[0].reference, "Romans 8:28–30");
         assert_eq!(item.anchors[0].origin, AnchorOrigin::User);
         assert_eq!(

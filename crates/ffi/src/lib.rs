@@ -40,8 +40,8 @@ pub use items::{
     TranscriptSegment,
 };
 pub use study::{
-    ChatMessage, ChatSummary, ConsentText, HighlightColor, LibrarySync, Note, Study, StudyObserver,
-    SyncObserver, SyncState, TokenProvider, VerseMarks, VerseNote, VerseRef, highlight_colors,
+    ChatMessage, ChatSummary, ConsentText, HighlightColor, LibrarySync, MarkedVerse, Note, Study,
+    StudyObserver, SyncObserver, SyncState, TokenProvider, VerseMarks, VerseNote, VerseRef, highlight_colors,
     library_consent_text,
 };
 

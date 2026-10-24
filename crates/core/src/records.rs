@@ -321,6 +321,32 @@ pub struct Item {
     pub files: Vec<FileRef>,
 }
 
+impl Item {
+    /// Its title as lists show it, when it has one: its own (or its details'), or for an
+    /// untitled note its first line, cut to about 60 characters. `None` for an untitled sermon
+    /// or photo, which a list names by its kind and date.
+    pub fn display_title(&self) -> Option<String> {
+        let own = [Some(&self.title), self.details.as_ref().and_then(|d| d.title.as_ref())]
+            .into_iter()
+            .flatten()
+            .map(|t| t.trim())
+            .find(|t| !t.is_empty());
+        if let Some(t) = own {
+            return Some(t.to_string());
+        }
+        if self.kind != ItemKind::Note {
+            return None;
+        }
+        let line = self.text.as_deref()?.lines().map(str::trim).find(|l| !l.is_empty())?;
+        let line = line.trim_start_matches(['#', '>', '-', '*', ' ']);
+        Some(if line.chars().count() > 60 {
+            format!("{}…", line.chars().take(59).collect::<String>().trim_end())
+        } else {
+            line.to_string()
+        })
+    }
+}
+
 /// A sermon's transcript, the JSON in its `text` file: turns of speech in order, with speakers
 /// "A", "B"… as the transcriber told them apart. A file's contents, not a record of the feed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

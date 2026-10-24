@@ -135,6 +135,16 @@ pub struct VerseMarks {
     pub bookmark: bool,
 }
 
+/// A highlighted or bookmarked verse, as Library's Marks filter lists it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MarkedVerse {
+    pub verse: VerseRef,
+    /// "John 3:16".
+    pub reference: String,
+    pub highlight: Option<HighlightColor>,
+    pub bookmark: bool,
+}
+
 /// A note in the notes list.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct VerseNote {
@@ -314,6 +324,28 @@ impl Study {
             .collect()
     }
 
+    /// Every highlighted or bookmarked verse, in canonical order: Library's Marks.
+    pub fn marked_verses(&self) -> Vec<MarkedVerse> {
+        let s = self.lock();
+        let mut verses: Vec<CoreVerse> = s
+            .highlights()
+            .into_iter()
+            .map(|(v, _)| v)
+            .chain(s.bookmarks().into_iter().map(|(v, _)| v))
+            .collect();
+        verses.sort();
+        verses.dedup();
+        verses
+            .into_iter()
+            .map(|v| MarkedVerse {
+                verse: VerseRef { book: v.book.0, chapter: v.chapter, verse: v.verse },
+                reference: v.display(),
+                highlight: s.highlight(v).map(Into::into),
+                bookmark: s.is_bookmarked(v),
+            })
+            .collect()
+    }
+
     /// Recents: saved Ask conversations, the most recently answered first.
     pub fn chats(&self) -> Vec<ChatSummary> {
         self.lock()
@@ -442,6 +474,10 @@ impl LibrarySync {
 impl LibrarySync {
     pub(crate) fn handle(&self) -> &SyncHandle {
         &self.handle
+    }
+
+    pub(crate) fn study(&self) -> &Study {
+        &self.study
     }
 
     pub(crate) fn with_backend(
@@ -599,6 +635,18 @@ mod tests {
             ]
         );
         assert_eq!(b.study.notes()[0].reference, "Romans 8:28");
+        b.study.toggle_bookmark(VerseRef { verse: 30, ..ROM_8_28 }).unwrap();
+        b.study.toggle_bookmark(ROM_8_28).unwrap();
+        let marked: Vec<_> =
+            b.study.marked_verses().into_iter().map(|m| (m.reference, m.highlight, m.bookmark)).collect();
+        assert_eq!(
+            marked,
+            [
+                ("Romans 8:28".into(), Some(HighlightColor::Purple), true),
+                ("Romans 8:29".into(), Some(HighlightColor::Purple), false),
+                ("Romans 8:30".into(), None, true),
+            ]
+        );
 
         // Recents: a conversation saved on one device opens on the other.
         let messages = [
