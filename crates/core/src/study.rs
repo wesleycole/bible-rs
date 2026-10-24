@@ -449,7 +449,14 @@ pub(crate) fn body(conn: &Connection, item: &Item) -> Result<Option<Body>> {
     let path: Option<String> = conn
         .query_row("SELECT path FROM files WHERE uid = ?1 AND path != ''", [file], |r| r.get(0))
         .optional()?;
-    let Some(bytes) = path.and_then(|p| std::fs::read(p).ok()) else { return Ok(None) };
+    // Fetched files sit in `files/` beside the database. The stored path can be stale: iOS moves
+    // an app's data directory when the app is reinstalled or updated.
+    let beside = conn.path().and_then(|p| Path::new(p).parent()).map(|d| d.join("files").join(file));
+    let Some(bytes) =
+        path.and_then(|p| beside.and_then(|b| std::fs::read(b).ok()).or_else(|| std::fs::read(p).ok()))
+    else {
+        return Ok(None);
+    };
     Ok(serde_json::from_slice(&bytes).ok().map(Body::Transcript))
 }
 
@@ -3162,6 +3169,41 @@ mod tests {
         assert_eq!(spans, [(1, 2), (28, 28)]);
         assert_eq!(s.spans_in_chapter(ChapterIdx::new(romans, 7).unwrap()).unwrap()[0].first, 24);
         assert_eq!(s.pending_changes(), 1);
+    }
+
+    /// A fetched transcript is still read after the data directory moves, as iOS moves an app's
+    /// on reinstall or update; the stored path points at the old place.
+    #[test]
+    fn a_fetched_transcript_survives_a_moved_data_directory() {
+        let root = std::env::temp_dir().join(format!("linger-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (old, new) = (root.join("old"), root.join("new"));
+        std::fs::create_dir_all(old.join("files")).unwrap();
+        let transcript = r#"{"durationMs":2000,"segments":[{"startMs":0,"endMs":2000,"text":"Turn with me to Romans 8."}]}"#;
+        let uid = {
+            let mut s = StudyStore::open(&old.join("study.sqlite")).unwrap();
+            let uid = s.save_note_item("A sermon", &[]).unwrap();
+            let mut item = s.item(&uid).unwrap().unwrap();
+            (item.text, item.text_file_uid) = (None, Some("f1".into()));
+            put_item(&s.conn, &item, 0, 0).unwrap();
+            let path = old.join("files").join("f1");
+            std::fs::write(&path, transcript).unwrap();
+            s.conn
+                .execute(
+                    "INSERT INTO files(uid, owner, role, url, bytes, path) VALUES('f1', ?1, 'text', 'u', 1, ?2)",
+                    params![uid, path.to_string_lossy()],
+                )
+                .unwrap();
+            uid
+        };
+        std::fs::rename(&old, &new).unwrap();
+        let s = StudyStore::open(&new.join("study.sqlite")).unwrap();
+        let item = s.item(&uid).unwrap().unwrap();
+        let Some(Body::Transcript(t)) = s.body(&item).unwrap() else {
+            panic!("no transcript after the move")
+        };
+        assert_eq!(t.segments[0].text, "Turn with me to Romans 8.");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
