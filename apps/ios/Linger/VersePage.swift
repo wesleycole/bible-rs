@@ -131,26 +131,31 @@ struct VersePage: View {
         .padding(.top, 24)
     }
 
-    /// Looks like a composer; opens Ask about these verses.
     private var askBar: some View {
-        Button(action: ask) {
+        AskBar(title: verses.count > 1 ? "Ask about these verses" : "Ask about this verse", action: ask)
+            .accessibilityIdentifier("page-ask")
+    }
+}
+
+/// The floating glass bar at the foot of a verse or item page that opens Ask about it. It's a
+/// button, not a field: the Ask sheet has the composer, the suggestions and the scope.
+struct AskBar: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: "bubble.left").font(.system(size: 15)).foregroundStyle(Theme.accent)
-                Text("Ask about this verse").font(Fonts.ui(16)).foregroundStyle(Theme.ink2)
-                Spacer()
-                Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.onAccent)
-                    .frame(width: 34, height: 34)
-                    .background(Theme.ink3, in: Circle())
+                Image(systemName: "bubble.left").font(.system(size: 16))
+                Text(title).font(Fonts.ui(16))
             }
-            .padding(.leading, 18)
-            .padding(.trailing, 7)
-            .frame(height: 50)
+            .foregroundStyle(Theme.accent)
+            .frame(maxWidth: .infinity, minHeight: 50)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .glassEffect(Theme.glassInteractive, in: .capsule)
         .padding(.horizontal, 14)
         .padding(.bottom, 6)
-        .accessibilityIdentifier("page-ask")
     }
 }

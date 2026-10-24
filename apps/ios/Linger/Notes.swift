@@ -63,38 +63,6 @@ struct NoteSheet: View {
     }
 }
 
-/// Every verse note, in canonical order; choosing one opens its chapter. Library's page until the
-/// library comes to the iPhone.
-struct NotesList: View {
-    let library: Library
-    let open: (VerseRef) -> Void
-
-    var body: some View {
-        let _ = library.generation
-        let notes = library.study?.notes() ?? []
-        NavigationStack {
-            List(notes, id: \.note.uid) { note in
-                Button {
-                    open(note.verse)
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(note.reference).font(.headline)
-                        Text(note.note.body).lineLimit(3).foregroundStyle(.secondary)
-                    }
-                }
-                .foregroundStyle(.primary)
-            }
-            .overlay {
-                if notes.isEmpty {
-                    ContentUnavailableView("No notes yet", systemImage: "note.text",
-                                           description: Text("Select a verse and tap the pencil to write one."))
-                }
-            }
-            .navigationTitle("Library")
-        }
-    }
-}
-
 extension VerseRef: @retroactive Identifiable {
     public var id: Self { self }
 

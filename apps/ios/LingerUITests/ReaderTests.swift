@@ -2,34 +2,7 @@ import XCTest
 
 /// The redesign's script on the Bible tab (docs/plans/m3-ios-app.md#m3b-the-redesign), as the
 /// prototype's DemoClipTests ran it, on real chapters. Signs in first if needed.
-final class ReaderTests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUp() {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-        app.signIn()
-    }
-
-    func el(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
-
-    func tap(_ id: String, timeout: TimeInterval = 8) {
-        let e = el(id)
-        XCTAssertTrue(e.waitForExistence(timeout: timeout), "no \(id)")
-        // The margin glyph sits partly past the screen's edge, which XCUITest calls not hittable.
-        if e.isHittable { e.tap() } else { e.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
-    }
-
-    /// The field's text, "John 3 · KJV".
-    var place: String { el("jump-field").label }
-
-    func waitForPlace(_ prefix: String) {
-        let shown = NSPredicate { _, _ in self.place.hasPrefix(prefix + " ·") }
-        let wait = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: shown, object: nil)], timeout: 8)
-        XCTAssertEqual(wait, .completed, "the field reads \(place), not \(prefix)")
-    }
-
+final class ReaderTests: LingerUITestCase {
     func openBook(_ name: String) {
         XCTAssertTrue(el("book-\(name)").waitForExistence(timeout: 5), "no \(name)")
         if !el("ch-\(name)-1").exists { tap("book-\(name)") }
@@ -151,9 +124,9 @@ final class ReaderTests: XCTestCase {
         tap("row-dot-yellow")
         XCTAssertEqual(yellow.label, "Highlight yellow")
 
-        // Ask opens the Ask tab, Recents until Ask comes to the iPhone.
+        // Ask opens the Ask sheet with the verse quoted.
         tap("row-ask")
-        XCTAssertTrue(app.navigationBars["Recents"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["ROMANS 8:28 · KJV"].waitForExistence(timeout: 5), "Ask didn't quote the verse")
     }
 
     /// ··· › Study this verse opens Romans 8:28's page: its text, its colours, a note added
@@ -195,7 +168,7 @@ final class ReaderTests: XCTestCase {
         XCTAssertFalse(el("page-note-28").waitForExistence(timeout: 2), "an emptied note stayed")
 
         tap("page-ask")
-        XCTAssertTrue(app.navigationBars["Recents"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["ROMANS 8:28 · KJV"].waitForExistence(timeout: 5), "Ask didn't quote the verse")
     }
 
     /// A note on Romans 8:28 puts the library glyph beside it; the glyph's popover lists the note

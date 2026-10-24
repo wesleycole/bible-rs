@@ -29,6 +29,8 @@ final class ReaderModel {
 
     let books = LingerCore.books()
     private let library: BibleLibrary?
+    /// The Bible Ask's tools read.
+    var bible: BibleLibrary? { library }
     /// Which chapter `content` holds: it keeps the last one while the next loads.
     private var shown: (String, UInt8, UInt8)?
 
@@ -116,6 +118,34 @@ final class ReaderModel {
     var selectedText: String {
         guard let selection, case let .ready(verses, _) = content else { return "" }
         return verses.filter { selection.overlaps($0.number...$0.numberEnd) }.map(\.text).joined(separator: " ")
+    }
+
+    /// Where the reader was before a source from Ask moved it: the field's "‹ Romans 8" while the
+    /// return bar shows.
+    var backTo: Reference?
+
+    /// A question about the selected verses (quoted), or the chapter with nothing selected.
+    func askAbout(_ verses: ClosedRange<UInt8>? = nil, item: LingerCore.LibraryItem? = nil) -> AskAbout {
+        var about = AskAbout(book: book, chapter: chapter, translation: translation,
+                             translationAbbrev: translationAbbrev, item: item)
+        if item == nil, let verses = verses ?? selection, case let .ready(all, _) = content {
+            about.selection = verses
+            about.quote = all.filter { verses.overlaps($0.number...$0.numberEnd) }.map(\.text).joined(separator: " ")
+        }
+        return about
+    }
+
+    /// A passage's text in the reader's translation, for Ask's peek card.
+    func text(of r: Reference) async -> String? {
+        guard let library else { return nil }
+        let translation = self.translation
+        return await Task.detached(priority: .userInitiated) {
+            guard case let .ready(verses, _) = try? library.chapter(translation: translation, book: r.book, chapter: r.chapter)
+            else { return nil }
+            let from = r.verse ?? 1, to = r.verseEnd ?? r.verse ?? UInt8.max
+            let text = verses.filter { ($0.number...$0.numberEnd).overlaps(from...to) }.map(\.text).joined(separator: " ")
+            return text.isEmpty ? nil : text
+        }.value
     }
 
     /// The selected verses in every local translation, for Compare.

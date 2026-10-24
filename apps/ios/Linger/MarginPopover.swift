@@ -7,7 +7,8 @@ struct MarginPopover: View {
     let verse: VerseRef
     let items: [LingerCore.LibraryItem]
     let open: () -> Void
-    let ask: () -> Void
+    /// Asks about one of the items.
+    let ask: (LingerCore.LibraryItem) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,7 +30,7 @@ struct MarginPopover: View {
                 ForEach(items, id: \.uid) { item in
                     HStack(spacing: 10) {
                         ItemRow(item: item, compact: true)
-                        Button(action: ask) {
+                        Button { ask(item) } label: {
                             Image(systemName: "bubble.left")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.accent)

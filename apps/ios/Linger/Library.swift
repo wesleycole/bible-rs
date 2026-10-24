@@ -87,11 +87,30 @@ final class Library {
         sync?.retry()
     }
 
-    func loadAccount() async {
+    /// The sync engine while syncing: the Ask tools' and the library search's door to the server.
+    var librarySync: LibrarySync? { sync }
+
+    /// Library items about a chapter, each once, newest first.
+    func chapterLibrary(book: UInt8, chapter: UInt8) -> [LingerCore.LibraryItem] {
+        var seen = Set<String>()
+        return items(book: book, chapter: chapter).map(\.item).filter { seen.insert($0.uid).inserted }
+            .sorted { $0.capturedAt > $1.capturedAt }
+    }
+
+    /// Searches the library, on the server or the cache offline; empty while not syncing.
+    func search(_ query: String) async -> [LibraryHit] {
+        guard let sync else { return [] }
+        return await Task.detached(priority: .userInitiated) {
+            (try? sync.searchLibrary(query: query, limit: 20))?.hits ?? []
+        }.value
+    }
+
+    /// The plan and allowances; Ask loads them quietly, since it says what fails itself.
+    func loadAccount(quietly: Bool = false) async {
         let proxy = self.proxy
         switch await Task.detached(operation: { Result { try proxy.me() } }).value {
         case let .success(info): account = info
-        case let .failure(error): self.error = message(of: error)
+        case let .failure(error): if !quietly { self.error = message(of: error) }
         }
     }
 
@@ -159,7 +178,7 @@ private final class Relay: StudyObserver, SyncObserver, @unchecked Sendable {
 }
 
 /// Clerk's session token for core, which asks from its own threads and waits for the answer.
-private final class ClerkTokens: TokenProvider, @unchecked Sendable {
+final class ClerkTokens: TokenProvider, @unchecked Sendable {
     func token() -> String? { fetch(skipCache: false) }
     func refresh() -> String? { fetch(skipCache: true) }
 

@@ -1,33 +1,64 @@
 import LingerCore
 import SwiftUI
 
-/// The Bible tab's place field, "Romans 8 · KJV". Tapping it opens the navigator.
+/// The Bible tab's place field, "Romans 8 · KJV". Tapping it opens the navigator. While Ask's
+/// return bar shows after a source moved the reader, it reads "‹ Romans 8 | Genesis 50": the link
+/// back to where the reader was, then the place.
 struct JumpField: View {
     let model: ReaderModel
 
     var body: some View {
-        Button(action: model.openJump) {
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.ink2)
-                Text("\(model.title) · \(model.translationAbbrev)")
-                    .font(Fonts.ui(15))
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(1)
+        HStack(spacing: 0) {
+            if let back = model.backTo {
+                Button {
+                    var swap = Transaction()
+                    swap.disablesAnimations = true
+                    withTransaction(swap) { model.go(book: back.book, chapter: back.chapter) }
+                    model.backTo = nil
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
+                        Text(back.display).font(Fonts.ui(15)).lineLimit(1).fixedSize()
+                    }
+                    .foregroundStyle(Theme.accent)
+                    .padding(.leading, 14)
+                    .padding(.trailing, 10)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back to \(back.display)")
+                .accessibilityIdentifier("jump-back")
+                Rectangle().fill(Theme.separator).frame(width: 1, height: 18)
             }
-            .padding(.horizontal, 16)
-            .frame(minWidth: 214, alignment: .leading)
-            .frame(height: 44)
-            .contentShape(Capsule())
+            Button(action: model.openJump) {
+                HStack(spacing: 7) {
+                    if model.backTo == nil {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Theme.ink2)
+                    }
+                    Text(model.backTo == nil ? "\(model.title) · \(model.translationAbbrev)" : model.title)
+                        .font(Fonts.ui(15))
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .padding(.leading, model.backTo == nil ? 16 : 10)
+                .padding(.trailing, 16)
+                .frame(minWidth: model.backTo == nil ? 214 : 0, alignment: .leading)
+                .frame(height: 44)
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(model.title) · \(model.translationAbbrev)")
+            .accessibilityIdentifier("jump-field")
         }
-        .buttonStyle(.plain)
+        .frame(minWidth: 214, alignment: .leading)
         .glassEffect(Theme.glassInteractive, in: .capsule)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { model.jumpFieldFrame = $0 }
         // The open field takes over from here and grows from this frame.
         .opacity(model.jumpOpen ? 0 : 1)
-        .accessibilityLabel("\(model.title) · \(model.translationAbbrev)")
-        .accessibilityIdentifier("jump-field")
     }
 }
 
@@ -35,12 +66,17 @@ struct JumpField: View {
 /// grids while empty; a reference, a book or verse matches as you type.
 struct JumpPanel: View {
     @Bindable var model: ReaderModel
+    let library: Library
+    /// Opens a library item's page.
+    let openItem: (String) -> Void
     @State private var query = ""
     @State private var newTestament = true
     /// The book whose chapter grid is open; one at a time.
     @State private var expanded: UInt8?
     /// Verse matches, and the query and translation they answer.
     @State private var hits: [SearchHit] = []
+    /// What the library has on the same words.
+    @State private var libraryHits: [LibraryHit] = []
     @State private var searched = ""
     @FocusState private var focused: Bool
 
@@ -208,9 +244,12 @@ struct JumpPanel: View {
         // Wait out fast typing.
         try? await Task.sleep(for: .milliseconds(150))
         guard !Task.isCancelled else { return }
-        let found = await model.search(q)
+        async let verses = model.search(q)
+        async let items = library.search(q)
+        let (found, inLibrary) = await (verses, items)
         guard !Task.isCancelled else { return }
         hits = found
+        libraryHits = Array(inLibrary.prefix(5))
         searched = "\(model.translation)\n\(q)"
     }
 
@@ -236,10 +275,18 @@ struct JumpPanel: View {
             sectionHeader(namedBooks.count == 1 ? "Book" : "Books")
             ForEach(namedBooks, id: \.index) { bookRow($0) }
         } else if q.count >= 3 && searched == "\(model.translation)\n\(q)" {
-            if !hits.isEmpty {
-                sectionHeader("Bible · \(hits.count == 50 ? "50+" : "\(hits.count)") \(hits.count == 1 ? "verse" : "verses")")
-                ForEach(Array(hits.enumerated()), id: \.offset) { i, hit in
-                    verseRow(hit, q).accessibilityIdentifier("jump-verse-\(i)")
+            if !hits.isEmpty || !libraryHits.isEmpty {
+                if !hits.isEmpty {
+                    sectionHeader("Bible · \(hits.count == 50 ? "50+" : "\(hits.count)") \(hits.count == 1 ? "verse" : "verses")")
+                    ForEach(Array(hits.enumerated()), id: \.offset) { i, hit in
+                        verseRow(hit, q).accessibilityIdentifier("jump-verse-\(i)")
+                    }
+                }
+                if !libraryHits.isEmpty {
+                    sectionHeader("In your library")
+                    ForEach(Array(libraryHits.enumerated()), id: \.offset) { i, hit in
+                        libraryRow(hit).accessibilityIdentifier("jump-item-\(i)")
+                    }
                 }
             } else if !suggestedBooks.isEmpty {
                 sectionHeader("Books")
@@ -356,6 +403,33 @@ struct JumpPanel: View {
                     .multilineTextAlignment(.leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// A library passage on the typed words: the item's title, then the passage.
+    private func libraryRow(_ hit: LibraryHit) -> some View {
+        Button {
+            focused = false
+            model.closeJump()
+            openItem(hit.uid)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: hit.kind.symbol)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.ink2)
+                    .frame(width: 20)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(hit.title).font(Fonts.ui(15, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+                    Text(hit.text).font(Fonts.ui(14)).foregroundStyle(Theme.ink2).lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+            }
             .padding(.vertical, 10)
             .contentShape(Rectangle())
         }

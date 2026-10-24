@@ -5,8 +5,12 @@ import SwiftUI
 struct ReaderView: View {
     @Bindable var model: ReaderModel
     let library: Library
-    /// Opens Ask with the selection.
-    let ask: () -> Void
+    /// Opens Ask about the selection, a page's verses or a library item.
+    let ask: (AskAbout) -> Void
+    /// Opens Library on the chapter's items.
+    let openLibrary: (Reference) -> Void
+    /// Opens a library item's page, from the field's "In your library".
+    let openItem: (String) -> Void
     @State private var noteVerse: VerseRef?
     @State private var addOpen = false
     /// The verse the + menu adds to.
@@ -74,7 +78,7 @@ struct ReaderView: View {
             // The row takes the tab bar's place while verses are selected.
             .safeAreaBar(edge: .bottom, spacing: 0) {
                 if model.selection != nil {
-                    VerseActionRow(model: model, library: library, ask: ask) {
+                    VerseActionRow(model: model, library: library, ask: { ask(model.askAbout()) }) {
                         studying = model.selection
                         model.selection = nil
                     }
@@ -85,7 +89,7 @@ struct ReaderView: View {
             .toolbarVisibility(model.jumpOpen || model.selection != nil ? .hidden : .automatic, for: .tabBar)
             .navigationDestination(item: $studying) { verses in
                 VersePage(model: model, library: library, verses: verses, add: openAdd,
-                          editNote: { noteVerse = $0 }, ask: ask)
+                          editNote: { noteVerse = $0 }, ask: { ask(model.askAbout(verses)) })
             }
         }
         .sheet(item: $noteVerse) { verse in
@@ -111,7 +115,7 @@ struct ReaderView: View {
             }
         }
         .overlay {
-            if model.jumpOpen { JumpPanel(model: model).transition(.identity) }
+            if model.jumpOpen { JumpPanel(model: model, library: library, openItem: openItem).transition(.identity) }
         }
     }
 
@@ -139,7 +143,10 @@ struct ReaderView: View {
             MarginPopover(verse: VerseRef(book: model.book, chapter: model.chapter, verse: n),
                           items: Self.unique(items.filter { ($0.first...$0.last).contains(n) }.map(\.item)),
                           open: { margin = nil; studying = n...n },
-                          ask: { margin = nil; ask() })
+                          ask: { item in
+                              margin = nil
+                              ask(model.askAbout(item: item))
+                          })
                 .presentationCompactAdaptation(.popover)
         }
         .accessibilityLabel("In your library")
@@ -223,7 +230,7 @@ struct ReaderView: View {
                 // One glyph where each item's verses start, without counts.
                 let starts = Set(items.map(\.first))
                 VStack(alignment: .leading, spacing: 14) {
-                    heading.id(UInt8(0))
+                    heading(inLibrary: Self.unique(items.map(\.item)).count).id(UInt8(0))
                     ForEach(verses, id: \.number) { verse in
                         VerseRow(verse: verse, marks: marks[verse.number],
                                  selected: model.selection?.overlaps(verse.number...verse.numberEnd) == true,
@@ -270,27 +277,45 @@ struct ReaderView: View {
         }
     }
 
-    /// "ROMANS" over a large "8".
-    private var heading: some View {
+    /// "ROMANS" over a large "8", and a quiet "3 in your library ›" when the library has items on
+    /// the chapter, which opens Library on them.
+    private func heading(inLibrary count: Int) -> some View {
         VStack(spacing: 2) {
-            Text(model.books[Int(model.book)].name.uppercased())
-                .font(Fonts.ui(11, weight: .medium))
-                .tracking(1.6)
-                .foregroundStyle(Theme.ink2)
-            Text("\(model.chapter)")
-                .font(Fonts.serif(44, weight: .light))
-                .foregroundStyle(Theme.ink)
+            VStack(spacing: 2) {
+                Text(model.books[Int(model.book)].name.uppercased())
+                    .font(Fonts.ui(11, weight: .medium))
+                    .tracking(1.6)
+                    .foregroundStyle(Theme.ink2)
+                Text("\(model.chapter)")
+                    .font(Fonts.serif(44, weight: .light))
+                    .foregroundStyle(Theme.ink)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(model.title)
+            .accessibilityAddTraits(.isHeader)
+            // The swipe is a gesture VoiceOver can't make.
+            .accessibilityActions {
+                if let previous = model.previous { Button("Previous chapter, \(previous.display)") { go(previous) } }
+                if let next = model.next { Button("Next chapter, \(next.display)") { go(next) } }
+            }
+            if count > 0 {
+                Button { openLibrary(model.place) } label: {
+                    HStack(spacing: 4) {
+                        Text("\(count) in your library").font(Fonts.ui(13))
+                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(Theme.ink2)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 32)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("chapter-library")
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 14)
         .padding(.bottom, 10)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(model.title)
-        // The swipe is a gesture VoiceOver can't make.
-        .accessibilityActions {
-            if let previous = model.previous { Button("Previous chapter, \(previous.display)") { go(previous) } }
-            if let next = model.next { Button("Next chapter, \(next.display)") { go(next) } }
-        }
     }
 }
 
