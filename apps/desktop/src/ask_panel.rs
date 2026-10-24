@@ -22,6 +22,7 @@ use eframe::egui::{
 use linger_core::api::{Api, ApiError, Me};
 use linger_core::assistant::{self, Conversation, Event, Mode};
 use linger_core::chat::{self, Message, Role, Segment};
+use linger_core::privacy::{ASK_CONSENT_POINTS, ASK_CONSENT_TITLE};
 use linger_core::reference::{self, Reference};
 use linger_core::{ChapterIdx, VerseRef, transcribe};
 
@@ -199,7 +200,7 @@ impl AskPanel {
             return Ok(());
         }
         let first = self.messages.iter().find(|m| m.role == Role::User).map_or("", |m| m.text.as_str());
-        let title = self.title.get_or_insert_with(|| title_for(first)).clone();
+        let title = self.title.get_or_insert_with(|| chat::title_for(first)).clone();
         let api = self.conversation.lock().unwrap_or_else(|e| e.into_inner()).to_json();
         self.chat = Some(study.save_chat(self.chat, &title, &self.messages, &api)?);
         Ok(())
@@ -264,6 +265,7 @@ impl AskPanel {
                 }
                 Update::Event(Event::Tool(what)) => self.status = Some(what),
                 Update::Event(Event::Thinking) => self.status = Some("Thinking".into()),
+                Update::Event(Event::Read(_)) => {}
                 Update::Event(Event::Allowance { questions_left, downgraded }) => {
                     self.questions_left = questions_left.or(self.questions_left);
                     self.downgraded = downgraded;
@@ -313,6 +315,7 @@ impl AskPanel {
             chapter: env.chapter,
             selection: env.selection,
             reading: abbrev(env, env.translation),
+            item: None,
         });
 
         // The composer floats at the foot of the card and grows with its text, up to five lines:
@@ -702,17 +705,11 @@ fn consent(ui: &mut Ui, p: &Palette, body: Rect, actions: &mut Vec<Action>) -> b
     let width = body.width() - 2.0 * PAD - 8.0;
     let left = body.left() + PAD + 4.0;
     let mut y = body.top() + 24.0;
-    let title = layout(ui, "Before you ask", text::UI_TITLE.font(), p.ink, width, 24.0);
+    let title = layout(ui, ASK_CONSENT_TITLE, text::UI_TITLE.font(), p.ink, width, 24.0);
     let h = title.size().y;
     ui.painter().galley(pos2(left, y), title, p.ink);
     y += h + 12.0;
-    let points = [
-        "Your questions, and the passages Ask reads to answer them, are sent to Anthropic's Claude \
-         through Vercel.",
-        "Nothing you send is kept to train models.",
-        "Your conversations are saved in your library, in Recents.",
-    ];
-    for point in points {
+    for point in ASK_CONSENT_POINTS {
         ui.painter().circle_filled(pos2(left + 3.0, y + 10.0), 2.5, p.ink_3);
         let g = layout(ui, point, FontId::new(13.0, theme::family(theme::UI)), p.ink_2, width - 16.0, 20.0);
         let h = g.size().y;
@@ -774,17 +771,6 @@ fn notice_card(ui: &mut Ui, p: &Palette, n: &Notice, width: f32, actions: &mut V
 /// A translation's abbreviation ("BSB"), or its id in capitals if it isn't installed.
 fn abbrev(env: &AskEnv<'_>, id: &str) -> String {
     env.library.get(id).map_or_else(|| id.to_uppercase(), |e| e.meta.abbrev.clone())
-}
-
-/// A conversation's title: its first question's first line, cut at a word to about 60 characters.
-fn title_for(question: &str) -> String {
-    let line = question.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("New conversation");
-    if line.chars().count() <= 60 {
-        return line.to_string();
-    }
-    let cut: String = line.chars().take(60).collect();
-    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
-    format!("{}…", cut.trim_end_matches([',', ';', ':', '.', ' ']))
 }
 
 /// "Reading John 3", "Reading John 3 · verse 14 selected", "… · verses 14–16 selected".

@@ -283,7 +283,7 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
                 let a = linger_core::VerseRef::new(r.book, r.chapter, v);
                 (a, linger_core::VerseRef::new(r.book, r.chapter, r.verse_end.unwrap_or(v)))
             });
-            Ok(Reading { chapter: r.chapter_idx(), selection, reading: reading_abbrev.clone() })
+            Ok(Reading { chapter: r.chapter_idx(), selection, reading: reading_abbrev.clone(), item: None })
         })
         .transpose()?;
     let answer = Conversation::new().ask(&cfg, &tools, context.as_ref(), &question, |e| match e {
@@ -293,6 +293,7 @@ fn ask(rest: &[String], data_dir: &Path) -> Result<()> {
         }
         Event::Tool(what) => eprintln!("\n[{what}]"),
         Event::Thinking => eprintln!("\n[thinking]"),
+        Event::Read(_) => {}
         Event::Allowance { questions_left, downgraded } => {
             if let Some(n) = questions_left {
                 eprintln!("[{n} questions left this month]");

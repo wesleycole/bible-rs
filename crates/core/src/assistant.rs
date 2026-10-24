@@ -12,6 +12,7 @@
 //! [`contract`](crate::contract), and decides what the account may spend.
 
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -20,6 +21,9 @@ use serde_json::{Value, json};
 use crate::api::Api;
 use crate::chat::{self, Context, Message, Tools};
 use crate::contract;
+use crate::records::ItemKind;
+use crate::reference::{self, Reference};
+use crate::transcribe;
 
 /// The Gateway's Anthropic-compatible Messages endpoint.
 pub const GATEWAY_URL: &str = "https://ai-gateway.vercel.sh/v1/messages";
@@ -98,7 +102,45 @@ pub enum Event {
     /// The proxy's word on the account, with each round: questions left this month, and
     /// whether this question was moved to a lighter model past the month's cost ceiling.
     Allowance { questions_left: Option<u32>, downgraded: bool },
+    /// A tool read something for the answer: what the "Read 1 sermon and 1 note" line counts.
+    Read(Source),
 }
+
+/// What the device read for an answer: a passage of the Bible (`get_passage`) or an item of the
+/// user's library (`read_item`), as the tool returned it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Passage(Reference),
+    Item { uid: String, kind: ItemKind, title: String, at_ms: Option<u64> },
+}
+
+impl Source {
+    /// The source a tool's successful result shows was read, if it read one.
+    fn of(tool: &str, out: &Value) -> Option<Self> {
+        match tool {
+            "get_passage" => reference::parse(out["reference"].as_str()?).map(Source::Passage),
+            "read_item" => Some(Source::Item {
+                uid: out["item"].as_str()?.to_string(),
+                kind: serde_json::from_value(out["kind"].clone()).ok()?,
+                title: out["title"].as_str()?.to_string(),
+                at_ms: out["from"].as_str().and_then(transcribe::parse_clock),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The error [`Conversation::ask_until`] returns when it was stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stopped;
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stopped")
+    }
+}
+
+impl std::error::Error for Stopped {}
 
 /// One conversation with Claude, as the API sees it.
 #[derive(Default)]
@@ -134,6 +176,21 @@ impl Conversation {
         tools: &Tools,
         context: Option<&Context>,
         question: &str,
+        on_event: impl FnMut(Event),
+    ) -> Result<Message> {
+        self.ask_until(cfg, tools, context, question, &AtomicBool::new(false), on_event)
+    }
+
+    /// [`Conversation::ask`], until `stop` is set: then it returns [`Stopped`] as soon as the
+    /// stream next speaks or a tool round ends, and the question leaves the history as a failed
+    /// one does.
+    pub fn ask_until(
+        &mut self,
+        cfg: &Config,
+        tools: &Tools,
+        context: Option<&Context>,
+        question: &str,
+        stop: &AtomicBool,
         mut on_event: impl FnMut(Event),
     ) -> Result<Message> {
         let mut content = Vec::new();
@@ -156,8 +213,12 @@ impl Conversation {
         let question_id = uuid::Uuid::new_v4().to_string();
         for round in 0..contract::MAX_ROUNDS {
             let body = self.request(cfg, &question_id, round);
-            let turn = match stream(&agent, cfg, &body, &mut on_event) {
-                Ok(t) => t,
+            let turn = match stream(&agent, cfg, &body, stop, &mut on_event) {
+                Ok(t) if !stop.load(Ordering::Relaxed) => t,
+                Ok(_) => {
+                    self.messages.truncate(start);
+                    return Err(Stopped.into());
+                }
                 Err(e) => {
                     // Nothing of this question stays, so the next one starts from a valid history.
                     self.messages.truncate(start);
@@ -177,7 +238,12 @@ impl Conversation {
                             on_event(Event::Tool(tool_label(name, input)));
                             let out = tools.run(name, input);
                             let (text, error) = match out {
-                                Ok(v) => (v.to_string(), false),
+                                Ok(v) => {
+                                    if let Some(source) = Source::of(name, &v) {
+                                        on_event(Event::Read(source));
+                                    }
+                                    (v.to_string(), false)
+                                }
                                 Err(e) => (format!("{e:#}"), true),
                             };
                             json!({ "type": "tool_result", "tool_use_id": b["id"], "content": text, "is_error": error })
@@ -283,7 +349,13 @@ fn tool_label(name: &str, input: &Value) -> String {
 /// comes back as an [`ApiError`] for the panel to show; the client only refreshes its token
 /// once on a 401. Direct to the Gateway it retries twice on overload or a dropped connection
 /// before anything has streamed.
-fn stream(agent: &ureq::Agent, cfg: &Config, body: &Value, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
+fn stream(
+    agent: &ureq::Agent,
+    cfg: &Config,
+    body: &Value,
+    stop: &AtomicBool,
+    on_event: &mut impl FnMut(Event),
+) -> Result<Turn> {
     let (url, key) = match &cfg.backend {
         Backend::Proxy(api) => {
             let resp = api.send("POST", "/v1/ask", Some(body))?;
@@ -293,7 +365,7 @@ fn stream(agent: &ureq::Agent, cfg: &Config, body: &Value, on_event: &mut impl F
                 questions_left: header("x-linger-questions-left").and_then(|v| v.parse().ok()),
                 downgraded: header("x-linger-downgraded").as_deref() == Some("1"),
             });
-            return read_events(resp, on_event);
+            return read_events(resp, stop, on_event);
         }
         Backend::Direct { url, key, .. } => (url, key),
     };
@@ -326,17 +398,24 @@ fn stream(agent: &ureq::Agent, cfg: &Config, body: &Value, on_event: &mut impl F
             }
             return Err(err);
         }
-        return read_events(resp, on_event);
+        return read_events(resp, stop, on_event);
     }
     Err(last.unwrap_or_else(|| anyhow!("couldn't reach the assistant")))
 }
 
 /// Folds a Messages event stream into one turn, reporting progress as it goes.
-fn read_events(resp: crate::api::Response, on_event: &mut impl FnMut(Event)) -> Result<Turn> {
+fn read_events(
+    resp: crate::api::Response,
+    stop: &AtomicBool,
+    on_event: &mut impl FnMut(Event),
+) -> Result<Turn> {
     let reader = BufReader::new(resp.into_body().into_reader());
     let mut turn = Turn::default();
     let mut data = String::new();
     for line in reader.lines() {
+        if stop.load(Ordering::Relaxed) {
+            return Err(Stopped.into());
+        }
         let line = line.context("the answer stopped arriving")?;
         if let Some(d) = line.strip_prefix("data:") {
             data.push_str(d.trim_start());

@@ -10,3 +10,12 @@ pub const LIBRARY_CONSENT_POINTS: [&str; 3] = [
      Neither keeps them or trains on them.",
     "You can export your library or delete it with your account at any time.",
 ];
+
+/// The Ask consent sheet: shown once, before the first question.
+pub const ASK_CONSENT_TITLE: &str = "Before you ask";
+pub const ASK_CONSENT_POINTS: [&str; 3] = [
+    "Your questions, and the passages Ask reads to answer them, are sent to Anthropic's Claude \
+     through Vercel.",
+    "Nothing you send is kept to train models.",
+    "Your conversations are saved in your library, in Recents.",
+];

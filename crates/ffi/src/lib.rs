@@ -23,12 +23,17 @@ uniffi::setup_scaffolding!();
 
 mod account;
 mod appearance;
+mod ask;
 mod items;
 mod study;
 
 pub use account::{Account, AccountError, AccountInfo};
 pub use appearance::{
     Appearance, AppearanceScheme, ThemeName, ThemePalette, theme_label, theme_palette, themes,
+};
+pub use ask::{
+    AskAnswer, AskContext, AskError, AskEvent, AskMode, AskObserver, AskScope, AskSource, Conversation,
+    LibraryHit, LibrarySearch, ask_consent_text, ask_sources_line, ask_suggestions,
 };
 pub use items::{
     AnchorOrigin, ChapterItem, ItemAnchor, ItemKind, ItemRange, ItemStatus, ItemText, LibraryItem,

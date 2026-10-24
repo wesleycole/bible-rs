@@ -16,5 +16,6 @@ crate-type = ["lib", "staticlib", "cdylib"]
 anyhow.workspace = true
 # The sync engine over Convex, as the desktop runs it.
 linger-core = { workspace = true, features = ["convex"] }
+serde_json.workspace = true
 thiserror.workspace = true
 uniffi.workspace = true

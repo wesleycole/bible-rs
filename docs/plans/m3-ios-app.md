@@ -120,10 +120,14 @@ pieces.
    (`chat::UserLibrary::search`, which answers from the cache when offline, adba3b9), so the jump
    field shows verses from `BibleLibrary.search` and library items together.
    `suggest_references` already gives "Go to John 3".
-10. **Ask:** FFI 4 as planned. The "Read 1 sermon and 1 note" line is built from the `Tool` events the
-    device already reports while it runs the library tools; the proxy and contract don't change. The
-    scope control ("Bible only") keeps the library tools from running; whether the proxy, which adds
-    the tools to the request, needs a contract change for it is settled when FFI 10 starts.
+10. **Ask:** FFI 4 as planned. The "Read 1 sermon and 1 note" line is built from the `Read` events the
+    device reports as its tools read a passage or a library item (core's `assistant::Event::Read`),
+    with the answer's citations; the proxy and contract don't change. The scope control ("Bible
+    only") keeps the library tools from running, with no contract change either: the proxy still
+    sends the tools, but the question's note says nothing of the library and the device answers a
+    library tool call with an error saying the user asked for the Bible only. Built in `ask.rs`:
+    `Conversation` (`ask`, `stop`, `open` from Recents, saved there after each answer),
+    `ask_sources_line`, `ask_suggestions` and `ask_consent_text`.
 
 **Appearance, shared with the Mac** ([ios-design.md](ios-design.md#appearance)). Built before the
 iOS screens, in this orb:

@@ -440,6 +440,10 @@ impl LibrarySync {
 }
 
 impl LibrarySync {
+    pub(crate) fn handle(&self) -> &SyncHandle {
+        &self.handle
+    }
+
     pub(crate) fn with_backend(
         study: Arc<Study>,
         backend: Box<dyn Backend>,

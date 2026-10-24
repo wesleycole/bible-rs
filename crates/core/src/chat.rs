@@ -78,6 +78,8 @@ pub struct Context {
     /// The abbreviation of the translation the reader shows ("NLT"): only its name goes to the
     /// model, never its text.
     pub reading: String,
+    /// The library item being asked about, from its page: its uid and title.
+    pub item: Option<(String, String)>,
 }
 
 impl Context {
@@ -87,8 +89,23 @@ impl Context {
         if let Some((a, b)) = self.selection {
             s.push_str(&format!(" They have selected {}.", reference::format_range(a, b)));
         }
+        if let Some((uid, title)) = &self.item {
+            s.push_str(&format!(" They are asking about “{title}”, item {uid} in their library."));
+        }
         s
     }
+}
+
+/// A conversation's title in Recents: its first question's first line, cut at a word to about
+/// 60 characters.
+pub fn title_for(question: &str) -> String {
+    let line = question.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("New conversation");
+    if line.chars().count() <= 60 {
+        return line.to_string();
+    }
+    let cut: String = line.chars().take(60).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', ';', ':', '.', ' ']))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,7 +262,8 @@ pub fn verse_range(r: &Reference) -> Option<(VerseRef, VerseRef)> {
 /// [`ask_translation`]) and the user's library.
 pub struct Tools {
     pub translation: Arc<Translation>,
-    /// The user's library, when there is one to reach: `None` signed out, and on the web.
+    /// The user's library, when there is one to reach: `None` signed out, on the web, and when
+    /// the user asked for an answer from the Bible only.
     pub library: Option<Arc<dyn UserLibrary>>,
     /// The user's own church, as they named it in Settings.
     pub church: Option<String>,
@@ -698,7 +716,10 @@ impl Tools {
 
     /// The library, when there is one to reach.
     fn library(&self) -> Result<&dyn UserLibrary> {
-        self.library.as_deref().context("the user's library isn't reachable: they are signed out")
+        self.library.as_deref().context(
+            "the user's library isn't open to this question: they are signed out, or asked for an answer \
+             from the Bible only",
+        )
     }
 
     /// The verses of `r` as (number, text), and whether [`PASSAGE_LIMIT`] cut it short.
@@ -1204,7 +1225,7 @@ mod tests {
 
         let e =
             Tools { library: None, ..tools() }.run("search_library", &json!({ "query": "x" })).unwrap_err();
-        assert!(e.to_string().contains("signed out"), "{e:#}");
+        assert!(e.to_string().contains("signed out, or asked for an answer from the Bible only"), "{e:#}");
     }
 
     #[test]
@@ -1495,6 +1516,7 @@ mod tests {
             chapter: ChapterIdx::new(BookId(42), 3).unwrap(),
             selection: Some((john(3, 14), john(3, 14))),
             reading: "NLT".into(),
+            item: None,
         };
         let m = local_reply(&tools(), &ctx, "What does 'lifted up' mean in verse 14?");
         assert!(m.text.starts_with("The assistant isn't connected yet"));
@@ -1525,8 +1547,15 @@ mod tests {
             chapter: ChapterIdx::new(BookId(42), 3).unwrap(),
             selection: Some((john(3, 14), john(3, 16))),
             reading: "NLT".into(),
+            item: None,
         };
         assert_eq!(ctx.describe(), "The user is reading John 3 in the NLT. They have selected John 3:14–16.");
+        let about =
+            Context { selection: None, item: Some(("1a2b3c4d".into(), "All things".into())), ..ctx.clone() };
+        assert_eq!(
+            about.describe(),
+            "The user is reading John 3 in the NLT. They are asking about “All things”, item 1a2b3c4d in their library."
+        );
         let translation = Arc::new(crate::bundled::load("bsb").unwrap());
         let tools = Tools { translation, library: None, church: None };
         assert_eq!(
